@@ -37,6 +37,30 @@ const MARKER_COLORS: Record<string, string> = {
   "4": "#b06ce0",
 };
 
+/**
+ * Draw order runs in bands, the way XIVPlan layers a plan: ground effects first,
+ * then people, then annotations. Without this an AoE added after the party would
+ * cover the tokens and swallow every click on them. `reorder_entity` still
+ * shuffles entities within their own band.
+ */
+const DRAW_BAND: Record<Entity["type"], number> = {
+  zone: 0,
+  path: 1,
+  marker: 2,
+  tether: 3,
+  enemy: 4,
+  player: 5,
+  icon: 6,
+  text: 7,
+};
+
+function sortForDrawing(entities: Entity[]): Entity[] {
+  return entities
+    .map((entity, index) => ({ entity, index }))
+    .sort((a, b) => DRAW_BAND[a.entity.type] - DRAW_BAND[b.entity.type] || a.index - b.index)
+    .map((e) => e.entity);
+}
+
 export interface SceneProps {
   plan: Plan;
   stepId?: string;
@@ -50,37 +74,72 @@ export interface SceneProps {
 export function Scene({ plan, stepId, size, selected, editable, onSelect, onMove }: SceneProps) {
   const { arena } = plan;
   const scale = size / Math.max(arena.width, arena.height);
-  const entities = useMemo(() => entitiesForStep(plan, stepId), [plan, stepId]);
+  const entities = useMemo(() => sortForDrawing(entitiesForStep(plan, stepId)), [plan, stepId]);
   const byId = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities]);
 
+  const footprints = useMemo(
+    () => new Map(entities.map((e) => [e.id, hitArea(e, byId)])),
+    [entities, byId]
+  );
+
+  /**
+   * Konva would hand us the topmost shape, which means a big AoE drawn over the
+   * party makes the party unclickable. Pick whichever candidate under the pointer
+   * covers the least ground instead — the one you had to aim at is the one you
+   * meant — and start its drag by hand, so draw order stays purely visual.
+   */
+  function pickAt(evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+    const stage = evt.target.getStage();
+    const point = stage?.getPointerPosition();
+    if (!stage || !point) return;
+
+    const hits = stage.getAllIntersections(point);
+    let best: { node: Konva.Group; id: string } | undefined;
+    let bestSize = Infinity;
+    for (const shape of hits) {
+      const group = shape.findAncestor(".entity", true) as Konva.Group | undefined;
+      const id = group?.id();
+      if (!group || !id) continue;
+      const footprint = footprints.get(id) ?? Infinity;
+      if (footprint < bestSize) {
+        best = { node: group, id };
+        bestSize = footprint;
+      }
+    }
+
+    if (!best) {
+      onSelect(null);
+      return;
+    }
+    onSelect(best.id);
+    const entity = entities.find((e) => e.id === best!.id);
+    if (editable && entity && !entity.locked && entity.type !== "tether") {
+      best.node.startDrag(evt.evt as never);
+    }
+  }
+
   return (
-    <Stage
-      width={size}
-      height={size}
-      onMouseDown={(e) => {
-        if (e.target === e.target.getStage()) onSelect(null);
-      }}
-    >
+    <Stage width={size} height={size} onMouseDown={pickAt} onTouchStart={pickAt}>
       <Layer>
         <Group x={size / 2} y={size / 2} scaleX={scale} scaleY={scale}>
           <ArenaFloor plan={plan} />
           {entities.map((e) =>
             e.type === "tether" ? (
-              <Tether key={e.id} entity={e} byId={byId} selected={selected === e.id} onSelect={onSelect} />
+              <Tether key={e.id} entity={e} byId={byId} selected={selected === e.id} />
             ) : (
               <Group
                 key={e.id}
+                id={e.id}
+                name="entity"
                 x={e.x}
                 y={e.y}
                 rotation={e.rotation}
                 scaleX={e.scale}
                 scaleY={e.scale}
                 opacity={e.opacity}
-                draggable={editable && !e.locked}
-                onMouseDown={() => onSelect(e.id)}
-                onTap={() => onSelect(e.id)}
                 onDragEnd={(ev) => onMove(e.id, Math.round(ev.target.x()), Math.round(ev.target.y()))}
               >
+                <GrabTarget entity={e} />
                 <EntityShape entity={e} />
                 {selected === e.id && <SelectionRing entity={e} />}
               </Group>
@@ -159,7 +218,7 @@ function ArenaFloor({ plan }: { plan: Plan }) {
       {floor}
       <Group clipFunc={clip}>
         {backdrop && (
-          <Sprite src={backdrop} width={w} height={h} opacity={arena.imageOpacity} />
+          <Sprite src={backdrop} width={w} height={h} opacity={arena.imageOpacity} listening={false} />
         )}
         {lines}
       </Group>
@@ -167,9 +226,86 @@ function ArenaFloor({ plan }: { plan: Plan }) {
   );
 }
 
+/**
+ * An invisible disc under the token types whose art has transparent margins, so
+ * the whole token is grabbable. Konva's hit graph ignores opacity, so a
+ * 0-opacity fill is still hit-testable.
+ *
+ * Deliberately NOT applied to zones: a 400-unit cone would then swallow every
+ * click inside its bounding circle, including tokens drawn under it.
+ */
+function GrabTarget({ entity }: { entity: Entity }) {
+  switch (entity.type) {
+    case "marker":
+    case "player":
+    case "icon":
+      return <Circle radius={Math.max(20, entity.size / 2)} fill="#000" opacity={0} />;
+    case "enemy":
+      return <Circle radius={Math.max(20, entity.size * 0.55)} fill="#000" opacity={0} />;
+    case "zone":
+      // A donut's hole is a real gap in the shape; make it grabbable, nothing more.
+      return entity.shape === "donut" ? (
+        <Circle radius={entity.innerRadius} fill="#000" opacity={0} />
+      ) : null;
+    default:
+      return null;
+  }
+}
+
 function SelectionRing({ entity }: { entity: Entity }) {
   const r = radiusHint(entity) + 14;
   return <Circle radius={r} stroke="#7aa2f7" strokeWidth={4} dash={[12, 8]} listening={false} />;
+}
+
+const TETHER_HIT_WIDTH = 30;
+
+/**
+ * Roughly how much arena a click on this entity could have landed on. Used to
+ * resolve overlapping hits: the smaller the target, the more deliberate the aim,
+ * so a token beats the AoE painted over it and a tether beats a huge zone.
+ */
+function hitArea(e: Entity, byId: Map<string, Entity>): number {
+  const disc = (r: number) => Math.PI * r * r;
+  const scale = e.scale * e.scale;
+  switch (e.type) {
+    case "marker":
+    case "player":
+    case "icon":
+      return disc(e.size / 2) * scale;
+    case "enemy":
+      return disc(e.size * 0.55) * scale;
+    case "text":
+      return e.text.length * e.fontSize * e.fontSize * 0.62 * scale;
+    case "path": {
+      const xs = e.points.filter((_, i) => i % 2 === 0);
+      const ys = e.points.filter((_, i) => i % 2 === 1);
+      const w = Math.max(...xs) - Math.min(...xs) || e.width;
+      const h = Math.max(...ys) - Math.min(...ys) || e.width;
+      return (w + e.width) * (h + e.width) * scale;
+    }
+    case "tether": {
+      const a = byId.get(e.from);
+      const b = byId.get(e.to);
+      if (!a || !b) return Infinity;
+      return Math.hypot(b.x - a.x, b.y - a.y) * TETHER_HIT_WIDTH;
+    }
+    case "zone":
+      switch (e.shape) {
+        case "cone":
+          return disc(e.radius) * (e.angle / 360) * scale;
+        case "rect":
+        case "line":
+        case "knockback":
+        case "arrow":
+          return e.width * e.length * scale;
+        case "donut":
+          return (disc(e.radius) - disc(e.innerRadius)) * scale;
+        case "exaflare":
+          return disc(e.radius) * e.count * scale;
+        default:
+          return disc(e.radius) * scale;
+      }
+  }
 }
 
 function radiusHint(e: Entity): number {
@@ -246,6 +382,7 @@ function EntityShape({ entity }: { entity: Entity }) {
               offsetX={100}
               align="center"
               fontSize={entity.size * 0.36}
+              listening={false}
               fill="#e6edf3"
               stroke="#0d1117"
               strokeWidth={4}
@@ -294,6 +431,7 @@ function EntityShape({ entity }: { entity: Entity }) {
               offsetX={200}
               align="center"
               fontSize={38}
+              listening={false}
               fill="#e6edf3"
               stroke="#0d1117"
               strokeWidth={5}
@@ -307,13 +445,15 @@ function EntityShape({ entity }: { entity: Entity }) {
     case "zone":
       return <ZoneShape zone={entity} />;
 
-    case "text":
+    case "text": {
+      // Width drives both centring and the hit box, so keep it near the content.
+      const boxWidth = Math.max(entity.fontSize * 2, entity.text.length * entity.fontSize * 0.62);
       return (
         <Text
           text={entity.text}
           fontSize={entity.fontSize}
-          width={1200}
-          offsetX={600}
+          width={boxWidth}
+          offsetX={boxWidth / 2}
           offsetY={entity.fontSize / 2}
           align={entity.align}
           fill={entity.color ?? "#e6edf3"}
@@ -322,11 +462,13 @@ function EntityShape({ entity }: { entity: Entity }) {
           fillAfterStrokeEnabled
         />
       );
+    }
 
     case "path":
       return (
         <Line
           points={entity.points}
+          hitStrokeWidth={Math.max(40, entity.width * 3)}
           stroke={entity.color ?? "#e6edf3"}
           strokeWidth={entity.width}
           closed={entity.closed}
@@ -347,7 +489,13 @@ function EntityShape({ entity }: { entity: Entity }) {
 function ZoneShape({ zone }: { zone: ZoneEntity }) {
   const color = zone.color ?? ZONE_DEFAULT;
   const fill = zone.hollow ? undefined : color;
-  const common = { fill, opacity: zone.hollow ? 1 : 0.45, stroke: color, strokeWidth: 5 };
+  const common = {
+    fill,
+    opacity: zone.hollow ? 1 : 0.45,
+    stroke: color,
+    strokeWidth: 5,
+    hitStrokeWidth: zone.hollow ? 40 : undefined,
+  };
 
   switch (zone.shape) {
     case "circle":
@@ -485,12 +633,10 @@ function Tether({
   entity,
   byId,
   selected,
-  onSelect,
 }: {
   entity: Extract<Entity, { type: "tether" }>;
   byId: Map<string, Entity>;
   selected: boolean;
-  onSelect(id: string): void;
 }) {
   const a = byId.get(entity.from);
   const b = byId.get(entity.to);
@@ -501,13 +647,14 @@ function Tether({
   return (
     <Fragment>
       <Line
+        id={entity.id}
+        name="entity"
         points={[a.x, a.y, b.x, b.y]}
         stroke={color}
         strokeWidth={selected ? entity.width * 1.6 : entity.width}
         dash={dash}
         opacity={entity.opacity}
         lineCap="round"
-        onMouseDown={() => onSelect(entity.id)}
         hitStrokeWidth={30}
       />
       {(entity.style === "plus" || entity.style === "minus") && (
@@ -564,12 +711,15 @@ function Sprite({
   width,
   height,
   opacity,
+  listening = true,
   fallback = null,
 }: {
   src: string | undefined;
   width: number;
   height: number;
   opacity?: number;
+  /** The token art *is* the grab target, so this defaults to true. */
+  listening?: boolean;
   fallback?: React.ReactNode;
 }) {
   const image = useImage(src);
@@ -582,7 +732,7 @@ function Sprite({
       offsetX={width / 2}
       offsetY={height / 2}
       opacity={opacity}
-      listening={false}
+      listening={listening}
     />
   );
 }

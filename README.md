@@ -123,6 +123,22 @@ Anything with art takes an asset key, and `list_assets` is how a model browses t
 Every renderer keeps its vector fallback, so deleting `public/assets` and re-running
 `npm run assets:manifest` degrades cleanly instead of breaking.
 
+## Canvas behaviour
+
+Two rules make a busy plan workable, both worth knowing before you go rearranging
+`Scene.tsx`:
+
+- **Draw bands.** Entities layer by type — zones, paths, waymarks, tethers, enemies,
+  players, icons, text — so an AoE added after the party never buries it. Front/Back
+  reorder within a band.
+- **Smallest target wins.** A click picks whichever entity under the pointer covers the
+  least ground, not the topmost one, and drags start from there. That is what lets you
+  grab a player standing inside a raid-wide circle, or a tether crossing it.
+
+`npm run e2e -- http://localhost:5173` drives a real browser and asserts every entity
+type can still be grabbed and moved (run `npm run dev` first). It exists because a stray
+`listening={false}` once made half the canvas unclickable, and nothing else catches that.
+
 ## Access
 
 - **Discord OAuth** for people, **`rp_` bearer tokens** for models and scripts — both resolve

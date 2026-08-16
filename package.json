@@ -10,7 +10,8 @@
     "check": "tsc --noEmit",
     "deploy": "vite build && wrangler deploy",
     "typegen": "wrangler types",
-    "assets:manifest": "node scripts/gen-assets.mjs"
+    "assets:manifest": "node scripts/gen-assets.mjs",
+    "e2e": "node scripts/e2e-drag.mjs"
   },
   "keywords": [],
   "author": "",
@@ -37,6 +38,7 @@
     "@types/react": "^19.2.18",
     "@types/react-dom": "^19.2.4",
     "@vitejs/plugin-react": "^6.0.5",
+    "playwright": "^1.56.0",
     "tailwindcss": "^4.3.3",
     "typescript": "^7.0.2",
     "vite": "^8.2.1",
