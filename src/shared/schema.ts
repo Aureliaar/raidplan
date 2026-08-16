@@ -59,6 +59,7 @@ export type ZoneShape = (typeof ZONE_SHAPES)[number];
 
 export const TETHER_STYLES = ["line", "close", "far", "plus", "minus", "chain"] as const;
 export const MARKER_IDS = ["A", "B", "C", "D", "1", "2", "3", "4"] as const;
+export type MarkerId = (typeof MARKER_IDS)[number];
 
 /**
  * A loose bag of entity properties: per-step overrides and patch payloads.
@@ -233,6 +234,33 @@ export const PlanSchema = z.object({
   rev: z.number().int().default(0),
 });
 export type Plan = z.infer<typeof PlanSchema>;
+
+/**
+ * The floor of an encounter: its arena and where that group decided the
+ * waymarks go. Saved once per encounter and applied to every plan for it, so
+ * "A is north-ish, D is the west platform" holds across all your mechs.
+ */
+export const EncounterSetupSchema = z.object({
+  arena: ArenaSchema.prefault({}),
+  markers: z
+    .array(
+      z.object({
+        marker: z.enum(MARKER_IDS),
+        x: z.number(),
+        y: z.number(),
+        size: z.number().positive().optional(),
+      })
+    )
+    .default([]),
+});
+export type EncounterSetup = z.infer<typeof EncounterSetupSchema>;
+
+/** A saved encounter as it appears in listings. */
+export interface EncounterSummary {
+  encounter: string;
+  markers: number;
+  updatedAt: number;
+}
 
 /** A plan as it appears in listings. */
 export interface PlanSummary {

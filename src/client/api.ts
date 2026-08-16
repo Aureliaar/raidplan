@@ -20,6 +20,10 @@ export const api = {
   getPlan: (id: string) =>
     req<{ plan: Plan; role: PlanRole; meta: { isPublic: boolean } | null }>(`/api/plans/${id}`),
   deletePlan: (id: string) => req<{ ok: true }>(`/api/plans/${id}`, { method: "DELETE" }),
+  saveEncounter: (id: string) =>
+    req<{ encounter: string; markers: number }>(`/api/plans/${id}/encounter/save`, { method: "POST" }),
+  applyEncounter: (id: string) =>
+    req<{ rev: number; plan: Plan }>(`/api/plans/${id}/encounter/apply`, { method: "POST" }),
   setPublic: (id: string, isPublic: boolean) =>
     req<{ ok: true }>(`/api/plans/${id}/public`, { method: "POST", body: JSON.stringify({ isPublic }) }),
   share: (id: string, userId: string, role: PlanRole | null) =>

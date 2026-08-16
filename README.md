@@ -91,6 +91,7 @@ edit a plan the user only has viewer access to. `/sse` is available for older cl
 | `list_steps` `add_step` `update_step` `delete_step` | steps |
 | `add_player` `add_enemy` `add_marker` `add_waymarks` `add_party` `add_zone` `add_text` `add_tether` `add_icon` | create |
 | `move_entity` `update_entity` `delete_entity` `find_entities` `arrange_party` `set_arena` `list_assets` | edit |
+| `save_encounter` `apply_encounter` `list_encounters` | the fight's arena + waymarks |
 | `share_plan` `set_plan_public` | access |
 
 `read_plan` renders the whole document as text with entity ids — start there.
@@ -168,8 +169,27 @@ The **Layout** buttons apply the conventions everyone plots against:
 - **PF positions** — the party-finder clock: MT N, R2 NE, H2 E, M2 SE, OT S, R1 SW, H1 W,
   M1 NW. It arranges the players already in the plan; D1-D4 map onto M1/M2/R1/R2.
 
-Both honour the "Drag moves" selector, so you can restage a single step without touching
-the rest of the plan. `arrange_party` and `add_waymarks` are the same thing over MCP.
+**PF positions** honours the "Drag moves" selector, so you can restage a single step
+without touching the rest of the plan. `arrange_party` and `add_waymarks` are the same
+thing over MCP.
+
+## Encounter markers
+
+Waymarks belong to the fight, not to one diagram. Name a plan's **encounter** (the field
+beside its name) and **save for fight**: the arena and the eight waymark positions are
+stored under that name, and every later plan for the encounter — from the UI or from
+`create_plan {encounter}` — opens on the same floor with the same markers. **use saved**
+puts them back on a plan that has drifted.
+
+Two rules follow from that, and both are enforced rather than documented-and-hoped:
+
+- A waymark never takes a per-step override. Dragging one always moves it in every step,
+  because a fight cannot have a different A depending on which mechanic you are looking at.
+- Applying a setup removes markers it does not mention, so a fight that only uses A and B
+  does not inherit a stray C.
+
+Setups are per user, so two statics can disagree about where D goes. Over MCP:
+`save_encounter`, `apply_encounter`, `list_encounters`.
 
 `npm run e2e -- http://localhost:5173` drives a real browser and asserts every entity
 type can still be grabbed and moved (run `npm run dev` first). It exists because a stray

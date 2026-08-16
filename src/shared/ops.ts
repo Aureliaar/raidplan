@@ -6,7 +6,11 @@ import {
   type Plan,
   type Step,
   type PropBag,
+  type EncounterSetup,
+  type MarkerId,
+  MARKER_IDS,
   ArenaSchema,
+  EncounterSetupSchema,
   EntitySchema,
   PlanSchema,
   entitiesForStep,
@@ -146,7 +150,10 @@ export function updateEntity(
   delete clean.overrides;
 
   let next: Entity;
-  if (stepId) {
+  // Waymarks are placed before the pull and never move again, so a per-step
+  // drag on one is always a mistake: it would give the same fight a different
+  // A depending on which mechanic you were looking at.
+  if (stepId && current.type !== "marker") {
     const overrides = { ...current.overrides, [stepId]: { ...current.overrides?.[stepId], ...clean } };
     next = { ...current, overrides } as Entity;
     // Validate the merged result so a bad override is rejected at write time.
@@ -249,6 +256,13 @@ export function resolveRef(plan: Plan, ref: string): Entity {
   // A party is named D1-D4 or M1/M2/R1/R2 depending on who typed it, and both
   // spellings mean the same seat. Without this, "M1" falls through to the
   // substring pass and cheerfully resolves to a zone named "Desolation M1".
+  // "A" or "3" means the waymark. Left to the substring pass it matches nothing
+  // useful — every generated id contains the letters of its own type prefix.
+  const asMarker = MARKER_IDS.find((m) => m.toLowerCase() === ref.trim().toLowerCase());
+  if (asMarker) {
+    const hit = plan.entities.find((e) => e.type === "marker" && e.marker === asMarker);
+    if (hit) return hit;
+  }
   const slot = PF_SLOTS.find((s) => s.names.some((n) => n.toLowerCase() === ref.toLowerCase()));
   for (const alias of slot?.names ?? []) {
     const hit = findEntities(plan, { name: alias, type: "player" });
@@ -355,20 +369,59 @@ export const STANDARD_WAYMARKS = ["A", "2", "B", "3", "C", "4", "D", "1"] as con
  * Place the 8 standard waymarks. Markers the plan already has are *moved* into
  * position rather than skipped, so this doubles as a "reset to standard" button.
  */
-export function addWaymarks(plan: Plan, distance = 0.8, stepId?: string): Plan {
+export function addWaymarks(plan: Plan, distance = 0.8): Plan {
+  return placeMarkers(
+    plan,
+    STANDARD_WAYMARKS.map((marker, i) => {
+      const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
+      return {
+        marker,
+        x: Math.round(Math.cos(a) * (plan.arena.width / 2) * distance),
+        y: Math.round(Math.sin(a) * (plan.arena.height / 2) * distance),
+      };
+    })
+  );
+}
+
+/** Move the named waymarks into place, adding any the plan does not have yet. */
+function placeMarkers(plan: Plan, markers: EncounterSetup["markers"]): Plan {
   let next = plan;
-  STANDARD_WAYMARKS.forEach((marker, i) => {
-    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
-    const x = Math.cos(a) * (plan.arena.width / 2) * distance;
-    const y = Math.sin(a) * (plan.arena.height / 2) * distance;
+  for (const m of markers) {
     const existing = findEntities(next, { type: "marker" }).find(
-      (e) => (e as { marker: string }).marker === marker
+      (e) => (e as { marker: string }).marker === m.marker
     );
+    const pose = { x: m.x, y: m.y, ...(m.size ? { size: m.size } : {}) };
     next = existing
-      ? updateEntity(next, existing.id, { x, y }, stepId).plan
-      : addEntity(next, { type: "marker", marker, x, y }).plan;
-  });
+      ? updateEntity(next, existing.id, pose).plan
+      : addEntity(next, { type: "marker", ...m }).plan;
+  }
   return next;
+}
+
+/** The floor of this plan: its arena, and where its waymarks sit. */
+export function encounterSetup(plan: Plan): EncounterSetup {
+  return EncounterSetupSchema.parse({
+    arena: plan.arena,
+    markers: findEntities(plan, { type: "marker" }).map((e) => ({
+      marker: (e as { marker: string }).marker,
+      x: e.x,
+      y: e.y,
+      size: (e as { size?: number }).size,
+    })),
+  });
+}
+
+/**
+ * Stamp a saved encounter onto a plan: same floor, same waymarks, in the same
+ * places. Markers the setup does not mention are removed — a fight where you
+ * only use A and B should not inherit a stray C from whoever built the plan.
+ */
+export function applyEncounterSetup(plan: Plan, setup: EncounterSetup): Plan {
+  const wanted = new Set<MarkerId>(setup.markers.map((m) => m.marker));
+  const strays = findEntities(plan, { type: "marker" })
+    .filter((e) => !wanted.has((e as { marker: MarkerId }).marker))
+    .map((e) => e.id);
+  return placeMarkers(deleteEntities(setArena(plan, setup.arena), strays), setup.markers);
 }
 
 /** Add a standard 8-player party, laid out in a ring near the middle. */

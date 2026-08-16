@@ -1,6 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import type { AppEnv } from "./env";
-import type { PlanRole, PlanSummary, User } from "../shared/schema";
+import type { EncounterSetup, EncounterSummary, PlanRole, PlanSummary, User } from "../shared/schema";
+
+/** "M5S — Dancing Green" and "m5s — dancing green" are the same fight. */
+const encounterKey = (name: string) => name.trim().toLowerCase();
 
 /**
  * Single global Durable Object holding users, API tokens, the plan index and
@@ -41,6 +44,15 @@ export class Registry extends DurableObject<AppEnv> {
       isPublic INTEGER NOT NULL DEFAULT 0,
       createdAt INTEGER NOT NULL,
       updatedAt INTEGER NOT NULL
+    )`);
+    // One decided floor per encounter, per person: the arena and where that
+    // group put the waymarks, so every plan for the fight starts from it.
+    sql.exec(`CREATE TABLE IF NOT EXISTS encounters (
+      ownerId TEXT NOT NULL,
+      encounter TEXT NOT NULL,
+      setup TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL,
+      PRIMARY KEY (ownerId, encounter)
     )`);
     sql.exec(`CREATE TABLE IF NOT EXISTS acl (
       planId TEXT NOT NULL,
@@ -210,6 +222,50 @@ export class Registry extends DurableObject<AppEnv> {
       updatedAt: r.updatedAt as number,
       role: r.role as PlanRole,
     }));
+  }
+
+  /* ------------------------------------------------------------- encounters */
+
+  async saveEncounter(ownerId: string, encounter: string, setup: EncounterSetup): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO encounters (ownerId, encounter, setup, updatedAt) VALUES (?, ?, ?, ?)`,
+      ownerId,
+      encounterKey(encounter),
+      JSON.stringify(setup),
+      Date.now()
+    );
+  }
+
+  async getEncounter(ownerId: string, encounter: string): Promise<EncounterSetup | null> {
+    const row = [
+      ...this.ctx.storage.sql.exec(
+        `SELECT setup FROM encounters WHERE ownerId = ? AND encounter = ?`,
+        ownerId,
+        encounterKey(encounter)
+      ),
+    ][0];
+    return row ? (JSON.parse(row.setup as string) as EncounterSetup) : null;
+  }
+
+  async listEncounters(ownerId: string): Promise<EncounterSummary[]> {
+    return [
+      ...this.ctx.storage.sql.exec(
+        `SELECT encounter, setup, updatedAt FROM encounters WHERE ownerId = ? ORDER BY updatedAt DESC`,
+        ownerId
+      ),
+    ].map((r) => ({
+      encounter: r.encounter as string,
+      markers: (JSON.parse(r.setup as string) as EncounterSetup).markers.length,
+      updatedAt: r.updatedAt as number,
+    }));
+  }
+
+  async deleteEncounter(ownerId: string, encounter: string): Promise<void> {
+    this.ctx.storage.sql.exec(
+      `DELETE FROM encounters WHERE ownerId = ? AND encounter = ?`,
+      ownerId,
+      encounterKey(encounter)
+    );
   }
 
   /* -------------------------------------------------------------------- acl */

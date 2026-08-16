@@ -21,6 +21,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [selected, setSelected] = useState<string | null>(null);
   const [scope, setScope] = useState<"step" | "all">("step");
   const [error, setError] = useState("");
+  const [note, setNote] = useState("");
   const [connected, setConnected] = useState(false);
 
   useAgent({
@@ -96,6 +97,15 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           disabled={!editable}
           onChange={(e) => setPlan({ ...plan, name: e.target.value })}
           onBlur={(e) => run({ op: "set_meta", name: e.target.value })}
+        />
+        <input
+          className="field max-w-[180px]"
+          placeholder="encounter"
+          title="The fight this plan is for — plans sharing it share their waymarks"
+          value={plan.encounter}
+          disabled={!editable}
+          onChange={(e) => setPlan({ ...plan, encounter: e.target.value })}
+          onBlur={(e) => run({ op: "set_meta", encounter: e.target.value })}
         />
         <span className="text-xs text-ink-400">
           rev {plan.rev} · {connected ? "live" : "offline"} · {role}
@@ -207,7 +217,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               className="btn"
               disabled={!editable}
               title="A north, 2 NE, B east, 3 SE, C south, 4 SW, D west, 1 NW"
-              onClick={() => run({ op: "add_waymarks", stepId: scope === "step" ? step.id : undefined })}
+              onClick={() => run({ op: "add_waymarks" })}
             >
               standard markers
             </button>
@@ -221,6 +231,39 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             >
               PF positions
             </button>
+          </div>
+
+          <h2 className="label mb-2">Encounter markers</h2>
+          {/* Waymarks belong to the fight, not to one plan: decide them once and
+              every plan for the encounter picks up the same set. */}
+          <div className="mb-4 flex flex-wrap items-center gap-1">
+            <button
+              className="btn"
+              disabled={!editable || !plan.encounter}
+              title={
+                plan.encounter
+                  ? `Remember these waymarks and this arena for ${plan.encounter}`
+                  : "Name the encounter first (field in the header)"
+              }
+              onClick={async () => {
+                const r = await api.saveEncounter(planId).catch((e: Error) => setError(e.message));
+                if (r) setNote(`Saved ${r.markers} waymarks for ${r.encounter}`);
+              }}
+            >
+              save for fight
+            </button>
+            <button
+              className="btn"
+              disabled={!editable || !plan.encounter}
+              title="Put the saved waymarks and arena back"
+              onClick={async () => {
+                const r = await api.applyEncounter(planId).catch((e: Error) => setError(e.message));
+                if (r) setPlan(r.plan);
+              }}
+            >
+              use saved
+            </button>
+            {note && <span className="text-xs text-ink-400">{note}</span>}
           </div>
 
           <Inspector

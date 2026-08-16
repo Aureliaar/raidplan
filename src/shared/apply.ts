@@ -1,4 +1,4 @@
-import type { Arena, Entity, EntityType, Plan, PropBag, Step } from "./schema";
+import type { Arena, EncounterSetup, Entity, EntityType, Plan, PropBag, Step } from "./schema";
 import * as ops from "./ops";
 
 /**
@@ -20,7 +20,8 @@ export type Op =
   | { op: "update_step"; stepId: string; patch: Partial<Omit<Step, "id">> }
   | { op: "delete_step"; stepId: string }
   | { op: "move_step"; stepId: string; index: number }
-  | { op: "add_waymarks"; distance?: number; stepId?: string }
+  | { op: "add_waymarks"; distance?: number }
+  | { op: "apply_encounter"; setup: EncounterSetup }
   | { op: "add_party"; party?: { job: string; name: string }[]; radiusFraction?: number }
   | { op: "arrange_party"; radiusFraction?: number; stepId?: string }
   | { op: "replace_plan"; plan: Plan };
@@ -77,7 +78,9 @@ export function applyOp(plan: Plan, op: Op): OpResult {
     case "move_step":
       return { plan: ops.moveStep(plan, op.stepId, op.index) };
     case "add_waymarks":
-      return { plan: ops.addWaymarks(plan, op.distance, op.stepId) };
+      return { plan: ops.addWaymarks(plan, op.distance) };
+    case "apply_encounter":
+      return { plan: ops.applyEncounterSetup(plan, op.setup) };
     case "add_party": {
       const r = ops.addParty(plan, op.party, op.radiusFraction);
       return { plan: r.plan, value: r.ids };

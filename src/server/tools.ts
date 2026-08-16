@@ -9,6 +9,7 @@ import {
   anchorToPoint,
   createPlan,
   describePlan,
+  encounterSetup,
   findEntities,
   resolveRef,
 } from "../shared/ops";
@@ -172,15 +173,22 @@ export const TOOLS: ToolDef[] = [
         ownerId: ctx.userId,
       });
       const follow: Op[] = [];
+      // A plan for a fight you have already set up inherits that floor, so every
+      // mech for the encounter agrees on where the waymarks are.
+      const saved = a.encounter ? await registry(ctx.env).getEncounter(ctx.userId, a.encounter) : null;
+      if (saved) follow.push({ op: "apply_encounter", setup: saved });
       if (a.arena_shape || a.arena_size)
         follow.push({
           op: "set_arena",
           patch: { shape: a.arena_shape, width: a.arena_size, height: a.arena_size },
         });
-      if (a.with_waymarks) follow.push({ op: "add_waymarks" });
+      if (a.with_waymarks && !saved) follow.push({ op: "add_waymarks" });
       if (follow.length) await stub.apply(follow);
       // Say what was seeded: a model that assumes an empty plan adds a second party.
-      const seeded = [a.with_party ?? true ? "an 8-player party" : "", a.with_waymarks ? "waymarks" : ""].filter(Boolean);
+      const seeded = [
+        a.with_party ?? true ? "an 8-player party" : "",
+        saved ? `the saved ${a.encounter} floor and waymarks` : a.with_waymarks ? "waymarks" : "",
+      ].filter(Boolean);
       return `Created plan ${draft.id}${seeded.length ? ` with ${seeded.join(" and ")}` : " (empty)"} — ${planUrl(ctx, draft.id)}`;
     },
   }),
@@ -412,15 +420,10 @@ export const TOOLS: ToolDef[] = [
     schema: {
       plan_id: z.string(),
       distance: z.number().min(0).max(1.2).optional(),
-      step: z.string().optional().describe("Move them in this step only"),
     },
     async run(ctx, a) {
-      await edit(ctx, a.plan_id, (plan) => ({
-        op: "add_waymarks",
-        distance: a.distance,
-        stepId: stepIdOf(plan, a.step),
-      }));
-      return "Waymarks placed.";
+      await edit(ctx, a.plan_id, () => ({ op: "add_waymarks", distance: a.distance }));
+      return "Waymarks placed. Save them for the fight with save_encounter.";
     },
   }),
 
@@ -596,7 +599,12 @@ export const TOOLS: ToolDef[] = [
           id: target.id,
           x: pos.x ?? target.x,
           y: pos.y ?? target.y,
-          step: stepId ? ` in step ${plan.steps.find((s) => s.id === stepId)?.name}` : "",
+          step:
+            stepId && target.type !== "marker"
+              ? ` in step ${plan.steps.find((s) => s.id === stepId)?.name}`
+              : target.type === "marker"
+                ? " — waymarks move in every step"
+                : "",
         };
         return {
           op: "update_entity",
@@ -713,6 +721,59 @@ export const TOOLS: ToolDef[] = [
         };
       });
       return `Added icon ${idOf(res.values[0])}`;
+    },
+  }),
+
+  /* ----------------------------------------------------------- encounters */
+
+  def({
+    name: "save_encounter",
+    description:
+      "Remember this plan's arena and waymark positions as the setup for its encounter. Every later plan for that fight starts from them.",
+    schema: {
+      plan_id: z.string(),
+      encounter: z.string().optional().describe("Defaults to the plan's own encounter"),
+    },
+    async run(ctx, a) {
+      const { plan } = await load(ctx, a.plan_id, "edit");
+      const encounter = a.encounter ?? plan.encounter;
+      if (!encounter)
+        throw new Error("This plan has no encounter — set one with set_plan_info, or pass `encounter`.");
+      const setup = encounterSetup(plan);
+      await registry(ctx.env).saveEncounter(ctx.userId, encounter, setup);
+      if (!plan.encounter) await edit(ctx, a.plan_id, () => ({ op: "set_meta", encounter }));
+      return `Saved ${setup.markers.length} waymarks and the arena as the setup for "${encounter}".`;
+    },
+  }),
+
+  def({
+    name: "apply_encounter",
+    description:
+      "Put the saved arena and waymarks for an encounter onto this plan, moving any that have drifted.",
+    schema: {
+      plan_id: z.string(),
+      encounter: z.string().optional().describe("Defaults to the plan's own encounter"),
+    },
+    async run(ctx, a) {
+      const { plan } = await load(ctx, a.plan_id, "edit");
+      const encounter = a.encounter ?? plan.encounter;
+      if (!encounter) throw new Error("This plan has no encounter — pass `encounter`.");
+      const setup = await registry(ctx.env).getEncounter(ctx.userId, encounter);
+      if (!setup) throw new Error(`No saved setup for "${encounter}". Use save_encounter on a plan you like.`);
+      await edit(ctx, a.plan_id, () => ({ op: "apply_encounter", setup }));
+      if (plan.encounter !== encounter) await edit(ctx, a.plan_id, () => ({ op: "set_meta", encounter }));
+      return `Applied the "${encounter}" arena and ${setup.markers.length} waymarks.`;
+    },
+  }),
+
+  def({
+    name: "list_encounters",
+    description: "Encounters you have saved a setup for.",
+    schema: {},
+    async run(ctx) {
+      const saved = await registry(ctx.env).listEncounters(ctx.userId);
+      if (!saved.length) return "No saved encounters yet — use save_encounter on a plan.";
+      return saved.map((e) => `- ${e.encounter} — ${e.markers} waymarks`).join("\n");
     },
   }),
 

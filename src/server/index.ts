@@ -6,7 +6,7 @@ import { registry } from "./registry";
 import { planStub } from "./plan-agent";
 import { RaidPlanMCP } from "./mcp";
 import { chatRoutes } from "./chat";
-import { createPlan } from "../shared/ops";
+import { createPlan, encounterSetup } from "../shared/ops";
 import type { Op } from "../shared/apply";
 import type { PlanRole, User } from "../shared/schema";
 
@@ -114,6 +114,9 @@ app.post("/api/plans", async (c) => {
     encounter: body.encounter,
     ownerId: user.id,
   });
+  // Every plan for a fight you have already set up starts on the same floor.
+  const saved = body.encounter ? await registry(c.env).getEncounter(user.id, body.encounter) : null;
+  if (saved) await stub.apply({ op: "apply_encounter", setup: saved });
   return c.json({ id: plan.id });
 });
 
@@ -134,6 +137,36 @@ app.post("/api/plans/:id/ops", async (c) => {
   const res = await stub.apply(body.ops);
   await registry(c.env).touchPlan(id, { name: res.plan.name, encounter: res.plan.encounter });
   return c.json({ rev: res.plan.rev, values: res.values, plan: res.plan });
+});
+
+/* The decided floor of a fight: its arena and waymarks, shared by every plan
+   for that encounter. Saved per user, so two statics can disagree. */
+
+app.get("/api/encounters", async (c) =>
+  c.json(await registry(c.env).listEncounters(requireUser(c).id))
+);
+
+app.post("/api/plans/:id/encounter/save", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "edit");
+  const plan = await (await planStub(c.env, id)).getPlan();
+  if (!plan.encounter) return c.json({ error: "Give the plan an encounter name first" }, 400);
+  const setup = encounterSetup(plan);
+  await registry(c.env).saveEncounter(requireUser(c).id, plan.encounter, setup);
+  return c.json({ encounter: plan.encounter, markers: setup.markers.length });
+});
+
+app.post("/api/plans/:id/encounter/apply", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "edit");
+  const stub = await planStub(c.env, id);
+  const plan = await stub.getPlan();
+  const setup = plan.encounter
+    ? await registry(c.env).getEncounter(requireUser(c).id, plan.encounter)
+    : null;
+  if (!setup) return c.json({ error: `Nothing saved for "${plan.encounter || "this encounter"}"` }, 404);
+  const res = await stub.apply({ op: "apply_encounter", setup });
+  return c.json({ rev: res.plan.rev, plan: res.plan });
 });
 
 app.delete("/api/plans/:id", async (c) => {
