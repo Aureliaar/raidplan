@@ -74,10 +74,19 @@ edit a plan the user only has viewer access to. `/sse` is available for older cl
 | `list_plans` `create_plan` `read_plan` `get_plan_json` `set_plan_info` | plans |
 | `list_steps` `add_step` `update_step` `delete_step` | steps |
 | `add_player` `add_enemy` `add_marker` `add_waymarks` `add_party` `add_zone` `add_text` `add_tether` `add_icon` | create |
-| `move_entity` `update_entity` `delete_entity` `find_entities` `set_arena` `list_assets` | edit |
+| `move_entity` `update_entity` `delete_entity` `find_entities` `arrange_party` `set_arena` `list_assets` | edit |
 | `share_plan` `set_plan_public` | access |
 
 `read_plan` renders the whole document as text with entity ids — start there.
+
+To drive the endpoint without a client — the same streamable-HTTP handshake, from a shell:
+
+```bash
+export RAIDPLAN_URL=http://localhost:5173/mcp RAIDPLAN_TOKEN=rp_…
+npm run mcp -- list                 # every tool
+npm run mcp -- list add_zone        # one tool's JSON schema
+npm run mcp -- call read_plan '{"plan_id":"plan_…"}'
+```
 
 ## The document
 
@@ -135,9 +144,23 @@ Two rules make a busy plan workable, both worth knowing before you go rearrangin
   least ground, not the topmost one, and drags start from there. That is what lets you
   grab a player standing inside a raid-wide circle, or a tether crossing it.
 
+The **Layout** buttons apply the conventions everyone plots against:
+
+- **8/4/2-radial** — a radial grid with that many ways, for cardinal/intercardinal splits.
+- **standard markers** — clockwise from north: A, 2, B, 3, C, 4, D, 1. Markers already in
+  the plan get moved rather than skipped, so it doubles as "put them back".
+- **PF positions** — the party-finder clock: MT N, R2 NE, H2 E, M2 SE, OT S, R1 SW, H1 W,
+  M1 NW. It arranges the players already in the plan; D1-D4 map onto M1/M2/R1/R2.
+
+Both honour the "Drag moves" selector, so you can restage a single step without touching
+the rest of the plan. `arrange_party` and `add_waymarks` are the same thing over MCP.
+
 `npm run e2e -- http://localhost:5173` drives a real browser and asserts every entity
 type can still be grabbed and moved (run `npm run dev` first). It exists because a stray
 `listening={false}` once made half the canvas unclickable, and nothing else catches that.
+`npm run e2e:access` checks that a stranger can read a plan neither over HTTP nor over the
+sync socket — the socket half matters because the SDK pushes state the moment a connection
+is accepted, so the ACL has to be enforced in the Worker, before routing.
 
 ## Access
 

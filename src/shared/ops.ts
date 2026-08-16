@@ -264,6 +264,9 @@ export function addStep(plan: Plan, opts: { name?: string; notes?: string; index
 /**
  * Copy a step, including every entity's pose in it — the "next mechanic starts
  * where the last one ended" workflow.
+ *
+ * Poses carry forward, membership does not: an AoE scoped to the source step is
+ * that step's mechanic and should not follow the party into the next one.
  */
 export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan: Plan; step: Step } {
   const idx = plan.steps.findIndex((s) => s.id === stepId);
@@ -276,7 +279,6 @@ export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan
   const entities = plan.entities.map((e) => {
     const next = { ...e } as Entity;
     if (e.overrides?.[stepId]) next.overrides = { ...e.overrides, [step.id]: { ...e.overrides[stepId] } };
-    if (Array.isArray(e.steps) && e.steps.includes(stepId)) next.steps = [...e.steps, step.id];
     return next;
   });
 
@@ -315,33 +317,41 @@ export function moveStep(plan: Plan, stepId: string, index: number): Plan {
 /* -------------------------------------------------------------- convenience */
 
 export function setArena(plan: Plan, patch: Partial<Arena>): Plan {
-  const arena = ArenaSchema.parse({ ...plan.arena, ...patch, grid: { ...plan.arena.grid, ...patch.grid } });
+  // Spreading a patch with explicit `undefined`s would clobber the arena back to
+  // schema defaults — a caller that only sets the grid must not reshape the floor.
+  const defined = <T extends object>(o: T | undefined) =>
+    Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => v !== undefined));
+  const arena = ArenaSchema.parse({
+    ...plan.arena,
+    ...defined(patch),
+    grid: { ...plan.arena.grid, ...defined(patch.grid) },
+  });
   return touch({ ...plan, arena });
 }
 
-/** Drop the 8 standard waymarks in the usual cardinal/intercardinal layout. */
-export function addWaymarks(plan: Plan, distance = 0.8): Plan {
-  const layout: [string, number, number][] = [
-    ["A", 0, -1],
-    ["B", 1, 0],
-    ["C", 0, 1],
-    ["D", -1, 0],
-    ["1", Math.SQRT1_2, -Math.SQRT1_2],
-    ["2", Math.SQRT1_2, Math.SQRT1_2],
-    ["3", -Math.SQRT1_2, Math.SQRT1_2],
-    ["4", -Math.SQRT1_2, -Math.SQRT1_2],
-  ];
+/**
+ * The standard waymark set, clockwise from north: A, 2, B, 3, C, 4, D, 1 —
+ * letters on the cardinals, numbers in the quadrants reading 1 = NW clockwise.
+ */
+export const STANDARD_WAYMARKS = ["A", "2", "B", "3", "C", "4", "D", "1"] as const;
+
+/**
+ * Place the 8 standard waymarks. Markers the plan already has are *moved* into
+ * position rather than skipped, so this doubles as a "reset to standard" button.
+ */
+export function addWaymarks(plan: Plan, distance = 0.8, stepId?: string): Plan {
   let next = plan;
-  for (const [marker, dx, dy] of layout) {
-    if (findEntities(next, { type: "marker" }).some((e) => (e as { marker: string }).marker === marker))
-      continue;
-    next = addEntity(next, {
-      type: "marker",
-      marker,
-      x: dx * (plan.arena.width / 2) * distance,
-      y: dy * (plan.arena.height / 2) * distance,
-    }).plan;
-  }
+  STANDARD_WAYMARKS.forEach((marker, i) => {
+    const a = (i / 8) * Math.PI * 2 - Math.PI / 2;
+    const x = Math.cos(a) * (plan.arena.width / 2) * distance;
+    const y = Math.sin(a) * (plan.arena.height / 2) * distance;
+    const existing = findEntities(next, { type: "marker" }).find(
+      (e) => (e as { marker: string }).marker === marker
+    );
+    next = existing
+      ? updateEntity(next, existing.id, { x, y }, stepId).plan
+      : addEntity(next, { type: "marker", marker, x, y }).plan;
+  });
   return next;
 }
 
@@ -366,6 +376,60 @@ export function addParty(
     next = res.plan;
     ids.push(res.entity.id);
   });
+  return { plan: next, ids };
+}
+
+/**
+ * The party-finder clock, clockwise from north. Each slot lists the names that
+ * belong in it, so a party built as MT/OT/H1/H2/D1-D4 lands in the right spots.
+ */
+export const PF_SLOTS: { slot: string; names: string[] }[] = [
+  { slot: "MT", names: ["MT", "T1"] },
+  { slot: "R2", names: ["R2", "D4"] },
+  { slot: "H2", names: ["H2"] },
+  { slot: "M2", names: ["M2", "D2"] },
+  { slot: "OT", names: ["OT", "T2"] },
+  { slot: "R1", names: ["R1", "D3"] },
+  { slot: "H1", names: ["H1"] },
+  { slot: "M1", names: ["M1", "D1"] },
+];
+
+/**
+ * Move the players already in the plan onto the PF clock. Anyone whose name
+ * doesn't name a slot fills whatever slots are left, in order.
+ */
+export function arrangeParty(
+  plan: Plan,
+  radiusFraction = 0.25,
+  stepId?: string
+): { plan: Plan; ids: string[] } {
+  const players = findEntities(plan, { type: "player" });
+  const taken = new Map<number, Entity>();
+  const spare: Entity[] = [];
+  for (const p of players) {
+    const name = (p.name ?? "").toUpperCase();
+    const i = PF_SLOTS.findIndex((s, idx) => s.names.includes(name) && !taken.has(idx));
+    if (i >= 0) taken.set(i, p);
+    else spare.push(p);
+  }
+  for (let i = 0; i < PF_SLOTS.length && spare.length; i++) {
+    if (!taken.has(i)) taken.set(i, spare.shift()!);
+  }
+
+  const r = (plan.arena.width / 2) * radiusFraction;
+  let next = plan;
+  const ids: string[] = [];
+  for (const [i, entity] of taken) {
+    const a = (i / PF_SLOTS.length) * Math.PI * 2 - Math.PI / 2;
+    next = updateEntity(
+      next,
+      entity.id,
+      { x: Math.round(Math.cos(a) * r), y: Math.round(Math.sin(a) * r) },
+      stepId
+    ).plan;
+    ids.push(entity.id);
+  }
+  // Anyone past the eighth player keeps their position — better than stacking.
   return { plan: next, ids };
 }
 

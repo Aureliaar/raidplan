@@ -167,7 +167,9 @@ export const TOOLS: ToolDef[] = [
         });
       if (a.with_waymarks) follow.push({ op: "add_waymarks" });
       if (follow.length) await stub.apply(follow);
-      return `Created plan ${draft.id} — ${planUrl(ctx, draft.id)}`;
+      // Say what was seeded: a model that assumes an empty plan adds a second party.
+      const seeded = [a.with_party ?? true ? "an 8-player party" : "", a.with_waymarks ? "waymarks" : ""].filter(Boolean);
+      return `Created plan ${draft.id}${seeded.length ? ` with ${seeded.join(" and ")}` : " (empty)"} — ${planUrl(ctx, draft.id)}`;
     },
   }),
 
@@ -393,17 +395,51 @@ export const TOOLS: ToolDef[] = [
 
   def({
     name: "add_waymarks",
-    description: "Drop the full A-D / 1-4 waymark set in the standard cardinal + intercardinal layout.",
-    schema: { plan_id: z.string(), distance: z.number().min(0).max(1.2).optional() },
+    description:
+      "Place the standard waymark set — clockwise from north: A, 2, B, 3, C, 4, D, 1. Markers the plan already has are moved into place, so this also resets a scrambled set.",
+    schema: {
+      plan_id: z.string(),
+      distance: z.number().min(0).max(1.2).optional(),
+      step: z.string().optional().describe("Move them in this step only"),
+    },
     async run(ctx, a) {
-      await edit(ctx, a.plan_id, () => ({ op: "add_waymarks", distance: a.distance }));
+      await edit(ctx, a.plan_id, (plan) => ({
+        op: "add_waymarks",
+        distance: a.distance,
+        stepId: stepIdOf(plan, a.step),
+      }));
       return "Waymarks placed.";
     },
   }),
 
   def({
+    name: "arrange_party",
+    description:
+      "Move the players already in the plan onto the PF clock — clockwise from north: MT, R2, H2, M2, OT, R1, H1, M1. Names like D1-D4 map to the melee/ranged slots.",
+    schema: {
+      plan_id: z.string(),
+      distance: z
+        .number()
+        .min(0)
+        .max(1)
+        .optional()
+        .describe("Ring radius as a fraction of the arena radius (default 0.25)"),
+      step: z.string().optional().describe("Arrange them in this step only"),
+    },
+    async run(ctx, a) {
+      const res = await edit(ctx, a.plan_id, (plan) => ({
+        op: "arrange_party",
+        radiusFraction: a.distance,
+        stepId: stepIdOf(plan, a.step),
+      }));
+      return `Arranged ${(res.values[0] as string[]).length} players.`;
+    },
+  }),
+
+  def({
     name: "add_party",
-    description: "Add a standard 8-player party (MT/OT/H1/H2/D1-D4) in a ring near the centre.",
+    description:
+      "Add a standard 8-player party (MT/OT/H1/H2/D1-D4) in a ring near the centre. New plans already have one — use arrange_party to reposition it instead.",
     schema: {
       plan_id: z.string(),
       jobs: z

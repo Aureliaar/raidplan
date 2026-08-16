@@ -162,6 +162,54 @@ export function Editor({ planId, user }: { planId: string; user: User }) {
             </button>
           </div>
 
+          <h2 className="label mb-2">Layout</h2>
+          <div className="mb-4 flex flex-wrap gap-1">
+            {[8, 4, 2].map((spokes) => (
+              <button
+                key={spokes}
+                className="btn"
+                disabled={!editable}
+                title={`Radial grid, ${spokes} ways`}
+                onClick={() =>
+                  run({
+                    op: "set_arena",
+                    patch: { grid: { ...plan.arena.grid, type: "radial", spokes, rings: 1 } },
+                  })
+                }
+              >
+                {spokes}-radial
+              </button>
+            ))}
+            <button
+              className="btn"
+              disabled={!editable}
+              title="Grid off"
+              onClick={() =>
+                run({ op: "set_arena", patch: { grid: { ...plan.arena.grid, type: "none" } } })
+              }
+            >
+              no grid
+            </button>
+            <button
+              className="btn"
+              disabled={!editable}
+              title="A north, 2 NE, B east, 3 SE, C south, 4 SW, D west, 1 NW"
+              onClick={() => run({ op: "add_waymarks", stepId: scope === "step" ? step.id : undefined })}
+            >
+              standard markers
+            </button>
+            <button
+              className="btn"
+              disabled={!editable}
+              title="MT north, R2 NE, H2 east, M2 SE, OT south, R1 SW, H1 west, M1 NW"
+              onClick={() =>
+                run({ op: "arrange_party", stepId: scope === "step" ? step.id : undefined })
+              }
+            >
+              PF positions
+            </button>
+          </div>
+
           <Inspector
             plan={plan}
             entity={selectedEntity}

@@ -20,8 +20,9 @@ export type Op =
   | { op: "update_step"; stepId: string; patch: Partial<Omit<Step, "id">> }
   | { op: "delete_step"; stepId: string }
   | { op: "move_step"; stepId: string; index: number }
-  | { op: "add_waymarks"; distance?: number }
+  | { op: "add_waymarks"; distance?: number; stepId?: string }
   | { op: "add_party"; party?: { job: string; name: string }[]; radiusFraction?: number }
+  | { op: "arrange_party"; radiusFraction?: number; stepId?: string }
   | { op: "replace_plan"; plan: Plan };
 
 export interface OpResult {
@@ -76,9 +77,13 @@ export function applyOp(plan: Plan, op: Op): OpResult {
     case "move_step":
       return { plan: ops.moveStep(plan, op.stepId, op.index) };
     case "add_waymarks":
-      return { plan: ops.addWaymarks(plan, op.distance) };
+      return { plan: ops.addWaymarks(plan, op.distance, op.stepId) };
     case "add_party": {
       const r = ops.addParty(plan, op.party, op.radiusFraction);
+      return { plan: r.plan, value: r.ids };
+    }
+    case "arrange_party": {
+      const r = ops.arrangeParty(plan, op.radiusFraction, op.stepId);
       return { plan: r.plan, value: r.ids };
     }
     case "replace_plan":

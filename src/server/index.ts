@@ -216,7 +216,17 @@ export default {
       return handler.fetch(request, env as never, ctx);
     }
 
-    // WebSocket state sync for the editor (PlanAgent), served at /agents/plan-agent/:planId
+    // WebSocket state sync for the editor (PlanAgent), served at /agents/plan-agent/:planId.
+    // The ACL is enforced *here*, before the socket reaches the Durable Object: the
+    // Agents SDK pushes the current state on connect, so closing the connection from
+    // inside `onConnect` is already too late — the plan has been sent.
+    if (url.pathname.startsWith("/agents/plan-agent/")) {
+      const planId = decodeURIComponent(url.pathname.split("/")[3] ?? "");
+      const { user } = await authenticate(request, env);
+      const role = await registry(env).roleFor(user?.id ?? null, planId);
+      if (!role) return new Response("Not authorised for this plan", { status: 403 });
+    }
+
     const routed = await routeAgentRequest(request, env as never);
     if (routed) return routed;
 

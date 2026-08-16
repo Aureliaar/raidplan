@@ -305,6 +305,7 @@ function ArenaFields({
   run(ops: Op | Op[]): Promise<unknown>;
 }) {
   const set = (patch: Record<string, unknown>) => run({ op: "set_arena", patch: patch as never });
+  const radial = plan.arena.grid.type === "radial";
   return (
     <div className="grid grid-cols-2 gap-2">
       <Field label="shape" span>
@@ -377,25 +378,27 @@ function ArenaFields({
           <option value="cross">cross</option>
         </select>
       </Field>
-      <Field label="rows/rings">
+      {/* A radial grid is counted in rings and spokes, a square one in rows and
+          columns — show whichever pair the current grid actually uses. */}
+      <Field label={radial ? "rings" : "rows"}>
         <input
           className="field"
           type="number"
-          disabled={!editable}
-          value={plan.arena.grid.rows}
+          disabled={!editable || plan.arena.grid.type === "none"}
+          value={radial ? plan.arena.grid.rings : plan.arena.grid.rows}
           onChange={(e) =>
-            set({ grid: { ...plan.arena.grid, rows: Number(e.target.value), rings: Number(e.target.value) } })
+            set({ grid: { ...plan.arena.grid, [radial ? "rings" : "rows"]: Number(e.target.value) } })
           }
         />
       </Field>
-      <Field label="cols/spokes">
+      <Field label={radial ? "spokes" : "cols"}>
         <input
           className="field"
           type="number"
-          disabled={!editable}
-          value={plan.arena.grid.cols}
+          disabled={!editable || plan.arena.grid.type === "none"}
+          value={radial ? plan.arena.grid.spokes : plan.arena.grid.cols}
           onChange={(e) =>
-            set({ grid: { ...plan.arena.grid, cols: Number(e.target.value), spokes: Number(e.target.value) } })
+            set({ grid: { ...plan.arena.grid, [radial ? "spokes" : "cols"]: Number(e.target.value) } })
           }
         />
       </Field>
