@@ -1,0 +1,20 @@
+# Copy to .dev.vars for local development (and set the same as secrets/vars in production).
+
+# Public origin. Leave unset locally — the request origin is used instead.
+APP_URL=
+
+# Discord OAuth (leave both blank to use the local /auth/dev sign-in)
+DISCORD_CLIENT_ID=
+DISCORD_CLIENT_SECRET=
+# Comma-separated Discord user ids allowed in. Blank = any Discord account.
+DISCORD_ALLOWLIST=
+# Optional: require membership of this guild.
+DISCORD_GUILD_ID=
+
+# HMAC key for session cookies. Required in production: openssl rand -base64 32
+SESSION_SECRET=
+
+# In-app chat model (OpenAI-compatible endpoint; Zhipu GLM by default)
+GLM_API_KEY=
+GLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
+GLM_MODEL=glm-4.6

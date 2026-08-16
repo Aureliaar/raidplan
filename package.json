@@ -1,0 +1,44 @@
+{
+  "name": "raidplan",
+  "version": "0.1.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "check": "tsc --noEmit",
+    "deploy": "vite build && wrangler deploy",
+    "typegen": "wrangler types"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "private": "true",
+  "type": "module",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "agents": "^0.20.1",
+    "hono": "^4.13.2",
+    "konva": "^10.3.1",
+    "nanoid": "^6.0.1",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-konva": "^19.2.5",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.52.1",
+    "@cloudflare/workers-types": "^5.20260816.1",
+    "@tailwindcss/vite": "^4.3.3",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^6.0.5",
+    "tailwindcss": "^4.3.3",
+    "typescript": "^7.0.2",
+    "vite": "^8.2.1",
+    "wrangler": "^4.123.0"
+  }
+}

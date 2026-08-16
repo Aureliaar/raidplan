@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-900: #14171c;
+  --color-ink-800: #1a1e25;
+  --color-ink-700: #232833;
+  --color-ink-600: #2e3543;
+  --color-ink-400: #6b7686;
+  --color-ink-200: #b8c0cc;
+  --color-accent: #7aa2f7;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--color-ink-900);
+  color: var(--color-ink-200);
+  font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif;
+  overscroll-behavior: none;
+}
+
+.panel {
+  background: var(--color-ink-800);
+  border: 1px solid var(--color-ink-700);
+}
+
+.btn {
+  @apply rounded px-2 py-1 text-sm transition-colors;
+  background: var(--color-ink-700);
+  color: var(--color-ink-200);
+}
+.btn:hover {
+  background: var(--color-ink-600);
+}
+.btn-primary {
+  background: var(--color-accent);
+  color: #0d1117;
+  font-weight: 600;
+}
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.field {
+  @apply w-full rounded px-2 py-1 text-sm outline-none;
+  background: var(--color-ink-900);
+  border: 1px solid var(--color-ink-600);
+  color: var(--color-ink-200);
+}
+.field:focus {
+  border-color: var(--color-accent);
+}
+
+.label {
+  @apply text-[11px] uppercase tracking-wide;
+  color: var(--color-ink-400);
+}

@@ -1,0 +1,33 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "raidplan",
+  "main": "src/server/index.ts",
+  "compatibility_date": "2026-08-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  "assets": {
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    // Everything else falls through to the SPA shell.
+    "run_worker_first": ["/api/*", "/auth/*", "/mcp", "/mcp/*", "/sse", "/sse/*", "/agents/*"]
+  },
+
+  "durable_objects": {
+    "bindings": [
+      { "name": "PlanAgent", "class_name": "PlanAgent" },
+      { "name": "Registry", "class_name": "Registry" },
+      { "name": "RaidPlanMCP", "class_name": "RaidPlanMCP" }
+    ]
+  },
+
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["PlanAgent", "Registry", "RaidPlanMCP"] }
+  ]
+
+  // Configuration lives in .dev.vars locally and in secrets/vars in production:
+  //   APP_URL, DISCORD_ALLOWLIST, DISCORD_GUILD_ID,
+  //   DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, SESSION_SECRET,
+  //   GLM_API_KEY, GLM_BASE_URL, GLM_MODEL
+  // (kept out of this file so they aren't baked into the typed Env as literals)
+}

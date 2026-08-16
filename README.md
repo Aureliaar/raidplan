@@ -1,0 +1,122 @@
+# raidplan
+
+An XIVPlan-style raid plan editor where the plan is a JSON document living in a Cloudflare
+Durable Object — and a **remote MCP server** sits in front of it, so a model can move the
+pieces while you watch the canvas update.
+
+```
+browser ──WebSocket (state sync)──┐
+                                  ├── PlanAgent (Durable Object) ── plan JSON
+model ──MCP /mcp ── tools ────────┤
+you   ──POST /api/plans/:id/ops ──┘
+```
+
+Every mutation — a drag on the canvas, a chat message, an MCP tool call — is the same `Op`
+applied by the same code (`src/shared/ops.ts`), so the three paths cannot drift apart.
+
+## Run it
+
+```bash
+npm install
+cp .dev.vars.example .dev.vars   # optional; the app works with defaults
+npm run dev                      # http://localhost:5173
+```
+
+With no Discord credentials configured, the sign-in page offers a local account
+(`/auth/dev?name=you`). **The first account to sign in becomes admin and gets chat access.**
+
+## Deploy
+
+```bash
+npx wrangler secret put SESSION_SECRET      # openssl rand -base64 32
+npx wrangler secret put DISCORD_CLIENT_ID
+npx wrangler secret put DISCORD_CLIENT_SECRET
+npx wrangler secret put GLM_API_KEY         # optional, for the in-app chat
+npm run deploy
+```
+
+Then set `APP_URL` to the deployed origin (dashboard var or `wrangler secret put APP_URL`)
+and add `$APP_URL/auth/discord/callback` as a redirect URI in the Discord application.
+
+Optional vars: `DISCORD_ALLOWLIST` (comma-separated user ids), `DISCORD_GUILD_ID`
+(require guild membership), `GLM_BASE_URL`, `GLM_MODEL`.
+
+## MCP
+
+Sign in → **MCP access** → create a token. Then:
+
+```bash
+claude mcp add --transport http raidplan https://<your-worker>/mcp \
+  --header "Authorization: Bearer rp_…"
+```
+
+or in a client config:
+
+```json
+{
+  "mcpServers": {
+    "raidplan": {
+      "type": "http",
+      "url": "https://<your-worker>/mcp",
+      "headers": { "Authorization": "Bearer rp_…" }
+    }
+  }
+}
+```
+
+The token *is* the identity: a model sees exactly the plans that user can see, and cannot
+edit a plan the user only has viewer access to. `/sse` is available for older clients.
+
+### Tools
+
+| | |
+|---|---|
+| `list_plans` `create_plan` `read_plan` `get_plan_json` `set_plan_info` | plans |
+| `list_steps` `add_step` `update_step` `delete_step` | steps |
+| `add_player` `add_enemy` `add_marker` `add_waymarks` `add_party` `add_zone` `add_text` `add_tether` | create |
+| `move_entity` `update_entity` `delete_entity` `find_entities` `set_arena` | edit |
+| `share_plan` `set_plan_public` | access |
+
+`read_plan` renders the whole document as text with entity ids — start there.
+
+## The document
+
+```jsonc
+{
+  "id": "plan_…", "name": "M5S — quadruple", "rev": 42,
+  "arena": { "shape": "square", "width": 1000, "height": 1000, "grid": { "type": "radial" } },
+  "steps": [{ "id": "step_…", "name": "Step 1", "notes": "" }],
+  "entities": [
+    {
+      "id": "player_…", "type": "player", "job": "WHM", "name": "H1",
+      "x": 0, "y": -300, "rotation": 0,
+      "steps": "all",                       // or ["step_…"] to exist in one step
+      "overrides": { "step_…": { "x": -301, "y": 301 } }   // per-step pose
+    }
+  ]
+}
+```
+
+- Origin is the arena centre, **+x east, +y south**; rotation `0` = north, clockwise.
+- An entity exists in every step by default and holds one base pose; `overrides` is how
+  movement between steps is expressed. `add_step --copy_from` carries poses forward, which
+  is the normal way to build a sequence.
+- Entity types: `marker` `player` `enemy` `zone` `tether` `text` `path` `icon`.
+  Zone shapes: circle, donut, cone, rect, line, arrow, triangle, exaflare, knockback,
+  stack, spread, tower, eye, meteor, proximity.
+
+## Access
+
+- **Discord OAuth** for people, **`rp_` bearer tokens** for models and scripts — both resolve
+  to the same user and the same per-plan ACL (owner / editor / viewer, plus link-sharing).
+- The in-app chat (bottom right) is gated on a per-user `chat` flag so a shared model key
+  stays under control. Admins can flip it: `PATCH /api/users/:id {"chat":true}`.
+
+## Layout
+
+```
+src/shared/    schema.ts (zod document) · ops.ts (all mutations) · apply.ts (op dispatch) · jobs.ts
+src/server/    index.ts (router) · plan-agent.ts (DO + sync) · registry.ts (users/ACL)
+               tools.ts (the one tool table) · mcp.ts · chat.ts · auth.ts
+src/client/    Editor.tsx · Inspector.tsx · ChatPanel.tsx · canvas/Scene.tsx (Konva)
+```
