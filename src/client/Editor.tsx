@@ -77,7 +77,7 @@ export function Editor({ planId, user }: { planId: string; user: User }) {
       spec.from = a.id;
       spec.to = b.id;
     }
-    if (type === "icon") spec.src = prompt("Image URL") ?? "";
+    if (type === "icon") spec.src = "marker/attack1";
     if (type === "path") spec.points = [-100, 0, 100, 0];
     const res = await run({ op: "add_entity", spec: spec as never });
     const created = res.values[0] as { id: string } | null;

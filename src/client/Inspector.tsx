@@ -8,6 +8,7 @@ import {
   type Plan,
 } from "../shared/schema";
 import { JOBS, ROLES } from "../shared/jobs";
+import { ACTOR_KEYS, ARENA_BACKGROUNDS, MARKER_KEYS } from "../shared/assets";
 
 /**
  * Property editor for the selected entity. Writes go through the same op API as
@@ -105,6 +106,23 @@ export function Inspector({
           </Field>
         )}
         {entity.type === "player" && num("size", "size")}
+        {(entity.type === "player" || entity.type === "enemy") && (
+          <Field label="art" span>
+            <select
+              className="field"
+              disabled={!editable}
+              value={(shown as { icon?: string }).icon ?? ""}
+              onChange={(e) => patch({ icon: e.target.value || undefined })}
+            >
+              <option value="">auto ({entity.type === "player" ? "from job" : "from size"})</option>
+              {ACTOR_KEYS.map((k) => (
+                <option key={k} value={k}>
+                  {k.replace("actor/", "")}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         {entity.type === "enemy" && num("size", "hitbox r")}
 
         {entity.type === "marker" && (
@@ -144,6 +162,26 @@ export function Inspector({
             {num("length", "length")}
             {num("count", "count")}
             {num("soak", "soak")}
+          </>
+        )}
+
+        {entity.type === "icon" && (
+          <>
+            <Field label="icon" span>
+              <select
+                className="field"
+                disabled={!editable}
+                value={(shown as { src: string }).src}
+                onChange={(e) => patch({ src: e.target.value })}
+              >
+                {[...MARKER_KEYS, ...ACTOR_KEYS].map((k) => (
+                  <option key={k} value={k}>
+                    {k}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {num("size", "size")}
           </>
         )}
 
@@ -297,6 +335,33 @@ function ArenaFields({
           disabled={!editable}
           value={plan.arena.height}
           onChange={(e) => set({ height: Number(e.target.value) })}
+        />
+      </Field>
+      <Field label="backdrop" span>
+        <select
+          className="field"
+          disabled={!editable}
+          value={plan.arena.image ?? ""}
+          onChange={(e) => set({ image: e.target.value || undefined })}
+        >
+          <option value="">none</option>
+          {ARENA_BACKGROUNDS.map((b) => (
+            <option key={b.key} value={b.key}>
+              {b.label}
+            </option>
+          ))}
+        </select>
+      </Field>
+      <Field label="backdrop opacity" span>
+        <input
+          className="w-full"
+          type="range"
+          min={0.1}
+          max={1}
+          step={0.05}
+          disabled={!editable || !plan.arena.image}
+          value={plan.arena.imageOpacity}
+          onChange={(e) => set({ imageOpacity: Number(e.target.value) })}
         />
       </Field>
       <Field label="grid" span>

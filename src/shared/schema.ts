@@ -20,8 +20,10 @@ export const ArenaSchema = z.object({
   height: z.number().positive().default(1000),
   color: z.string().default("#252a33"),
   border: z.string().default("#4a525f"),
-  /** Optional backdrop image (absolute URL or /assets/... path). */
+  /** Backdrop: an asset key ("arena/p12_octagon"), absolute URL or /path. */
   image: z.string().optional(),
+  /** Backdrop opacity. */
+  imageOpacity: z.number().min(0).max(1).default(1),
   grid: z
     .object({
       type: z.enum(GRID_TYPES).default("none"),
@@ -90,7 +92,7 @@ export const MarkerEntitySchema = z.object({
   ...BaseEntity,
   type: z.literal("marker"),
   marker: z.enum(MARKER_IDS),
-  size: z.number().positive().default(60),
+  size: z.number().positive().default(90),
 });
 
 export const PlayerEntitySchema = z.object({
@@ -98,7 +100,9 @@ export const PlayerEntitySchema = z.object({
   type: z.literal("player"),
   /** Job id (WAR), role (tank) or party slot (MT). */
   job: z.string().default("any"),
-  size: z.number().positive().default(56),
+  /** Override the art picked from `job` — an asset key or image URL. */
+  icon: z.string().optional(),
+  size: z.number().positive().default(72),
   /** Draw a facing pip so "face north" plans read at a glance. */
   showFacing: z.boolean().default(false),
 });
@@ -106,6 +110,8 @@ export const PlayerEntitySchema = z.object({
 export const EnemyEntitySchema = z.object({
   ...BaseEntity,
   type: z.literal("enemy"),
+  /** Override the art picked from `size` — an asset key or image URL. */
+  icon: z.string().optional(),
   size: z.number().positive().default(120),
   /** Draw the aggro/hitbox ring. */
   ring: z.boolean().default(true),

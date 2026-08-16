@@ -14,9 +14,11 @@ import {
   Text,
   Wedge,
 } from "react-konva";
+import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
 import { entitiesForStep } from "../../shared/schema";
 import { jobColor, jobLabel } from "../../shared/jobs";
+import { assetUrl, enemyIconKey, jobIconKey, waymarkIconKey } from "../../shared/assets";
 
 /**
  * Top-down arena renderer. Everything is drawn in arena units inside one scaled
@@ -127,6 +129,8 @@ function ArenaFloor({ plan }: { plan: Plan }) {
     lines.push(<Line key="cy" points={[0, -h / 2, 0, h / 2]} stroke={g.color} strokeWidth={2} />);
   }
 
+  const backdrop = assetUrl(arena.image);
+
   const floor =
     arena.shape === "circle" ? (
       <Circle radius={w / 2} fill={arena.color} stroke={arena.border} strokeWidth={4} />
@@ -143,18 +147,20 @@ function ArenaFloor({ plan }: { plan: Plan }) {
       />
     );
 
+  const clip =
+    arena.shape === "circle"
+      ? (ctx: Konva.Context) => {
+          ctx.arc(0, 0, w / 2, 0, Math.PI * 2, false);
+        }
+      : undefined;
+
   return (
     <Group listening={false}>
       {floor}
-      <Group
-        clipFunc={
-          arena.shape === "circle"
-            ? (ctx) => {
-                ctx.arc(0, 0, w / 2, 0, Math.PI * 2, false);
-              }
-            : undefined
-        }
-      >
+      <Group clipFunc={clip}>
+        {backdrop && (
+          <Sprite src={backdrop} width={w} height={h} opacity={arena.imageOpacity} />
+        )}
         {lines}
       </Group>
     </Group>
@@ -188,36 +194,50 @@ function EntityShape({ entity }: { entity: Entity }) {
   switch (entity.type) {
     case "marker": {
       const color = entity.color ?? MARKER_COLORS[entity.marker];
-      const isLetter = /[A-D]/.test(entity.marker);
       const r = entity.size / 2;
       return (
-        <>
-          {isLetter ? (
-            <Circle radius={r} fill={color} opacity={0.35} stroke={color} strokeWidth={4} />
-          ) : (
-            <Rect
-              x={-r}
-              y={-r}
-              width={entity.size}
-              height={entity.size}
-              fill={color}
-              opacity={0.35}
-              stroke={color}
-              strokeWidth={4}
-            />
-          )}
-          <Label text={entity.marker} size={entity.size * 0.7} color={color} />
-        </>
+        <Sprite
+          src={assetUrl(waymarkIconKey(entity.marker))}
+          width={entity.size}
+          height={entity.size}
+          fallback={
+            <>
+              <Circle radius={r} fill={color} opacity={0.35} stroke={color} strokeWidth={4} />
+              <Label text={entity.marker} size={entity.size * 0.7} color={color} />
+            </>
+          }
+        />
       );
     }
 
     case "player": {
       const color = entity.color ?? jobColor(entity.job);
       const r = entity.size / 2;
+      const icon = assetUrl(entity.icon ?? jobIconKey(entity.job, entity.name));
       return (
         <>
-          <Circle radius={r} fill={color} stroke="#0d1117" strokeWidth={3} />
-          <Label text={jobLabel(entity.job)} size={entity.size * 0.38} color="#0d1117" bold />
+          <Sprite
+            src={icon}
+            width={entity.size}
+            height={entity.size}
+            fallback={
+              <>
+                <Circle radius={r} fill={color} stroke="#0d1117" strokeWidth={3} />
+                <Label text={jobLabel(entity.job)} size={entity.size * 0.38} color="#0d1117" bold />
+              </>
+            }
+          />
+          {/* Role-coloured frame: the job art alone does not read as tank/healer/dps. */}
+          <Rect
+            x={-r}
+            y={-r}
+            width={entity.size}
+            height={entity.size}
+            stroke={color}
+            strokeWidth={6}
+            cornerRadius={8}
+            listening={false}
+          />
           {entity.name && (
             <Text
               text={entity.name}
@@ -244,7 +264,20 @@ function EntityShape({ entity }: { entity: Entity }) {
       return (
         <>
           {entity.ring && <Circle radius={entity.size} stroke={color} strokeWidth={3} dash={[14, 10]} opacity={0.7} />}
-          <Circle radius={entity.size * 0.55} fill={color} stroke="#0d1117" strokeWidth={4} />
+          {/* The enemy art is a square tile; clip it to the hitbox circle. */}
+          <Group
+            clipFunc={(ctx: Konva.Context) => {
+              ctx.arc(0, 0, entity.size * 0.55, 0, Math.PI * 2, false);
+            }}
+          >
+            <Sprite
+              src={assetUrl(entity.icon ?? enemyIconKey(entity.size))}
+              width={entity.size * 1.15}
+              height={entity.size * 1.15}
+              fallback={<Circle radius={entity.size * 0.55} fill={color} />}
+            />
+          </Group>
+          <Circle radius={entity.size * 0.55} stroke="#0d1117" strokeWidth={5} listening={false} />
           {entity.showFacing && (
             <Line
               points={[0, -entity.size * 0.55, 0, -entity.size * 0.55 - 24]}
@@ -256,11 +289,11 @@ function EntityShape({ entity }: { entity: Entity }) {
           {entity.name && (
             <Text
               text={entity.name}
-              y={entity.size * 0.6}
+              y={entity.size * (entity.ring ? 1.05 : 0.62)}
               width={400}
               offsetX={200}
               align="center"
-              fontSize={44}
+              fontSize={38}
               fill="#e6edf3"
               stroke="#0d1117"
               strokeWidth={5}
@@ -304,7 +337,7 @@ function EntityShape({ entity }: { entity: Entity }) {
       );
 
     case "icon":
-      return <UrlImage src={entity.src} size={entity.size} />;
+      return <Sprite src={assetUrl(entity.src)} width={entity.size} height={entity.size} />;
 
     default:
       return null;
@@ -522,14 +555,40 @@ function Label({
   );
 }
 
-function UrlImage({ src, size }: { src: string; size: number }) {
+/**
+ * A centred bitmap. Renders `fallback` (the old vector token) until the art
+ * loads, or forever if the URL is bad — the canvas never goes blank.
+ */
+function Sprite({
+  src,
+  width,
+  height,
+  opacity,
+  fallback = null,
+}: {
+  src: string | undefined;
+  width: number;
+  height: number;
+  opacity?: number;
+  fallback?: React.ReactNode;
+}) {
   const image = useImage(src);
-  if (!image) return null;
-  return <KonvaImage image={image} width={size} height={size} offsetX={size / 2} offsetY={size / 2} />;
+  if (!image) return <>{fallback}</>;
+  return (
+    <KonvaImage
+      image={image}
+      width={width}
+      height={height}
+      offsetX={width / 2}
+      offsetY={height / 2}
+      opacity={opacity}
+      listening={false}
+    />
+  );
 }
 
 /** Tiny local image loader, so the canvas needs no extra dependency. */
-function useImage(src: string) {
+function useImage(src: string | undefined) {
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   useEffect(() => {
     if (!src) return;

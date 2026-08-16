@@ -22,6 +22,7 @@ import {
   type Plan,
 } from "../shared/schema";
 import { JOB_IDS } from "../shared/jobs";
+import { ACTOR_KEYS, ARENA_BACKGROUNDS, ASSETS, MARKER_KEYS } from "../shared/assets";
 
 /**
  * The plan-editing tool table — the single definition used by BOTH the MCP
@@ -223,7 +224,11 @@ export const TOOLS: ToolDef[] = [
       width: z.number().positive().optional(),
       height: z.number().positive().optional(),
       color: z.string().optional(),
-      image: z.string().optional().describe("Backdrop image URL"),
+      image: z
+        .string()
+        .optional()
+        .describe("Backdrop: a bundled arena key from list_assets (e.g. arena/p12_octagon) or an image URL"),
+      image_opacity: z.number().min(0).max(1).optional(),
       grid_type: z.enum(GRID_TYPES).optional(),
       rows: z.number().int().min(1).max(32).optional(),
       cols: z.number().int().min(1).max(32).optional(),
@@ -239,6 +244,7 @@ export const TOOLS: ToolDef[] = [
           height: a.height,
           color: a.color,
           image: a.image,
+          imageOpacity: a.image_opacity,
           grid: {
             ...plan.arena.grid,
             ...(a.grid_type ? { type: a.grid_type } : {}),
@@ -321,6 +327,7 @@ export const TOOLS: ToolDef[] = [
       plan_id: z.string(),
       job: z.string().describe(`Job (${JOB_IDS.join(", ")}), role (tank/healer/melee/ranged/caster) or slot (MT, H1, D3)`),
       name: z.string().optional().describe("Label, e.g. MT or a player name"),
+      icon: z.string().optional().describe("Override the art, e.g. actor/tank1 (see list_assets)"),
       rotation: z.number().optional().describe("Facing in degrees, 0 = north"),
       show_facing: z.boolean().optional(),
       ...posArgs,
@@ -332,6 +339,7 @@ export const TOOLS: ToolDef[] = [
           type: "player",
           job: a.job,
           name: a.name,
+          icon: a.icon,
           rotation: a.rotation,
           showFacing: a.show_facing,
           ...positionOf(plan, a),
@@ -348,6 +356,7 @@ export const TOOLS: ToolDef[] = [
       plan_id: z.string(),
       name: z.string().optional(),
       size: z.number().positive().optional().describe("Hitbox radius in arena units"),
+      icon: z.string().optional().describe("Override the art, e.g. actor/enemy2 (see list_assets)"),
       rotation: z.number().optional().describe("Facing in degrees, 0 = north"),
       color: z.string().optional(),
       ...posArgs,
@@ -359,6 +368,7 @@ export const TOOLS: ToolDef[] = [
           type: "enemy",
           name: a.name,
           size: a.size,
+          icon: a.icon,
           rotation: a.rotation,
           color: a.color,
           ...positionOf(plan, a),
@@ -605,6 +615,59 @@ export const TOOLS: ToolDef[] = [
     },
   }),
 
+  def({
+    name: "list_assets",
+    description:
+      "List the bundled FFXIV art you can reference: job/role/enemy tokens (actor/…), field markers such as attack1-8, bind, ignore, limit-cut, tankbuster, targets (marker/…), and arena backdrops (arena/…).",
+    schema: {
+      kind: z.enum(["actor", "marker", "arena"]).describe("Which catalogue to list"),
+      query: z.string().optional().describe("Substring filter, e.g. 'attack' or 'p12'"),
+    },
+    async run(_ctx, a) {
+      const q = a.query?.toLowerCase();
+      if (a.kind === "arena") {
+        const hits = ARENA_BACKGROUNDS.filter((b) => !q || b.key.toLowerCase().includes(q));
+        return hits.map((b) => `- ${b.key} — ${b.label}`).join("\n") || "No matches.";
+      }
+      const keys = a.kind === "actor" ? ACTOR_KEYS : MARKER_KEYS;
+      const hits = keys.filter((k) => !q || k.toLowerCase().includes(q));
+      return hits.join("\n") || "No matches.";
+    },
+  }),
+
+  def({
+    name: "add_icon",
+    description:
+      "Place a bundled marker icon on the arena — attack1-8, bind1-8, ignore1-8, limit1-8, tankbuster, eye, proximity, targets, shapes. Use list_assets to see them all.",
+    schema: {
+      plan_id: z.string(),
+      icon: z.string().describe("Asset key, e.g. marker/attack1, or an image URL"),
+      name: z.string().optional(),
+      size: z.number().positive().optional(),
+      ...stepArg,
+      ...posArgs,
+    },
+    async run(ctx, a) {
+      if (!/^(https?:|\/)/.test(a.icon) && !ASSETS[a.icon])
+        throw new Error(`Unknown asset "${a.icon}". Use list_assets to find one.`);
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        const stepId = stepIdOf(plan, a.step);
+        return {
+          op: "add_entity",
+          spec: {
+            type: "icon",
+            src: a.icon,
+            name: a.name,
+            size: a.size,
+            steps: stepId ? [stepId] : "all",
+            ...positionOf(plan, a),
+          },
+        };
+      });
+      return `Added icon ${idOf(res.values[0])}`;
+    },
+  }),
+
   /* --------------------------------------------------------------- access */
 
   def({
@@ -641,4 +704,5 @@ export const PLAN_PRIMER = `Raid plans are top-down diagrams of an FFXIV arena.
 Coordinates are arena units with the origin at the arena centre: +x is east (right), +y is south (down).
 A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degrees, 0 = north, increasing clockwise (90 = east).
 Entities live in a plan and may appear in one step or all steps; per-step position overrides are how movement is expressed.
-Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.`;
+Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
+Real FFXIV art is bundled: job/role tokens, waymarks A-D and 1-4, field markers (attack1-8, bind, ignore, limit cut, tankbuster) and arena backdrops. Call list_assets to browse it.`;

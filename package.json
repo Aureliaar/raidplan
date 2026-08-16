@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "check": "tsc --noEmit",
     "deploy": "vite build && wrangler deploy",
-    "typegen": "wrangler types"
+    "typegen": "wrangler types",
+    "assets:manifest": "node scripts/gen-assets.mjs"
   },
   "keywords": [],
   "author": "",

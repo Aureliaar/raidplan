@@ -10,4 +10,11 @@ export default defineConfig({
   resolve: {
     alias: { "~": path.resolve(import.meta.dirname, "src") },
   },
+  server: {
+    watch: {
+      // Miniflare keeps Durable Object SQLite here; watching it makes every
+      // single plan edit trigger a full page reload.
+      ignored: ["**/.wrangler/**", "**/dist/**"],
+    },
+  },
 });

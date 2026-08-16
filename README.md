@@ -73,8 +73,8 @@ edit a plan the user only has viewer access to. `/sse` is available for older cl
 |---|---|
 | `list_plans` `create_plan` `read_plan` `get_plan_json` `set_plan_info` | plans |
 | `list_steps` `add_step` `update_step` `delete_step` | steps |
-| `add_player` `add_enemy` `add_marker` `add_waymarks` `add_party` `add_zone` `add_text` `add_tether` | create |
-| `move_entity` `update_entity` `delete_entity` `find_entities` `set_arena` | edit |
+| `add_player` `add_enemy` `add_marker` `add_waymarks` `add_party` `add_zone` `add_text` `add_tether` `add_icon` | create |
+| `move_entity` `update_entity` `delete_entity` `find_entities` `set_arena` `list_assets` | edit |
 | `share_plan` `set_plan_public` | access |
 
 `read_plan` renders the whole document as text with entity ids — start there.
@@ -105,6 +105,24 @@ edit a plan the user only has viewer access to. `/sse` is available for older cl
   Zone shapes: circle, donut, cone, rect, line, arrow, triangle, exaflare, knockback,
   stack, spread, tower, eye, meteor, proximity.
 
+## Art
+
+Real FFXIV art is bundled under `public/assets` — job and role tokens, enemy tokens,
+waymarks A-D / 1-4, field markers (attack1-8, bind, ignore, limit cut, tankbuster, targets)
+and 35 arena backdrops. It comes from [XIVPlan](https://github.com/joelspadin/xivplan)
+(MIT); see [NOTICE.md](NOTICE.md).
+
+Anything with art takes an asset key, and `list_assets` is how a model browses them:
+
+- `player.job` picks its own icon (`WHM` → the White Mage tile, `MT` → tank 1); set
+  `icon: "actor/tank2"` to override.
+- `enemy` art follows its hitbox size; override the same way.
+- `icon` entities take any key: `add_icon plan_id icon:"marker/attack1" at:"NE"`.
+- `arena.image` takes a backdrop key: `set_arena image:"arena/p12_octagon"`.
+
+Every renderer keeps its vector fallback, so deleting `public/assets` and re-running
+`npm run assets:manifest` degrades cleanly instead of breaking.
+
 ## Access
 
 - **Discord OAuth** for people, **`rp_` bearer tokens** for models and scripts — both resolve
@@ -115,7 +133,8 @@ edit a plan the user only has viewer access to. `/sse` is available for older cl
 ## Layout
 
 ```
-src/shared/    schema.ts (zod document) · ops.ts (all mutations) · apply.ts (op dispatch) · jobs.ts
+src/shared/    schema.ts (zod document) · ops.ts (all mutations) · apply.ts (op dispatch)
+               jobs.ts · assets.ts (generated art catalogue)
 src/server/    index.ts (router) · plan-agent.ts (DO + sync) · registry.ts (users/ACL)
                tools.ts (the one tool table) · mcp.ts · chat.ts · auth.ts
 src/client/    Editor.tsx · Inspector.tsx · ChatPanel.tsx · canvas/Scene.tsx (Konva)
