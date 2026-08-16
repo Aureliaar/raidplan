@@ -3,7 +3,7 @@ import { z } from "zod";
 import { type AppEnv, appUrl } from "./env";
 import { authenticate } from "./auth";
 import { registry } from "./registry";
-import { PLAN_PRIMER, TOOLS, TOOLS_BY_NAME, type ToolContext } from "./tools";
+import { PLAN_PRIMER, TOOLS, TOOLS_BY_NAME, strictSchema, type ToolContext } from "./tools";
 import { describePlan } from "../shared/ops";
 import { planStub } from "./plan-agent";
 
@@ -35,7 +35,7 @@ function toolSpecs() {
     function: {
       name: t.name,
       description: t.description,
-      parameters: z.toJSONSchema(z.object(t.schema) as unknown as z.ZodType, {
+      parameters: z.toJSONSchema(strictSchema(t) as unknown as z.ZodType, {
         io: "input",
         target: "draft-7",
       }),
@@ -114,7 +114,7 @@ chatRoutes.post("/:planId", async (c) => {
         const args = JSON.parse(call.function.arguments || "{}");
         // Never let the model wander to another plan mid-conversation.
         if ("plan_id" in args) args.plan_id = planId;
-        const parsed = (z.object(tool.schema) as unknown as z.ZodType).parse(args);
+        const parsed = (strictSchema(tool) as unknown as z.ZodType).parse(args);
         result = await tool.run(ctx, parsed as never);
       } catch (err) {
         result = `Error: ${(err as Error).message}`;

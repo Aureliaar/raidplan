@@ -46,6 +46,18 @@ export interface ToolDef<Shape extends z.ZodRawShape = z.ZodRawShape> {
 
 const def = <Shape extends z.ZodRawShape>(t: ToolDef<Shape>) => t as unknown as ToolDef;
 
+/**
+ * A tool's arguments as a schema that *rejects* unknown keys.
+ *
+ * A plain object strips them, so `set_arena {grid: "radial"}` — the field is
+ * `grid_type` — answered "Arena updated." while changing nothing at all. A
+ * caller that guesses a name has no way to see its edit went nowhere, and the
+ * plan quietly disagrees with what the model thinks it built.
+ */
+export function strictSchema(tool: ToolDef) {
+  return z.strictObject(tool.schema);
+}
+
 /* ------------------------------------------------------------------ helpers */
 
 const posArgs = {

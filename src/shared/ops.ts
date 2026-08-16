@@ -140,7 +140,7 @@ export function updateEntity(
   if (idx < 0) throw new Error(`No entity ${id}`);
   const current = plan.entities[idx];
 
-  const clean = { ...patch };
+  const clean: PropBag = defined(patch);
   delete clean.id;
   delete clean.type;
   delete clean.overrides;
@@ -228,12 +228,32 @@ export function findEntities(
   });
 }
 
+/**
+ * Drop keys whose value is `undefined`.
+ *
+ * A tool call carries every optional argument as an explicit `undefined`, and
+ * spreading that over the current value erases what the caller never mentioned:
+ * `update_step {notes}` once wiped the step's name, and `set_arena {grid}` reset
+ * the floor to schema defaults. Patches mean "change these", never "clear the rest".
+ */
+function defined<T extends object>(o: T | undefined): Partial<T> {
+  return Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => v !== undefined)) as Partial<T>;
+}
+
 /** Resolve a loose reference ("MT", "WAR", "player_ab12") to exactly one entity. */
 export function resolveRef(plan: Plan, ref: string): Entity {
   const byId = getEntity(plan, ref);
   if (byId) return byId;
   const exact = findEntities(plan, { name: ref });
   if (exact.length === 1) return exact[0];
+  // A party is named D1-D4 or M1/M2/R1/R2 depending on who typed it, and both
+  // spellings mean the same seat. Without this, "M1" falls through to the
+  // substring pass and cheerfully resolves to a zone named "Desolation M1".
+  const slot = PF_SLOTS.find((s) => s.names.some((n) => n.toLowerCase() === ref.toLowerCase()));
+  for (const alias of slot?.names ?? []) {
+    const hit = findEntities(plan, { name: alias, type: "player" });
+    if (hit.length === 1) return hit[0];
+  }
   const byJob = findEntities(plan, { job: ref });
   if (byJob.length === 1) return byJob[0];
   const fuzzy = findEntities(plan, { text: ref });
@@ -286,7 +306,7 @@ export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan
 }
 
 export function updateStep(plan: Plan, stepId: string, patch: Partial<Omit<Step, "id">>): Plan {
-  const steps = plan.steps.map((s) => (s.id === stepId ? { ...s, ...patch } : s));
+  const steps = plan.steps.map((s) => (s.id === stepId ? { ...s, ...defined(patch) } : s));
   return touch({ ...plan, steps });
 }
 
@@ -317,10 +337,6 @@ export function moveStep(plan: Plan, stepId: string, index: number): Plan {
 /* -------------------------------------------------------------- convenience */
 
 export function setArena(plan: Plan, patch: Partial<Arena>): Plan {
-  // Spreading a patch with explicit `undefined`s would clobber the arena back to
-  // schema defaults — a caller that only sets the grid must not reshape the floor.
-  const defined = <T extends object>(o: T | undefined) =>
-    Object.fromEntries(Object.entries(o ?? {}).filter(([, v]) => v !== undefined));
   const arena = ArenaSchema.parse({
     ...plan.arena,
     ...defined(patch),

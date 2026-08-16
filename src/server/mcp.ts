@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { McpAgent } from "agents/mcp";
 import type { AppEnv } from "./env";
 import { registry } from "./registry";
-import { PLAN_PRIMER, TOOLS, type ToolContext } from "./tools";
+import { PLAN_PRIMER, TOOLS, strictSchema, type ToolContext } from "./tools";
 
 /**
  * The remote MCP server: every tool in `TOOLS`, scoped to the user whose API
@@ -31,7 +31,7 @@ export class RaidPlanMCP extends McpAgent<AppEnv, never, McpProps> {
     for (const tool of TOOLS) {
       this.server.registerTool(
         tool.name,
-        { description: tool.description, inputSchema: tool.schema },
+        { description: tool.description, inputSchema: strictSchema(tool) },
         async (args: unknown) => ({
           content: [{ type: "text" as const, text: await tool.run(this.toolContext, args as never) }],
         })
