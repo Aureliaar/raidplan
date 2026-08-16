@@ -22,17 +22,23 @@ export function navigate(to: string) {
 
 export function App() {
   const path = usePath();
-  const [state, setState] = useState<{ user: User | null; devAuth: boolean } | null>(null);
+  const [state, setState] = useState<{
+    user: User | null;
+    devAuth: boolean;
+    discordAuth?: boolean;
+  } | null>(null);
 
   useEffect(() => {
     api.me().then(setState).catch(() => setState({ user: null, devAuth: false }));
   }, []);
 
   if (!state) return <Splash>Loading…</Splash>;
-  if (!state.user) return <SignIn devAuth={state.devAuth} />;
 
   const planMatch = /^\/p\/([^/]+)$/.exec(path);
+  // Signed out, a plan link still opens: public plans are readable by anyone,
+  // and a private one simply reports no access.
   if (planMatch) return <Editor planId={planMatch[1]} user={state.user} />;
+  if (!state.user) return <SignIn devAuth={state.devAuth} discordAuth={state.discordAuth !== false} />;
   return <PlanList user={state.user} />;
 }
 
@@ -40,7 +46,7 @@ function Splash({ children }: { children: React.ReactNode }) {
   return <div className="flex h-full items-center justify-center text-ink-400">{children}</div>;
 }
 
-function SignIn({ devAuth }: { devAuth: boolean }) {
+function SignIn({ devAuth, discordAuth }: { devAuth: boolean; discordAuth: boolean }) {
   const [name, setName] = useState("");
   return (
     <div className="flex h-full items-center justify-center">
@@ -68,10 +74,15 @@ function SignIn({ devAuth }: { devAuth: boolean }) {
               Continue
             </button>
           </form>
-        ) : (
+        ) : discordAuth ? (
           <a className="btn btn-primary block text-center" href="/auth/discord">
             Sign in with Discord
           </a>
+        ) : (
+          <p className="text-sm text-ink-400">
+            This instance has no interactive sign-in configured. Editors use API tokens; shared
+            plans open from their link without an account.
+          </p>
         )}
       </div>
     </div>

@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { routeAgentRequest } from "agents";
-import { type AppEnv, appUrl, isDevAuth } from "./env";
+import { type AppEnv, appUrl, isDevAuth, isDiscordAuth } from "./env";
 import { authRoutes, authenticate, issueToken } from "./auth";
 import { registry } from "./registry";
 import { planStub } from "./plan-agent";
@@ -51,7 +51,7 @@ app.route("/api/chat", chatRoutes);
 
 app.get("/api/me", (c) => {
   const user = c.get("user");
-  return c.json({ user, devAuth: isDevAuth(c.env) });
+  return c.json({ user, devAuth: isDevAuth(c.env), discordAuth: isDiscordAuth(c.env) });
 });
 
 /* ----------------------------------------------------------------- tokens */

@@ -22,24 +22,40 @@ cp .dev.vars.example .dev.vars   # optional; the app works with defaults
 npm run dev                      # http://localhost:5173
 ```
 
-With no Discord credentials configured, the sign-in page offers a local account
-(`/auth/dev?name=you`). **The first account to sign in becomes admin and gets chat access.**
+`DEV_AUTH=true` in `.dev.vars` enables the passwordless sign-in page (`/auth/dev?name=you`).
+**The first account to sign in becomes admin and gets chat access.** It is opt-in precisely
+so it can never be live on a deployed instance by accident.
 
 ## Deploy
 
 ```bash
-npx wrangler secret put SESSION_SECRET      # openssl rand -base64 32
-npx wrangler secret put DISCORD_CLIENT_ID
-npx wrangler secret put DISCORD_CLIENT_SECRET
-npx wrangler secret put GLM_API_KEY         # optional, for the in-app chat
+npx wrangler secret put SESSION_SECRET      # openssl rand -base64 32; required
+npx wrangler secret put BOOTSTRAP_SECRET    # lets you mint the first API token
 npm run deploy
 ```
 
-Then set `APP_URL` to the deployed origin (dashboard var or `wrangler secret put APP_URL`)
-and add `$APP_URL/auth/discord/callback` as a redirect URI in the Discord application.
+A fresh deploy has **no interactive sign-in**: `DEV_AUTH` is unset and Discord isn't
+configured, so nobody can create an account. Mint yourself a token instead:
+
+```bash
+curl -X POST "https://<worker>/auth/bootstrap?name=you&label=laptop" \
+  -H "x-bootstrap-secret: <BOOTSTRAP_SECRET>"
+```
+
+That returns an `rp_` token (and makes you admin, being the first user). Delete the secret
+once you hold one — `npx wrangler secret delete BOOTSTRAP_SECRET` — and the door closes.
+
+From there:
+
+- **You and your models** edit through the token, over MCP or the REST API.
+- **Everyone else** reads a plan you marked public (`set_plan_public`, or the Share button)
+  straight from its link, no account required — the editor opens read-only.
+- **Teammates who need to edit** want Discord OAuth, added at any time without changing the
+  URL: set `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`, point `APP_URL` at the deployed
+  origin, and register `$APP_URL/auth/discord/callback` as a redirect URI.
 
 Optional vars: `DISCORD_ALLOWLIST` (comma-separated user ids), `DISCORD_GUILD_ID`
-(require guild membership), `GLM_BASE_URL`, `GLM_MODEL`.
+(require guild membership), `GLM_API_KEY` / `GLM_BASE_URL` / `GLM_MODEL` for the chat.
 
 ## MCP
 

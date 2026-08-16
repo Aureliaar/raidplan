@@ -1,5 +1,9 @@
 # Copy to .dev.vars for local development (and set the same as secrets/vars in production).
 
+# Passwordless local sign-in at /auth/dev. Local only — on a deployed instance this
+# would let anyone mint an account, and the first account becomes admin.
+DEV_AUTH=true
+
 # Public origin. Leave unset locally — the request origin is used instead.
 APP_URL=
 

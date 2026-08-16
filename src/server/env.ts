@@ -11,6 +11,10 @@ export interface AppEnv extends Env {
   DISCORD_CLIENT_SECRET?: string;
   /** HMAC key for session cookies. Required in production. */
   SESSION_SECRET?: string;
+  /** "true" enables the passwordless local sign-in. Never set this in production. */
+  DEV_AUTH?: string;
+  /** Shared secret for POST /auth/bootstrap, which mints an API token with no session. */
+  BOOTSTRAP_SECRET?: string;
 
   /** Chat panel (see src/server/chat.ts) — Zhipu GLM by default. */
   GLM_API_KEY?: string;
@@ -18,9 +22,18 @@ export interface AppEnv extends Env {
   GLM_MODEL?: string;
 }
 
-/** True when Discord isn't configured: enables the local dev sign-in. */
+/**
+ * The passwordless `/auth/dev` sign-in. Opt-in via DEV_AUTH, never inferred:
+ * a deploy with no Discord app configured is exactly the case where anyone who
+ * finds the URL could otherwise mint themselves an account (and the first one
+ * becomes admin).
+ */
 export function isDevAuth(env: AppEnv): boolean {
-  return !env.DISCORD_CLIENT_ID || !env.DISCORD_CLIENT_SECRET;
+  return env.DEV_AUTH === "true" && (!env.DISCORD_CLIENT_ID || !env.DISCORD_CLIENT_SECRET);
+}
+
+export function isDiscordAuth(env: AppEnv): boolean {
+  return !!(env.DISCORD_CLIENT_ID && env.DISCORD_CLIENT_SECRET);
 }
 
 export function appUrl(env: AppEnv, request: Request): string {

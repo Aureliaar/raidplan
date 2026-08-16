@@ -29,8 +29,11 @@ function fromB64url(s: string): Uint8Array {
 }
 
 function secretOf(env: AppEnv): string {
-  // Dev-only fallback so the app runs before any secret is configured.
-  return env.SESSION_SECRET ?? "dev-insecure-session-secret";
+  if (env.SESSION_SECRET) return env.SESSION_SECRET;
+  // A known fallback key means anyone can forge a session cookie, so it is only
+  // tolerable on the local dev sign-in.
+  if (isDevAuth(env)) return "dev-insecure-session-secret";
+  throw new Error("SESSION_SECRET is not set (wrangler secret put SESSION_SECRET)");
 }
 
 async function hmac(env: AppEnv, data: string): Promise<string> {
@@ -224,6 +227,44 @@ authRoutes.get("/dev", async (c) => {
   });
   return c.redirect(c.req.query("next") ?? "/");
 });
+
+/**
+ * Mint an API token without a browser session.
+ *
+ * A deploy with no interactive sign-in has no other way to issue its first
+ * token — tokens are created from a signed-in session, and there are no
+ * sessions. Guarded by BOOTSTRAP_SECRET; unset it (or rotate it) to close the
+ * door once you hold a token.
+ *
+ *   curl -X POST https://host/auth/bootstrap -H "x-bootstrap-secret: …" -d name=luca
+ */
+authRoutes.post("/bootstrap", async (c) => {
+  const expected = c.env.BOOTSTRAP_SECRET;
+  if (!expected) return c.text("Bootstrap is disabled", 403);
+  if (!constantTimeEqual(c.req.header("x-bootstrap-secret") ?? "", expected))
+    return c.text("Bad bootstrap secret", 403);
+
+  const name = c.req.query("name") || "owner";
+  const user = await registry(c.env).upsertUser({
+    id: `bootstrap:${name.toLowerCase()}`,
+    provider: "bootstrap",
+    name,
+  });
+  const { token } = await issueToken(c.env, user.id, c.req.query("label") || "bootstrap");
+  return c.json({
+    user,
+    token,
+    mcpUrl: `${appUrl(c.env, c.req.raw)}/mcp`,
+    hint: "Store this now — it is not shown again.",
+  });
+});
+
+function constantTimeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
 
 authRoutes.get("/logout", (c) => {
   deleteCookie(c, SESSION_COOKIE, { path: "/" });

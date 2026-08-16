@@ -14,7 +14,7 @@ import { ENTITY_TYPES } from "../shared/schema";
  * how edits made by a model through MCP land on screen — and every local change
  * is posted as an op, so both paths run identical server code.
  */
-export function Editor({ planId, user }: { planId: string; user: User }) {
+export function Editor({ planId, user }: { planId: string; user: User | null }) {
   const [plan, setPlan] = useState<Plan | null>(null);
   const [role, setRole] = useState<PlanRole>("viewer");
   const [stepIndex, setStepIndex] = useState(0);
@@ -101,17 +101,23 @@ export function Editor({ planId, user }: { planId: string; user: User }) {
           rev {plan.rev} · {connected ? "live" : "offline"} · {role}
         </span>
         <div className="ml-auto flex items-center gap-2">
-          <span className="label">Drag moves</span>
-          <select
-            className="field w-auto"
-            value={scope}
-            onChange={(e) => setScope(e.target.value as "step" | "all")}
-          >
-            <option value="step">this step only</option>
-            <option value="all">every step</option>
-          </select>
+          {editable && (
+            <>
+              <span className="label">Drag moves</span>
+              <select
+                className="field w-auto"
+                value={scope}
+                onChange={(e) => setScope(e.target.value as "step" | "all")}
+              >
+                <option value="step">this step only</option>
+                <option value="all">every step</option>
+              </select>
+            </>
+          )}
           <ShareButton planId={planId} canShare={role === "owner"} />
-          <span className="text-xs text-ink-400">{user.name}</span>
+          <span className="text-xs text-ink-400">
+            {user ? user.name : <a href="/">sign in</a>}
+          </span>
         </div>
       </header>
 
@@ -146,6 +152,13 @@ export function Editor({ planId, user }: { planId: string; user: User }) {
           )}
         </CanvasArea>
 
+        {/* A shared link opens read-only, often signed out: showing a wall of
+            greyed-out editing controls just reads as a broken app. */}
+        {!editable ? (
+          <aside className="panel w-[240px] shrink-0 border-y-0 border-r-0 p-3 text-xs text-ink-400">
+            Read-only. {user ? "You have viewer access to this plan." : "Sign in to edit plans of your own."}
+          </aside>
+        ) : (
         <aside className="panel w-[320px] shrink-0 overflow-y-auto border-y-0 border-r-0 p-3">
           <h2 className="label mb-2">Add</h2>
           <div className="mb-4 flex flex-wrap gap-1">
@@ -220,6 +233,7 @@ export function Editor({ planId, user }: { planId: string; user: User }) {
             onDeselect={() => setSelected(null)}
           />
         </aside>
+        )}
       </div>
 
       {error && (
@@ -228,7 +242,7 @@ export function Editor({ planId, user }: { planId: string; user: User }) {
         </div>
       )}
 
-      <ChatPanel planId={planId} />
+      {user && <ChatPanel planId={planId} />}
     </div>
   );
 }
