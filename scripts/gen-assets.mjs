@@ -4,7 +4,7 @@ import { readdirSync, statSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 const ROOT = "public/assets";
-const DIRS = ["actor", "marker", "marker/eden", "marker/ultimate", "arena"];
+const DIRS = ["actor", "marker", "marker/eden", "marker/ultimate", "mechanic", "arena"];
 const OUT = "src/shared/assets.ts";
 const MARKER = "/* ------------------------------------------------------------------ lookups */";
 
@@ -28,8 +28,9 @@ const header = `/**
  * Bundled art catalogue — GENERATED, do not edit by hand.
  * Regenerate with \`npm run assets:manifest\` after adding files to public/assets.
  *
- * The art itself comes from XIVPlan (github.com/joelspadin/xivplan, MIT), which
- * bundles FINAL FANTASY XIV icons. See NOTICE.md.
+ * Actor, marker and arena art comes from XIVPlan (github.com/joelspadin/xivplan,
+ * MIT). Mechanic telegraphs come from the FFXIV Strategy Board asset set.
+ * See NOTICE.md.
  */
 
 /** Asset key ("actor/WAR") -> file under /assets. */
@@ -40,6 +41,8 @@ ${catalog.map(([k, v]) => `  "${k}": "${v}",`).join("\n")}
 ${list("ACTOR_KEYS", keysIn("actor/"))}
 
 ${list("MARKER_KEYS", keysIn("marker/"))}
+
+${list("MECHANIC_KEYS", keysIn("mechanic/"))}
 
 export const ARENA_BACKGROUNDS: readonly { key: string; label: string }[] = [
 ${keysIn("arena/").map((k) => `  { key: "${k}", label: "${label(k)}" },`).join("\n")}

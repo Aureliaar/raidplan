@@ -2,8 +2,9 @@
  * Bundled art catalogue — GENERATED, do not edit by hand.
  * Regenerate with `npm run assets:manifest` after adding files to public/assets.
  *
- * The art itself comes from XIVPlan (github.com/joelspadin/xivplan, MIT), which
- * bundles FINAL FANTASY XIV icons. See NOTICE.md.
+ * Actor, marker and arena art comes from XIVPlan (github.com/joelspadin/xivplan,
+ * MIT). Mechanic telegraphs come from the FFXIV Strategy Board asset set.
+ * See NOTICE.md.
  */
 
 /** Asset key ("actor/WAR") -> file under /assets. */
@@ -134,6 +135,23 @@ export const ASSETS: Record<string, string> = {
   "marker/ultimate/cross": "marker/ultimate/cross.png",
   "marker/ultimate/square": "marker/ultimate/square.png",
   "marker/ultimate/triangle": "marker/ultimate/triangle.png",
+  "mechanic/circle-aoe": "mechanic/circle-aoe.png",
+  "mechanic/four-person-aoe": "mechanic/four-person-aoe.png",
+  "mechanic/gaze": "mechanic/gaze.png",
+  "mechanic/line-stack": "mechanic/line-stack.png",
+  "mechanic/linear-knockback": "mechanic/linear-knockback.png",
+  "mechanic/moving-circle-aoe": "mechanic/moving-circle-aoe.png",
+  "mechanic/multi-hit-stack": "mechanic/multi-hit-stack.png",
+  "mechanic/one-person-aoe": "mechanic/one-person-aoe.png",
+  "mechanic/player-proximity": "mechanic/player-proximity.png",
+  "mechanic/proximity": "mechanic/proximity.png",
+  "mechanic/radial-knockback": "mechanic/radial-knockback.png",
+  "mechanic/single-target-tankbuster": "mechanic/single-target-tankbuster.png",
+  "mechanic/stack": "mechanic/stack.png",
+  "mechanic/targeting-indicator": "mechanic/targeting-indicator.png",
+  "mechanic/three-person-aoe": "mechanic/three-person-aoe.png",
+  "mechanic/tower": "mechanic/tower.png",
+  "mechanic/two-person-aoe": "mechanic/two-person-aoe.png",
   "arena/arcadion11-split-v2": "arena/arcadion11-split-v2.svg",
   "arena/arcadion11-split": "arena/arcadion11-split.svg",
   "arena/arcadion11": "arena/arcadion11.svg",
@@ -304,6 +322,26 @@ export const MARKER_KEYS: readonly string[] = [
   "marker/ultimate/triangle",
 ];
 
+export const MECHANIC_KEYS: readonly string[] = [
+  "mechanic/circle-aoe",
+  "mechanic/four-person-aoe",
+  "mechanic/gaze",
+  "mechanic/line-stack",
+  "mechanic/linear-knockback",
+  "mechanic/moving-circle-aoe",
+  "mechanic/multi-hit-stack",
+  "mechanic/one-person-aoe",
+  "mechanic/player-proximity",
+  "mechanic/proximity",
+  "mechanic/radial-knockback",
+  "mechanic/single-target-tankbuster",
+  "mechanic/stack",
+  "mechanic/targeting-indicator",
+  "mechanic/three-person-aoe",
+  "mechanic/tower",
+  "mechanic/two-person-aoe",
+];
+
 export const ARENA_BACKGROUNDS: readonly { key: string; label: string }[] = [
   { key: "arena/arcadion11-split-v2", label: "Arcadion11 split v 2" },
   { key: "arena/arcadion11-split", label: "Arcadion11 split" },
@@ -396,7 +434,8 @@ export function jobIconKey(job: string, name?: string): string {
 /** Enemy art scales with hitbox size, the way XIVPlan's presets do. */
 export function enemyIconKey(size: number): string {
   if (size >= 250) return "actor/enemy_huge";
-  if (size >= 160) return "actor/enemy_large";
+  // The default boss is 120 across, and a boss should look like one.
+  if (size >= 120) return "actor/enemy_large";
   if (size >= 90) return "actor/enemy_medium";
   return "actor/enemy_small";
 }

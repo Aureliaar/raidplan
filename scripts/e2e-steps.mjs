@@ -50,6 +50,17 @@ const rename = async (to) => {
 };
 const names = (doc) => doc.steps.map((s) => s.name).join(" | ");
 
+/** Carry a row onto another one: where a step sits is the whole of the edit. */
+async function dragRow(from, to) {
+  const a = await page.getByRole("button", { name: from }).boundingBox();
+  const b = await page.getByRole("button", { name: to }).boundingBox();
+  await page.mouse.move(a.x + a.width / 2, a.y + a.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(700);
+}
+
 /* --- naming --------------------------------------------------------------- */
 
 await rename("Pull");
@@ -62,7 +73,7 @@ if (!(await page.getByRole("button", { name: "1. Pull" }).isVisible()))
 await page.getByRole("button", { name: "Duplicate step" }).click();
 await page.waitForTimeout(600);
 await rename("Adds");
-await page.getByRole("button", { name: "Blank step" }).click();
+await page.getByRole("button", { name: "Add step after this one" }).click();
 await page.waitForTimeout(600);
 await rename("Enrage");
 doc = await load();
@@ -80,12 +91,11 @@ await api("/api/plans/" + planId + "/ops", {
   }),
 });
 
-// "Enrage" is selected: send it up past Adds.
-await page.getByRole("button", { name: "↑", exact: true }).click();
-await page.waitForTimeout(600);
+// Drag "Enrage" up onto the row Adds is in.
+await dragRow("3. Enrage", "2. Adds");
 doc = await load();
-if (names(doc) !== "Pull | Enrage | Adds") fail("moving the last step up gave " + names(doc));
-else console.log("the rail moved it up: " + names(doc));
+if (names(doc) !== "Pull | Enrage | Adds") fail("dragging the last step up gave " + names(doc));
+else console.log("the row was dragged up: " + names(doc));
 
 // The rail follows the step you moved, rather than staying on that slot: F2
 // renames whatever is selected, so what it opens on is the answer.
@@ -110,14 +120,19 @@ if (Math.hypot(posed.x + 420, posed.y - 330) > 1)
   fail("the pose did not travel with its step: MT is at " + posed.x + "," + posed.y);
 else console.log("MT is still where Adds put them, now that Adds is step " + (posed.index + 1));
 
-// And back down again, to prove the other direction and the disabled edges.
-await page.getByRole("button", { name: "↓", exact: true }).click();
-await page.waitForTimeout(600);
+// And back down again, to prove the other direction.
+await dragRow("2. Enrage", "3. Adds");
 doc = await load();
-if (names(doc) !== "Pull | Adds | Enrage") fail("moving it back down gave " + names(doc));
+if (names(doc) !== "Pull | Adds | Enrage") fail("dragging it back down gave " + names(doc));
 else console.log("and back down: " + names(doc));
-if (await page.getByRole("button", { name: "↓", exact: true }).isEnabled())
-  fail("the last step can still be moved further down");
+
+// A row cannot leave its section by being dragged, and the last row has
+// nowhere below it to go. A drag that stays put is a click, so Enrage is still
+// what is selected afterwards.
+await dragRow("3. Enrage", "3. Enrage");
+doc = await load();
+if (names(doc) !== "Pull | Adds | Enrage") fail("a row wandered out of its section: " + names(doc));
+else console.log("dragging the last row onto itself changes nothing");
 
 /* --- deleting ------------------------------------------------------------- */
 

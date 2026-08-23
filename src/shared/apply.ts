@@ -1,4 +1,15 @@
-import type { Arena, EncounterSetup, Entity, EntityType, Mech, Plan, PropBag, Step } from "./schema";
+import type {
+  Arena,
+  EncounterSetup,
+  Entity,
+  EntityType,
+  Mech,
+  Mechanic,
+  Plan,
+  PropBag,
+  Step,
+  Variant,
+} from "./schema";
 import * as ops from "./ops";
 
 /**
@@ -8,19 +19,27 @@ import * as ops from "./ops";
  */
 export type Op =
   | { op: "set_meta"; name?: string; description?: string; encounter?: string }
-  | { op: "set_arena"; patch: Partial<Arena> }
+  | { op: "set_arena"; patch: ops.ArenaPatch }
   | { op: "add_entity"; spec: PropBag & { type: EntityType } }
-  | { op: "update_entity"; id: string; patch: PropBag; stepId?: string }
-  | { op: "clear_override"; id: string; stepId: string }
+  | { op: "update_entity"; id: string; patch: PropBag; stepId?: string; variant?: string }
+  | { op: "clear_override"; id: string; stepId: string; variant?: string }
   | { op: "delete_entities"; ids: string[] }
   | { op: "duplicate_entity"; id: string; offset?: number }
   | { op: "reorder_entity"; id: string; where: ops.ZOrder }
-  | { op: "add_step"; name?: string; notes?: string; index?: number }
+  | { op: "add_step"; name?: string; notes?: string; index?: number; mechanic?: string }
   | { op: "duplicate_step"; stepId: string; name?: string }
   | { op: "update_step"; stepId: string; patch: Partial<Omit<Step, "id">> }
   | { op: "delete_step"; stepId: string }
   | { op: "move_step"; stepId: string; index: number }
-  | { op: "add_mech"; name?: string; snap?: string; boom?: string }
+  | { op: "add_mechanic"; name?: string; after?: string; stepIds?: string[] }
+  | { op: "update_mechanic"; mechanicId: string; patch: { name?: string } }
+  | { op: "delete_mechanic"; mechanicId: string; keepSteps?: boolean }
+  | { op: "move_mechanic"; mechanicId: string; index: number }
+  | { op: "add_variant"; mechanicId: string; name?: string; ownerId?: string; ownerName?: string }
+  | { op: "gate_mech"; mechId: string; variant?: string }
+  | { op: "update_variant"; mechanicId: string; variantId: string; patch: { name?: string } }
+  | { op: "delete_variant"; mechanicId: string; variantId: string }
+  | { op: "add_mech"; name?: string; snap?: string; boom?: string; color?: string }
   | { op: "update_mech"; mechId: string; patch: Partial<Omit<Mech, "id">> }
   | { op: "delete_mech"; mechId: string; keepEntities?: boolean }
   | { op: "assign_mech"; ids: string[]; mechId: string | null }
@@ -33,7 +52,7 @@ export type Op =
 export interface OpResult {
   plan: Plan;
   /** Whatever the op created, for the caller to report back. */
-  value?: Entity | Step | Mech | string[] | null;
+  value?: Entity | Step | Mech | Mechanic | Variant | string[] | null;
 }
 
 export function applyOp(plan: Plan, op: Op): OpResult {
@@ -54,11 +73,11 @@ export function applyOp(plan: Plan, op: Op): OpResult {
       return { plan: r.plan, value: r.entity };
     }
     case "update_entity": {
-      const r = ops.updateEntity(plan, op.id, op.patch, op.stepId);
+      const r = ops.updateEntity(plan, op.id, op.patch, op.stepId, op.variant);
       return { plan: r.plan, value: r.entity };
     }
     case "clear_override":
-      return { plan: ops.clearOverride(plan, op.id, op.stepId) };
+      return { plan: ops.clearOverride(plan, op.id, op.stepId, op.variant) };
     case "delete_entities":
       return { plan: ops.deleteEntities(plan, op.ids), value: op.ids };
     case "duplicate_entity": {
@@ -81,6 +100,30 @@ export function applyOp(plan: Plan, op: Op): OpResult {
       return { plan: ops.deleteStep(plan, op.stepId) };
     case "move_step":
       return { plan: ops.moveStep(plan, op.stepId, op.index) };
+    case "add_mechanic": {
+      const r = ops.addMechanic(plan, op);
+      return { plan: r.plan, value: r.mechanic };
+    }
+    case "update_mechanic":
+      return { plan: ops.updateMechanic(plan, op.mechanicId, op.patch) };
+    case "delete_mechanic":
+      return { plan: ops.deleteMechanic(plan, op.mechanicId, op.keepSteps), value: [op.mechanicId] };
+    case "move_mechanic":
+      return { plan: ops.moveMechanic(plan, op.mechanicId, op.index) };
+    case "add_variant": {
+      const r = ops.addVariant(plan, op.mechanicId, {
+        name: op.name,
+        ownerId: op.ownerId,
+        ownerName: op.ownerName,
+      });
+      return { plan: r.plan, value: r.variant };
+    }
+    case "gate_mech":
+      return { plan: ops.gateMech(plan, op.mechId, op.variant) };
+    case "update_variant":
+      return { plan: ops.updateVariant(plan, op.mechanicId, op.variantId, op.patch) };
+    case "delete_variant":
+      return { plan: ops.deleteVariant(plan, op.mechanicId, op.variantId), value: [op.variantId] };
     case "add_mech": {
       const r = ops.addMech(plan, op);
       return { plan: r.plan, value: r.mech };

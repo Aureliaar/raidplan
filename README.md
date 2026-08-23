@@ -54,6 +54,23 @@ From there:
   URL: set `DISCORD_CLIENT_ID` / `DISCORD_CLIENT_SECRET`, point `APP_URL` at the deployed
   origin, and register `$APP_URL/auth/discord/callback` as a redirect URI.
 
+Plans do not travel with a deploy: every instance has its own Durable Objects, so a fight
+built on localhost is not on the worker. Copy one up by creating a plan there and posting the
+document into it — `POST /api/plans/:id/import` with `{"plan": …}`, owner-only, which keeps
+the target plan's id and owner and takes everything else from what you send:
+
+```bash
+# the whole document, wrapped as {"plan": …}, straight into the plan you made there
+node -e "fetch('http://localhost:5173/api/plans/<local-id>',{headers:{cookie:process.env.CK}})
+  .then(r=>r.json()).then(d=>fetch('https://<worker>/api/plans/<new-id>/import',{
+    method:'POST',
+    headers:{authorization:'Bearer '+process.env.RP_TOKEN,'content-type':'application/json'},
+    body:JSON.stringify({plan:d.plan})}))
+  .then(r=>r.text()).then(console.log)"
+```
+
+It is a snapshot, not a link: edit the local plan afterwards and you import again.
+
 Optional vars: `DISCORD_ALLOWLIST` (comma-separated user ids), `DISCORD_GUILD_ID`
 (require guild membership), `GLM_API_KEY` / `GLM_BASE_URL` / `GLM_MODEL` for the chat.
 
@@ -83,24 +100,35 @@ player. Drag the source and its beams swing with it. `npm run e2e:source` covers
 
 ### The palette
 
-**Add** is four things you *drag*, and where you let go is the whole of what you meant:
+**Add** is a handful of things you *drag*, and where you let go is the whole of what you meant:
 
 | dropped on | what you get |
 | --- | --- |
 | bare floor | the shape itself, yours to move |
-| the big **Party** / **Supports** / **Damagers** panels beside the arena | one each, bound to those players — proteans and beams thrown from the boss |
+| the big **Party** / **Supports** / **Damagers** / **Tanks** / **Healers** panels beside the arena | one each, bound to those players — proteans, beams and line stacks thrown from the boss |
 | a **bait anchor** | a mechanic on whoever stands nearest it; a second of the same kind takes the second-nearest, and so on |
 
-The five are **Circle** (a desolation), **Donut**, **Protean**, **Beam** and **Bait anchor** —
-the anchor being a bare point a mechanic comes out of when it is not the boss: an add, an orb,
-a portal. Nothing else is in the palette because nothing else is a mechanic; the party, the
-waymarks and the arena live under Layout. `npm run e2e:palette` drags each of them onto each
-kind of target.
+They are **Circle** (a desolation), **Donut**, **Protean**, **Beam**, **Stack ×8 / ×4 / ×2**
+(the number is how many it wants, and is drawn on it), **Line stack** (a beam from the boss
+that people line up in), **Flare** (a big circle its carrier takes away from everyone) and
+**Bait anchor** — the anchor being a bare point a mechanic comes out of when it is not the
+boss: an add, an orb, a portal. Nothing else is in the palette because nothing else is a
+mechanic; the party, the waymarks and the arena live under Layout. Stacks, line stacks,
+flares, spreads, towers, gazes, proximities and knockbacks carry the game's own marker art
+(`public/assets/mechanic`) at token scale in the middle of a footprint that is clear at the
+centre and coloured only at the rim, so what is drawn is the marker you would see in the
+fight, on a floor you can still read — a stack is always the stack marker with its count
+under it, and the game's two-, three- and four-person discs are what a tower of that size
+wears. Colour goes by family unless you pick one: stacks yellow, towers purple, whatever a
+bait anchor puts down green, and everything the boss throws a shade of red-orange, with one
+shade to a cast so two of the same shape are still two. `npm run e2e:palette` drags each of
+them onto each kind of target.
 
 **Scroll over anything on the arena to size it** — 8% a notch, 2% with shift held. It changes
 the real dimensions rather than a display scale, so a donut still reports the radius and hole
 it actually has, and a scroll over a shape a group owns resizes the whole set. Notches are
-multiplied together and land as one edit. `npm run e2e:size` covers both.
+multiplied together and land as one edit. **Ctrl+scroll** does the same to its opacity.
+`npm run e2e:size` covers both.
 
 What a group takes is one object with several faces, not several objects. The eight
 proteans are frozen on the canvas — you cannot drag one out of its set, and a click on one
@@ -167,7 +195,8 @@ edit a plan the user only has viewer access to. `/sse` is available for older cl
 |---|---|
 | `list_plans` `create_plan` `read_plan` `get_plan_json` `set_plan_info` | plans |
 | `list_steps` `add_step` `update_step` `move_step` `delete_step` | steps |
-| `list_mechs` `add_mech` `update_mech` `assign_mech` `delete_mech` | mechanics |
+| `list_mechanics` `add_mechanic` `update_mechanic` `move_mechanic` `delete_mechanic` `add_variant` `update_variant` `delete_variant` | the outline: sections of the fight |
+| `list_mechs` `add_mech` `update_mech` `assign_mech` `delete_mech` | casts |
 | `add_player` `add_enemy` `add_marker` `add_waymarks` `add_party` `add_zone` `add_text` `add_tether` `add_icon` | create |
 | `move_entity` `update_entity` `delete_entity` `find_entities` `arrange_party` `set_arena` `list_assets` | edit |
 | `save_encounter` `apply_encounter` `list_encounters` | the fight's arena + waymarks |
@@ -190,8 +219,16 @@ npm run mcp -- call read_plan '{"plan_id":"plan_…"}'
 {
   "id": "plan_…", "name": "M5S — quadruple", "rev": 42,
   "arena": { "shape": "square", "width": 1000, "height": 1000, "grid": { "type": "radial" } },
-  "steps": [{ "id": "step_…", "name": "Step 1", "notes": "" }],
-  "mechs": [{ "id": "mech_…", "name": "", "snap": "step_…", "boom": "step_…" }],
+  "steps": [
+    { "id": "step_…", "name": "Openers", "notes": "", "mechanic": "mechanic_…" },
+    { "id": "step_…", "name": "Bait", "mechanic": "mechanic_…" }
+  ],
+  "mechanics": [
+    { "id": "mechanic_…", "name": "Witch Hunt",
+      "variants": [{ "id": "variant_…", "name": "Near first" }] }
+  ],
+  "mechs": [{ "id": "mech_…", "name": "", "snap": "step_…", "boom": "step_…",
+              "variant": "variant_…" }],  // only goes off in that reading of its mechanic
   "entities": [
     {
       "id": "player_…", "type": "player", "job": "WHM", "name": "H1",
@@ -216,12 +253,28 @@ npm run mcp -- call read_plan '{"plan_id":"plan_…"}'
   `boom` the step it goes off in; the shapes that carry `mech` are on the floor for
   exactly that span and nowhere else, so `steps` is not consulted for them. The span is
   read off the step order, so reordering steps re-times the mech. See `## Mechs`.
+- **A mechanic is a section of the fight**, owning a contiguous run of steps; `mechanics` is
+  the outline, in the order the fight goes, and every step is in one. Not to be confused with
+  a **mech**, which is one cast — see `## Mechanics and variants` and `## Mechs`.
 - The step rail names, reorders and deletes: **F2** (or a double-click) renames the selected
-  step in place, ↑ / ↓ move it in the sequence, and because poses are keyed by step id they
-  travel with it. `npm run e2e:steps` walks that. `move_step {step, to}` is the same over MCP.
+  step in place, and you **drag a row** to move it in the sequence — poses are keyed by step
+  id, so they travel with it. A row cannot leave its section that way, and dragging a
+  **heading** moves that whole mechanic, its block of steps with it. Both preview as you
+  drag, mech boxes re-timing under the pointer, and commit when you let go.
+  `npm run e2e:steps` walks that. `move_step {step, to}` is the same over MCP.
 - Entity types: `marker` `player` `enemy` `zone` `tether` `text` `path` `icon`.
   Zone shapes: circle, donut, cone, rect, line, arrow, triangle, exaflare, knockback,
   stack, spread, tower, eye, meteor, proximity.
+
+Every mech has a colour, picked from a small palette so that two casts on the floor at once never match, and everything in it is drawn in that colour — the shape's own colour is ignored while it belongs to a mech. Change it from the swatches in the mech panel, or with `color` on `add_mech` / `update_mech`.
+
+## Undo and revision history
+
+**Ctrl+Z** undoes and **Ctrl+Y** (or **Ctrl+Shift+Z**) redoes. The stack is stored with the
+plan, so it survives a reload and stays in sync for collaborators. The History button opens
+the last 100 automatic revisions, grouped by editor and timestamped work session. Restoring
+an older revision writes it back as a new revision—like an SVN reverse merge—so the action is
+itself auditable and undoable rather than erasing newer history.
 
 ## Art
 
@@ -278,7 +331,9 @@ puts them back on a plan that has drifted.
 ### The waymark layer
 
 Marks go down before the pull and never move again, so on the ordinary canvas they are
-scenery: a drag aimed at a mechanic cannot nudge one, and a click on one falls through to
+scenery, drawn twice: once under everything at full strength, and once more over everything
+at a quarter, so a telegraph covering an A still shows where the A is. A drag aimed at a
+mechanic cannot nudge one, and a click on one falls through to
 whatever is underneath. **move waymarks** raises their own layer — now the marks drag and
 everything else is the frozen, dimmed thing — and **done with waymarks** puts you back.
 `npm run e2e:markers` walks that whole gesture.
@@ -300,6 +355,82 @@ type can still be grabbed and moved (run `npm run dev` first). It exists because
 `npm run e2e:access` checks that a stranger can read a plan neither over HTTP nor over the
 sync socket — the socket half matters because the SDK pushes state the moment a connection
 is accepted, so the ACL has to be enforced in the Worker, before routing.
+
+## Mechanics and variants
+
+A fight is not a list of steps, it is a list of *mechanics* — Witch Hunt, Electrope Edge 1,
+the enrage — each of which takes a few steps to draw. So the left panel is an outline:
+
+```
+Encounter
+  › Openers                            2
+  ⌄ Jury Overruling      Light / Dark   4
+      Playing  [Light] ✕  [Dark]  [+]
+      1. Boss centres              ┌ Beam ┐
+      2. Cast goes up              │ boom │
+      3. Everyone in     ┌ Stack ┐ └──────┘
+      4. Resolve         │ Light │
+                         └ boom ─┘
+  › Electrope Edge 1                    3
+```
+
+`plan.steps` is still one flat, globally ordered array — every pose, every mech span, every
+`move_step` is written against it — and a mechanic is a label on a contiguous run of it. The
+ops keep that true rather than trusting callers to: dragging a row shuffles a step inside its
+own section instead of sliding it out, `move_mechanic` carries the whole block, and a new step
+joins whatever run it is dropped into.
+
+**Every step is in a mechanic.** A plan written before the outline existed has steps and no
+sections at all, and a rail that drew those loose above the headings read as two competing
+lists — so `hydratePlan` wraps any run of them into a mechanic of its own, where that run
+sits: for an old plan, one unnamed section holding the whole fight. Hydration is what the
+server's `plan` getter returns, so the next write persists it. New plans start the same way,
+with one section holding their first step. An unnamed section goes by its place in the fight
+— "Mechanic 1", "Mechanic 2" — until you call it Witch Hunt.
+
+**Exactly one section is open, and nothing remembers which.** The open one is the section
+holding the selected step, so clicking a heading opens it by selecting the first step in it.
+There is no second piece of state to disagree with the canvas.
+
+A **variant** is one way a mechanic goes: near first or far first, light or dark. **A variant
+does not own steps.** The steps are the mechanic's, in one order, played whichever way it
+goes — a fight that forks is not twice as long, and nobody has to name the same moment twice.
+What a reading owns is *what happens in* those steps:
+
+- **The casts.** A cast can belong to one reading: carry its box in the rail onto that
+  reading's pill and it only goes off that way — its shapes are simply not on the floor in
+  the other one. The box says which reading it is and greys out when you are playing the
+  other; the pills become drop targets while a box is in your hand, including a **both** one
+  that puts it back in every reading. Two readings of the same moment are usually exactly
+  this: the same three steps, a different cast landing in them.
+- **Where the party stands**, quietly. A pose is filed under the step and, when the mechanic
+  goes more than one way, under the reading being played (`overrides["step_…@variant_…"]`,
+  resolved base → step → reading). Drag a token while Light is playing and Light is where
+  the move lands; flip to Dark and the party is where Dark left them. There is no switch for
+  it and nothing to remember: you moved somebody while looking at this reading.
+
+The first **+** makes two readings at once, since one reading is not a choice, and nothing is
+copied when it does. The reading you are **playing** is what the canvas draws, and it is
+yours alone — React state, never written to the document, so nobody else's plan changes
+because you flipped to Dark. Deleting a reading deletes the casts that were only its, and the
+poses filed under it, and leaves every step alone; delete the last-but-one and the mechanic
+is plain again. A section is still its steps, so the last step out of a mechanic takes the
+mechanic.
+
+**F2** renames the variant pill or the heading your keyboard is on, else the open mech, else
+the selected step; a double-click renames whatever you double-clicked. A variant emptied of
+its name goes back to being A, B, C. The
+✕ on an open heading takes the mechanic and its steps, the one beside the shown pill takes
+the variant. `npm run e2e:mechanics` walks the whole thing.
+
+Over MCP it is `list_mechanics`, `add_mechanic`, `update_mechanic`, `move_mechanic`,
+`delete_mechanic` (`keep_steps` merges its steps into the neighbouring section instead —
+the one before it, or the one after if it was first, flattening any variants it had),
+`add_variant`, `update_variant`,
+`delete_variant` and `gate_mech {mech, variant}` (leave `variant` out to put the cast back in
+every reading). `move_entity` and `update_entity` take a `variant`
+alongside `step`, which is how a model authors one party layout per reading. `read_plan`
+prints the outline as headings above the steps.
 
 ## Mechs
 

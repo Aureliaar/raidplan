@@ -1,4 +1,12 @@
-import { Fragment, useEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  useState,
+} from "react";
 import {
   Arrow,
   Circle,
@@ -43,10 +51,12 @@ const MARKER_COLORS: Record<string, string> = {
  * cover the tokens and swallow every click on them. `reorder_entity` still
  * shuffles entities within their own band.
  */
+// Waymarks are the floor's own labels: they go under everything, and are then
+// drawn once more, faint, over everything -- see the ghost pass in `Scene`.
 const DRAW_BAND: Record<Entity["type"], number> = {
+  marker: -1,
   zone: 0,
   path: 1,
-  marker: 2,
   tether: 3,
   enemy: 4,
   player: 5,
@@ -72,26 +82,149 @@ export type EditLayer = "step" | "markers";
 export interface SceneProps {
   plan: Plan;
   stepId?: string;
+  /** Which reading of each mechanic is being played, by mechanic id. */
+  shown?: Record<string, string>;
   size: number;
   selected: string | null;
   editable: boolean;
   layer?: EditLayer;
   /** A bond or mech id whose shapes should light up — the row being hovered. */
   highlight?: string | null;
+  /**
+   * Bumped every time the fight is walked from the keyboard. A click puts you
+   * in the next step at once, which is what a click is for; a keypress is a
+   * step of the fight happening, so the floor glides into it.
+   */
+  glide?: number;
+  /**
+   * Whether that walk is forwards through the fight. Going on, a cast that has
+   * had its step goes off; going back, it simply un-happens — rewinding a hit
+   * should not land it again.
+   */
+  onward?: boolean;
   onSelect(id: string | null): void;
   onMove(id: string, x: number, y: number): void;
   /** Wheel over something: resize it by that factor. Absent, the wheel does nothing. */
-  onResize?(id: string, factor: number): void;
+  onResize?(id: string, factor: number, what: "size" | "opacity"): void;
+}
+
+/** How long the floor takes to walk into the next step, and its easing. */
+const GLIDE_MS = 260;
+const ease = (p: number) => p * p * (3 - 2 * p);
+
+/**
+ * The same shapes, sliding to where the step puts them rather than appearing
+ * there. Everything downstream — tethers, hit areas, which player a bait picks
+ * — is solved from what this returns, so the whole picture moves together.
+ *
+ * A move always starts from where things are *on screen*, not from where the
+ * step you were on says they were: press S twice quickly and the first walk is
+ * abandoned where it got to, and the second sets off from there. Nothing is
+ * queued, so holding a key never plays a backlog of moves you have stopped
+ * caring about.
+ */
+function useGlide(
+  target: Entity[],
+  glide: number,
+  onward: boolean
+): { entities: Entity[]; going: Set<string>; blast: Map<string, number> } {
+  const [, frame] = useReducer((n: number) => n + 1, 0);
+  /** What was on the floor when this move set off, and what is on it right now. */
+  const from = useRef(new Map<string, Entity>());
+  const drawn = useRef(new Map<string, Entity>());
+  const startedAt = useRef(0);
+  const at = useRef(1);
+  const token = useRef(glide);
+  const raf = useRef(0);
+
+  // Read during the render that the target changed, not after it: an effect
+  // would paint the new positions once before starting to move towards them.
+  if (token.current !== glide) {
+    token.current = glide;
+    from.current = new Map(drawn.current);
+    startedAt.current = performance.now();
+    at.current = from.current.size ? 0 : 1;
+  }
+
+  useLayoutEffect(() => {
+    if (at.current >= 1) return;
+    const tick = () => {
+      at.current = Math.min(1, (performance.now() - startedAt.current) / GLIDE_MS);
+      frame();
+      if (at.current < 1) raf.current = requestAnimationFrame(tick);
+    };
+    raf.current = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf.current);
+  }, [glide]);
+
+  const p = at.current;
+  const going = new Set<string>();
+  /** How far through going off each leaving cast is, 0 to 1. */
+  const blast = new Map<string, number>();
+  if (p >= 1) {
+    drawn.current = new Map(target.map((e) => [e.id, e]));
+    return { entities: target, going, blast };
+  }
+
+  const k = ease(p);
+  // A shape that is in both steps slides and, if it is drawn fainter in one of
+  // them, fades as it goes. One that is only in the step being walked into
+  // comes up out of nothing.
+  const moving = target.map((e) => {
+    const was = from.current.get(e.id);
+    if (!was) return { ...e, opacity: e.opacity * k };
+    return {
+      ...e,
+      x: was.x + (e.x - was.x) * k,
+      y: was.y + (e.y - was.y) * k,
+      opacity: was.opacity + (e.opacity - was.opacity) * k,
+    };
+  });
+  // And one that the next step does not have is still on the floor while it
+  // goes — an AoE resolving, not an AoE deleted. A zone goes off rather than
+  // just leaving: it flares, swells a little, and is gone. Everything else
+  // simply fades. Either way it is on its way out, so it cannot be grabbed.
+  // A cast goes off only when the fight is going on: walking back up the steps,
+  // or sideways into the other reading, it just leaves the floor.
+  const flare = Math.sin(Math.PI * Math.min(1, k * 1.4));
+  const here = new Set(target.map((e) => e.id));
+  const leaving: Entity[] = [];
+  for (const [id, was] of from.current) {
+    if (here.has(id)) continue;
+    going.add(id);
+    if (was.type === "zone" && onward) blast.set(id, k);
+    leaving.push(
+      was.type === "zone" && onward
+        ? {
+            // A hit landing rather than a shape being turned off: it floods —
+            // the clear heart of a telegraph fills in — punches outwards fast,
+            // and only then blows out. A telegraph drawn faint has room to
+            // flare on the way; one already at full just holds and goes.
+            ...was,
+            opacity: Math.min(1, was.opacity * (1 + 0.9 * flare)) * (1 - k * k * k),
+            scale: was.scale * (1 + 0.4 * Math.sqrt(k)),
+          }
+        : { ...was, opacity: was.opacity * (1 - k) }
+    );
+  }
+  // Underneath everything that is staying: a puddle going out should not wash
+  // over the party walking away from it.
+  const entities = leaving.length ? [...leaving, ...moving] : moving;
+  drawn.current = new Map(entities.map((e) => [e.id, e]));
+  return { entities, going, blast };
 }
 
 export function Scene({
   plan,
   stepId,
+  shown,
   size,
   selected,
   editable,
   layer = "step",
   highlight,
+  glide = 0,
+  onward = true,
   onSelect,
   onMove,
   onResize,
@@ -115,12 +248,12 @@ export function Scene({
    */
   /** The other layer's things: still drawn, but faded to say "not now". */
   const offLayer = (e: Entity) => (layer === "markers" ? e.type !== "marker" : e.type === "marker");
-  const frozen = (e: Entity) => offLayer(e) || !!e.bond;
+  const frozen = (e: Entity) => offLayer(e) || !!e.bond || going.has(e.id);
 
-  const committed = useMemo(() => entitiesForStep(plan, stepId), [plan, stepId]);
-  const entities = useMemo(() => {
+  const committed = useMemo(() => entitiesForStep(plan, stepId, undefined, shown), [plan, stepId, shown]);
+  const settled = useMemo(() => {
     const live = dragging ? new Map([[dragging.id, { x: dragging.x, y: dragging.y }]]) : undefined;
-    const sorted = sortForDrawing(live ? entitiesForStep(plan, stepId, live) : committed);
+    const sorted = sortForDrawing(live ? entitiesForStep(plan, stepId, live, shown) : committed);
     // On the waymark layer the marks come to the top: they normally lie on the
     // floor under the party, which is right for reading a plan and useless for
     // dropping an A on the exact tile you mean.
@@ -128,6 +261,9 @@ export function Scene({
       ? [...sorted].sort((a, b) => Number(a.type === "marker") - Number(b.type === "marker"))
       : sorted;
   }, [plan, stepId, committed, dragging, layer]);
+  // What is actually on the floor this frame: the step's shapes, or them on
+  // their way there. Everything below reads this, so a walk moves the lot.
+  const { entities, going, blast } = useGlide(settled, glide, onward);
   const byId = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities]);
 
   const footprints = useMemo(
@@ -146,7 +282,7 @@ export function Scene({
       if (!e.anchor) continue;
       const authored = plan.entities.find((b) => b.id === e.id);
       if (!authored) continue;
-      const nudge = resolveEntity(authored, stepId);
+      const nudge = resolveEntity(authored, stepId, stepId ? shown?.[plan.steps.find((s) => s.id === stepId)?.mechanic ?? ""] : undefined);
       m.set(e.id, { x: e.x - nudge.x, y: e.y - nudge.y });
     }
     return m;
@@ -234,7 +370,8 @@ export function Scene({
     if (!hit) return;
     evt.evt.preventDefault();
     const step = evt.evt.shiftKey ? 1.02 : 1.08;
-    onResize(hit.id, evt.evt.deltaY < 0 ? step : 1 / step);
+    // Plain wheel is size; with ctrl held it is how solid the thing is drawn.
+    onResize(hit.id, evt.evt.deltaY < 0 ? step : 1 / step, evt.evt.ctrlKey ? "opacity" : "size");
   }
 
   return (
@@ -272,7 +409,7 @@ export function Scene({
                 }}
               >
                 <GrabTarget entity={e} />
-                <EntityShape entity={e} />
+                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} />
                 {(selected === e.id ||
                   (!!highlight && (e.bond?.id === highlight || e.mech === highlight))) && (
                   <SelectionRing entity={e} />
@@ -280,6 +417,29 @@ export function Scene({
               </Group>
             )
           )}
+          {/*
+            The waymarks again, faint, over everything: a telegraph covering an
+            A should not make the A disappear, since "A" is how the plan is
+            going to be called out. On the waymark layer they are already on
+            top and the ghost would only double them.
+          */}
+          {layer !== "markers" &&
+            entities
+              .filter((e) => e.type === "marker")
+              .map((e) => (
+                <Group
+                  key={"ghost-" + e.id}
+                  x={e.x}
+                  y={e.y}
+                  rotation={e.rotation}
+                  scaleX={e.scale}
+                  scaleY={e.scale}
+                  opacity={e.opacity * 0.25}
+                  listening={false}
+                >
+                  <EntityShape entity={e} />
+                </Group>
+              ))}
         </Group>
       </Layer>
     </Stage>
@@ -473,7 +633,7 @@ function radiusHint(e: Entity): number {
   }
 }
 
-function EntityShape({ entity }: { entity: Entity }) {
+function EntityShape({ entity, blast = 0 }: { entity: Entity; blast?: number }) {
   switch (entity.type) {
     case "marker": {
       const color = entity.color ?? MARKER_COLORS[entity.marker];
@@ -627,7 +787,7 @@ function EntityShape({ entity }: { entity: Entity }) {
     }
 
     case "zone":
-      return <ZoneShape zone={entity} />;
+      return <ZoneShape zone={entity} blast={blast} />;
 
     case "text": {
       // Width drives both centring and the hit box, so keep it near the content.
@@ -675,7 +835,12 @@ function EntityShape({ entity }: { entity: Entity }) {
  * border reads as the danger edge instead of a flat tint. Falls back to the
  * old flat fill when the color is not a plain hex we can make translucent.
  */
-function telegraphFill(zone: ZoneEntity, radius: number): Partial<Konva.ShapeConfig> {
+function telegraphFill(
+  zone: ZoneEntity,
+  radius: number,
+  /** 0 normally; 1 at the height of the cast going off, which floods the fill. */
+  blast = 0
+): Partial<Konva.ShapeConfig> {
   if (zone.hollow) return {};
   const rgba = (alpha: number) => {
     const hex = zone.color ?? ZONE_DEFAULT;
@@ -685,12 +850,18 @@ function telegraphFill(zone: ZoneEntity, radius: number): Partial<Konva.ShapeCon
     const n = parseInt(digits, 16);
     return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
   };
-  const core = rgba(0.14);
-  const mid = rgba(0.3);
-  const rim = rgba(0.55);
-  if (!core || !mid || !rim) return { fill: zone.color ?? ZONE_DEFAULT, opacity: 0.45 };
+  // Clear at the heart and only really there at the rim, the way the game
+  // draws them: two casts on the same floor stay legible, and the tokens
+  // standing in one are not swallowed.
+  // Going off, the ground it covers fills in: the heart of it stops being a
+  // hole you can read a plan through and becomes the hit.
+  const core = rgba(0.62 * blast);
+  const mid = rgba(0.1 + 0.55 * blast);
+  const rim = rgba(0.32 + 0.45 * blast);
+  if (!core || !mid || !rim)
+    return { fill: zone.color ?? ZONE_DEFAULT, opacity: 0.2 + 0.6 * blast };
   // Konva types the stop list as number[] even though it holds colours.
-  const stops = [0, core, 0.7, mid, 1, rim] as unknown as number[];
+  const stops = [0, core, 0.75, mid, 1, rim] as unknown as number[];
   return {
     fillRadialGradientStartRadius: 0,
     fillRadialGradientEndRadius: radius,
@@ -698,20 +869,20 @@ function telegraphFill(zone: ZoneEntity, radius: number): Partial<Konva.ShapeCon
   };
 }
 
-function ZoneShape({ zone }: { zone: ZoneEntity }) {
+function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
   const color = zone.color ?? ZONE_DEFAULT;
   const border = { stroke: color, strokeWidth: 5, hitStrokeWidth: zone.hollow ? 40 : undefined };
 
   switch (zone.shape) {
     case "circle":
-      return <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />;
+      return <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />;
 
     case "donut":
       return (
         <Ring
           innerRadius={zone.innerRadius}
           outerRadius={zone.radius}
-          {...telegraphFill(zone, zone.radius)}
+          {...telegraphFill(zone, zone.radius, blast)}
           {...border}
         />
       );
@@ -723,7 +894,7 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
           radius={zone.radius}
           angle={zone.angle}
           rotation={-90 - zone.angle / 2}
-          {...telegraphFill(zone, zone.radius)}
+          {...telegraphFill(zone, zone.radius, blast)}
           {...border}
         />
       );
@@ -736,7 +907,7 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
           y={-zone.length / 2}
           width={zone.width}
           height={zone.length}
-          {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2)}
+          {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2, blast)}
           {...border}
         />
       );
@@ -749,20 +920,28 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
             y={-zone.length / 2}
             width={zone.width}
             height={zone.length}
-            {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2)}
+            {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2, blast)}
             {...border}
           />
-          {[-1, 0, 1].map((i) => (
-            <Arrow
-              key={i}
-              points={[i * zone.width * 0.3, zone.length / 2, i * zone.width * 0.3, -zone.length / 2]}
-              stroke={color}
-              fill={color}
-              strokeWidth={6}
-              pointerLength={22}
-              pointerWidth={20}
-            />
-          ))}
+          <Stamp
+            art="linear-knockback"
+            size={stampSize(zone.width)}
+            fallback={
+              <>
+                {[-1, 0, 1].map((i) => (
+                  <Arrow
+                    key={i}
+                    points={[i * zone.width * 0.3, zone.length / 2, i * zone.width * 0.3, -zone.length / 2]}
+                    stroke={color}
+                    fill={color}
+                    strokeWidth={6}
+                    pointerLength={22}
+                    pointerWidth={20}
+                  />
+                ))}
+              </>
+            }
+          />
         </>
       );
 
@@ -784,7 +963,7 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
         <RegularPolygon
           sides={3}
           radius={zone.radius}
-          {...telegraphFill(zone, zone.radius)}
+          {...telegraphFill(zone, zone.radius, blast)}
           {...border}
         />
       );
@@ -797,7 +976,7 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
               key={i}
               y={-i * zone.radius * 2.1}
               radius={zone.radius}
-              {...telegraphFill(zone, zone.radius)}
+              {...telegraphFill(zone, zone.radius, blast)}
               {...border}
               opacity={1 - i / (zone.count + 1)}
             />
@@ -815,36 +994,157 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
       );
 
     case "stack":
+      // Always the game's stack marker — the arrows pointing in — with how
+      // many it wants written under it. The N-person discs are towers.
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />
-          <Circle radius={zone.radius * 0.6} stroke={color} strokeWidth={6} dash={[18, 12]} />
-          <Label text={`${zone.soak}`} size={zone.radius * 0.7} color="#0d1117" bold />
+          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Stamp
+            art="stack"
+            size={stampSize(zone.radius)}
+            fallback={<Circle radius={zone.radius * 0.6} stroke={color} strokeWidth={6} dash={[18, 12]} />}
+          />
+          <Label
+            y={stampSize(zone.radius) * 0.7}
+            text={`${zone.soak}`}
+            size={stampSize(zone.radius) * 0.35}
+            color="#f7fafc"
+            bold
+          />
         </>
       );
+
+    case "linestack": {
+      // The beam, with chevrons marching up it: "line up in here", and how many.
+      const w = zone.width;
+      const chevrons = Math.max(2, Math.floor(zone.length / (w * 0.9)));
+      return (
+        <>
+          <Rect
+            x={-w / 2}
+            y={-zone.length / 2}
+            width={w}
+            height={zone.length}
+            {...telegraphFill(zone, zone.length / 2, blast)}
+            {...border}
+          />
+          <Stamp
+            art="line-stack"
+            size={stampSize(w)}
+            fallback={
+              <>
+                {Array.from({ length: chevrons }, (_, i) => {
+                  const y = zone.length / 2 - (i + 0.5) * (zone.length / chevrons);
+                  return (
+                    <Line
+                      key={i}
+                      points={[-w * 0.28, y + w * 0.18, 0, y - w * 0.18, w * 0.28, y + w * 0.18]}
+                      stroke="#f7fafc"
+                      strokeWidth={5}
+                      opacity={0.8}
+                      lineCap="round"
+                      lineJoin="round"
+                    />
+                  );
+                })}
+              </>
+            }
+          />
+          <Label
+            y={stampSize(w) * 0.75}
+            text={`${zone.soak}`}
+            size={stampSize(w) * 0.35}
+            color="#f7fafc"
+            bold
+          />
+        </>
+      );
+    }
+
+    case "flare": {
+      // A burst: spokes out from the carrier, so it reads as "take this away".
+      const spokes = 8;
+      return (
+        <>
+          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Stamp
+            art="player-proximity"
+            size={stampSize(zone.radius)}
+            fallback={
+              <>
+                {Array.from({ length: spokes }, (_, i) => {
+                  const a = (i / spokes) * Math.PI * 2;
+                  return (
+                    <Line
+                      key={i}
+                      points={[
+                        Math.cos(a) * zone.radius * 0.3,
+                        Math.sin(a) * zone.radius * 0.3,
+                        Math.cos(a) * zone.radius * 0.92,
+                        Math.sin(a) * zone.radius * 0.92,
+                      ]}
+                      stroke={color}
+                      strokeWidth={4}
+                      opacity={0.6}
+                    />
+                  );
+                })}
+                <Circle radius={zone.radius * 0.18} fill={color} opacity={0.7} />
+              </>
+            }
+          />
+        </>
+      );
+    }
 
     case "spread":
       return (
         <>
           <Circle
             radius={zone.radius}
-            {...telegraphFill(zone, zone.radius)}
+            {...telegraphFill(zone, zone.radius, blast)}
             {...border}
             dash={[24, 16]}
           />
-          <Line points={[-zone.radius, 0, zone.radius, 0]} stroke={color} strokeWidth={5} />
-          <Line points={[0, -zone.radius, 0, zone.radius]} stroke={color} strokeWidth={5} />
+          <Stamp
+            art="one-person-aoe"
+            size={stampSize(zone.radius)}
+            fallback={
+              <>
+                <Line points={[-zone.radius, 0, zone.radius, 0]} stroke={color} strokeWidth={5} />
+                <Line points={[0, -zone.radius, 0, zone.radius]} stroke={color} strokeWidth={5} />
+              </>
+            }
+          />
         </>
       );
 
-    case "tower":
+    case "tower": {
+      // The game draws a tower wanting two, three or four with that many discs
+      // in it; anything else gets the plain tower and the count underneath.
+      const art = { 1: "one-person-aoe", 2: "two-person-aoe", 3: "three-person-aoe", 4: "four-person-aoe" }[
+        zone.soak
+      ];
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />
-          <Circle radius={zone.radius * 0.7} stroke={color} strokeWidth={8} />
-          <Label text={`${zone.soak}`} size={zone.radius * 0.8} color="#0d1117" bold />
+          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Stamp
+            art={art ?? "tower"}
+            size={stampSize(zone.radius)}
+            fallback={<Circle radius={zone.radius * 0.7} stroke={color} strokeWidth={8} />}
+          />
+          {!art && (
+            <Label
+              y={stampSize(zone.radius) * 0.7}
+              text={`${zone.soak}`}
+              size={stampSize(zone.radius) * 0.35}
+              color="#f7fafc"
+              bold
+            />
+          )}
         </>
       );
+    }
 
     case "eye":
       return (
@@ -852,17 +1152,21 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
           <Ellipse
             radiusX={zone.radius}
             radiusY={zone.radius * 0.6}
-            {...telegraphFill(zone, zone.radius)}
+            {...telegraphFill(zone, zone.radius, blast)}
             {...border}
           />
-          <Circle radius={zone.radius * 0.28} fill="#0d1117" />
+          <Stamp
+            art="gaze"
+            size={stampSize(zone.radius)}
+            fallback={<Circle radius={zone.radius * 0.28} fill="#0d1117" />}
+          />
         </>
       );
 
     case "meteor":
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />
+          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
           <Circle radius={zone.radius * 0.45} fill={color} opacity={0.9} />
         </>
       );
@@ -872,17 +1176,25 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
         <>
           <Circle
             radius={zone.radius}
-            {...telegraphFill(zone, zone.radius)}
+            {...telegraphFill(zone, zone.radius, blast)}
             {...border}
             opacity={0.5}
           />
-          <Circle radius={zone.radius * 0.66} fill={color} opacity={0.3} />
-          <Circle radius={zone.radius * 0.33} fill={color} opacity={0.5} />
+          <Stamp
+            art="proximity"
+            size={stampSize(zone.radius)}
+            fallback={
+              <>
+                <Circle radius={zone.radius * 0.66} fill={color} opacity={0.3} />
+                <Circle radius={zone.radius * 0.33} fill={color} opacity={0.5} />
+              </>
+            }
+          />
         </>
       );
 
     default:
-      return <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />;
+      return <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />;
   }
 }
 
@@ -965,6 +1277,21 @@ function Label({
  * A centred bitmap. Renders `fallback` (the old vector token) until the art
  * loads, or forever if the URL is bad — the canvas never goes blank.
  */
+/**
+ * A mechanic's in-game marker, stamped on its shape. The art is the thing a
+ * raider recognises at a glance, so it sits at token scale in the middle of
+ * the footprint rather than stretching to fill it, and is never the grab
+ * target. Until it loads, the drawn stand-in does the job.
+ */
+function Stamp({ art, size, fallback }: { art: string; size: number; fallback?: React.ReactNode }) {
+  return (
+    <Sprite src={assetUrl(`mechanic/${art}`)} width={size} height={size} listening={false} fallback={fallback} />
+  );
+}
+
+/** Marker art is token-sized: it grows with a small shape and stops with a big one. */
+const stampSize = (extent: number) => Math.min(Math.max(extent * 1.1, 70), 150);
+
 function Sprite({
   src,
   width,

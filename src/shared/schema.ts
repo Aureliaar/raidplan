@@ -49,6 +49,10 @@ export const ZONE_SHAPES = [
   "exaflare",
   "knockback",
   "stack",
+  /** A stack you line up for: a beam from the boss that several people share. */
+  "linestack",
+  /** A big circle on one person that they carry away from everyone else. */
+  "flare",
   "spread",
   "tower",
   "eye",
@@ -150,6 +154,19 @@ const BaseEntity = {
       label: z.string().optional(),
     })
     .nullish(),
+  /**
+   * Copies made by the canvas symmetry tool. Keeping the relationship in the
+   * document means any face can be edited later and the rest of the set can
+   * follow, rather than symmetry being a temporary rendering trick.
+   */
+  symmetry: z
+    .object({
+      id: z.string(),
+      kind: z.enum(["mirror", "rotate"]),
+      count: z.union([z.literal(2), z.literal(4)]),
+      index: z.number().int().min(0).max(3),
+    })
+    .nullish(),
   /** `"all"` or the list of step ids this entity exists in. */
   steps: z.union([z.literal("all"), z.array(z.string())]).default("all"),
   /**
@@ -183,7 +200,9 @@ export const PlayerEntitySchema = z.object({
   job: z.string().default("any"),
   /** Override the art picked from `job` — an asset key or image URL. */
   icon: z.string().optional(),
-  size: z.number().positive().default(72),
+  // Small enough that eight of them leave the floor readable: the token is
+  // decoration around a point, and the AoEs are what the plan is about.
+  size: z.number().positive().default(60),
   /** Draw a facing pip so "face north" plans read at a glance. */
   showFacing: z.boolean().default(false),
 });
@@ -208,13 +227,13 @@ export const ZoneEntitySchema = z.object({
   ...BaseEntity,
   type: z.literal("zone"),
   shape: z.enum(ZONE_SHAPES),
-  /** circle / donut / proximity / stack / spread / tower outer radius. */
+  /** circle / donut / proximity / stack / flare / spread / tower outer radius. */
   radius: z.number().positive().default(150),
   /** donut hole radius. */
   innerRadius: z.number().min(0).default(75),
   /** cone width in degrees. */
   angle: z.number().min(1).max(360).default(90),
-  /** rect / line / arrow / knockback footprint. */
+  /** rect / line / arrow / knockback / linestack footprint. */
   width: z.number().positive().default(150),
   length: z.number().positive().default(400),
   /** exaflare / stack marker count. */
@@ -299,8 +318,52 @@ export const StepSchema = z.object({
   id: z.string(),
   name: z.string().default(""),
   notes: z.string().default(""),
+  /**
+   * The section of the fight this step is part of, if any. Steps of one
+   * mechanic are kept contiguous in `plan.steps`, in the order its variants
+   * are listed — the flat array stays the single ordering everything else
+   * (poses, mech spans, `move_step`) is written against.
+   */
+  mechanic: z.string().optional(),
+
 });
 export type Step = z.infer<typeof StepSchema>;
+
+/**
+ * One way a mechanic is played: "Near first" against "Far first". A mechanic
+ * either has none — it happens one way — or two and up, each owning its own
+ * run of steps.
+ */
+export const VariantSchema = z.object({
+  id: z.string(),
+  name: z.string().default(""),
+  /**
+   * Whose reading this is. Set by the server to whoever added it, and it is the
+   * whole of "who edits what": one plan can hold everybody's answer to the same
+   * mechanic, and only the person whose answer it is can change theirs. A
+   * variant with no owner — every one written before this existed — is the
+   * plan's, and anyone who can edit the plan can edit it.
+   */
+  ownerId: z.string().optional(),
+  /** Their name as it read when they claimed it, so the pill can say whose it is. */
+  ownerName: z.string().optional(),
+});
+export type Variant = z.infer<typeof VariantSchema>;
+
+/**
+ * A section of the encounter — "Witch Hunt", "Electrope Edge 1" — owning an
+ * ordered run of steps. This is the outline of the fight, not to be confused
+ * with `Mech` below, which is one cast written as two moments.
+ *
+ * `variants` is a flat list on purpose: v1 offers one A/B axis per mechanic,
+ * and a third reading is one more entry rather than a new dimension.
+ */
+export const MechanicSchema = z.object({
+  id: z.string(),
+  name: z.string().default(""),
+  variants: z.array(VariantSchema).default([]),
+});
+export type Mechanic = z.infer<typeof MechanicSchema>;
 
 /**
  * A mechanic, as a slot in the plan's timeline.
@@ -319,8 +382,84 @@ export const MechSchema = z.object({
   snap: z.string().default(""),
   /** The step it resolves in. Same as `snap` for anything instant. */
   boom: z.string().default(""),
+  /**
+   * The colour everything in it is drawn in. Two casts on the floor at once
+   * are only readable if you can tell at a glance which shapes belong together,
+   * so the mech owns the colour and its shapes do not get a say. Unset on a
+   * mech from before colours existed — `mechColor` picks one for it.
+   */
+  color: z.string().optional(),
+  /**
+   * Only in one reading of its mechanic. This is what a variant owns: the steps
+   * are the same steps either way, and what differs is which casts land in them
+   * — and, quietly, where the party stands.
+   */
+  variant: z.string().optional(),
 });
 export type Mech = z.infer<typeof MechSchema>;
+
+/** Hues that stay apart on the dark arena and from each other. */
+export const MECH_COLORS = [
+  "#ff7043", // orange
+  "#26c6da", // cyan
+  "#ec407a", // magenta
+  "#9ccc65", // lime
+  "#ab47bc", // violet
+  "#ffca28", // amber
+  "#ef5350", // red
+  "#4db6ac", // teal
+];
+
+/** A mech's colour, or a stable stand-in for one that was never given one. */
+export function mechColor(plan: Plan, mech: Mech): string {
+  if (mech.color) return mech.color;
+  const i = Math.max(0, plan.mechs.findIndex((m) => m.id === mech.id));
+  return MECH_COLORS[i % MECH_COLORS.length];
+}
+
+/**
+ * What a shape is coloured before anyone says otherwise. A raider reads the
+ * floor by family long before they read any legend: stacks are yellow, the
+ * things the boss throws are red-orange, towers are purple, and whatever a
+ * bait anchor puts down is green — an add's mechanic, not the boss's.
+ * Several shades to a family so two of the same kind are still two.
+ */
+export const ZONE_FAMILIES = {
+  stack: ["#ffd54f", "#ffca28", "#ffe082", "#fdd835"],
+  cast: ["#ff7043", "#ef5350", "#ff8a65", "#e64a19", "#f4511e"],
+  tower: ["#ab47bc", "#9575cd", "#8e24aa", "#ba68c8"],
+  bait: ["#9ccc65", "#c0ca33", "#aed581", "#cddc39"],
+} as const;
+
+const FAMILY_OF: Record<string, keyof typeof ZONE_FAMILIES> = {
+  stack: "stack",
+  linestack: "stack",
+  tower: "tower",
+};
+
+/** A stable pick inside a family, so a shape keeps its shade across reloads. */
+function shadeOf(id: string, family: keyof typeof ZONE_FAMILIES): string {
+  const shades = ZONE_FAMILIES[family];
+  let h = 0;
+  for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) >>> 0;
+  return shades[h % shades.length];
+}
+
+/** The family colour for a zone, or undefined when it is not a zone at all. */
+export function zoneFamilyColor(plan: Plan, e: Entity): string | undefined {
+  if (e.type !== "zone") return undefined;
+  const from = e.anchor?.from
+    ? plan.entities.find((o) => o.id === e.anchor!.from)
+    : undefined;
+  // Where it comes from beats what shape it is: an add's stack is still the
+  // add's colour, because that is the thing you have to look at.
+  const family =
+    from?.type === "enemy" && from.role === "anchor" ? "bait" : FAMILY_OF[e.shape] ?? "cast";
+  // The family says what kind of thing it is; the shade says whose it is, so
+  // two casts of the same shape are still told apart at a glance. Eight shapes
+  // from one drop are one thing and take one shade.
+  return shadeOf(e.mech ?? e.bond?.id ?? e.id, family);
+}
 
 export const PlanSchema = z.object({
   version: z.literal(1).default(1),
@@ -330,7 +469,9 @@ export const PlanSchema = z.object({
   encounter: z.string().default(""),
   arena: ArenaSchema.prefault({}),
   steps: z.array(StepSchema).default([]),
-  /** The mechanics of the fight, each spanning a run of steps. */
+  /** The outline of the fight: sections of it, each owning a run of steps. */
+  mechanics: z.array(MechanicSchema).default([]),
+  /** The casts, each spanning a run of steps. */
   mechs: z.array(MechSchema).default([]),
   /** Draw order: later entities render on top. */
   entities: z.array(EntitySchema).default([]),
@@ -403,20 +544,115 @@ export interface User {
  * socket rather than from an op.
  */
 export function hydratePlan(plan: Plan): Plan {
-  return plan.mechs ? plan : { ...plan, mechs: [] };
+  const filled =
+    plan.mechs && plan.mechanics
+      ? plan
+      : { ...plan, mechs: plan.mechs ?? [], mechanics: plan.mechanics ?? [] };
+  return groupLooseSteps(filled);
 }
 
 /**
- * Resolve an entity's properties for a given step: base props with that
- * step's overrides merged on top.
+ * Every step belongs to a mechanic.
+ *
+ * A plan written before the outline existed has steps and no sections at all,
+ * and a rail that drew those loose above the sections read as two competing
+ * lists. So a run of steps belonging to nothing becomes a mechanic of its own,
+ * where that run sits — for an old plan, one section holding the whole fight.
+ * Hydration runs on the way out of storage, so the next write persists it.
+ */
+function groupLooseSteps(plan: Plan): Plan {
+  const known = new Set(plan.mechanics.map((m) => m.id));
+  if (plan.steps.every((s) => s.mechanic && known.has(s.mechanic))) return plan;
+
+  const mechanics: Mechanic[] = [];
+  const steps: Step[] = [];
+  let run: string | undefined;
+  for (const step of plan.steps) {
+    if (step.mechanic && known.has(step.mechanic)) {
+      run = undefined;
+      if (!mechanics.some((m) => m.id === step.mechanic))
+        mechanics.push(plan.mechanics.find((m) => m.id === step.mechanic)!);
+      steps.push(step);
+      continue;
+    }
+    if (!run) {
+      // Derived from the step it starts at rather than random, so the browser
+      // and the server agree on it before anybody writes the plan back.
+      run = `mechanic_${step.id.replace(/^step_/, "")}`;
+      mechanics.push({ id: run, name: "", variants: [] });
+    }
+    steps.push({ ...step, mechanic: run });
+  }
+  // Sections follow their steps, so a mechanic nothing is in is not a section.
+  return { ...plan, mechanics, steps };
+}
+
+/**
+ * The steps of one mechanic, in plan order — of one variant if you name one.
+ * A plan with no mechanics has every step in the ungrouped run, which is what
+ * `mechanic: undefined` selects.
+ */
+export function mechanicSteps(plan: Plan, mechanicId: string | undefined): Step[] {
+  return plan.steps.filter((s) => s.mechanic === mechanicId);
+}
+
+/** What a mechanic is called: its own name, or its place in the fight. */
+export function mechanicLabel(plan: Plan, mechanic: Mechanic): string {
+  if (mechanic.name) return mechanic.name;
+  return `Mechanic ${plan.mechanics.indexOf(mechanic) + 1}`;
+}
+
+/**
+ * What each reading of a mechanic is drawn in. Deliberately not the mech
+ * palette: a lane in the rail is saying "this only happens the one way", not
+ * "this cast is orange".
+ */
+export const VARIANT_COLORS = ["#7aa2f7", "#ab47bc", "#26c6da", "#9ccc65", "#ffca28"];
+
+/** A variant's colour — its place in the mechanic, wrapped round the palette. */
+export function variantColor(mechanic: Mechanic, variantId: string): string {
+  const i = Math.max(0, mechanic.variants.findIndex((v) => v.id === variantId));
+  return VARIANT_COLORS[i % VARIANT_COLORS.length];
+}
+
+/** What a variant is called: its own name, or its letter — A, B, C. */
+export function variantLabel(mechanic: Mechanic, variantId: string): string {
+  const i = mechanic.variants.findIndex((v) => v.id === variantId);
+  if (i < 0) return "?";
+  return mechanic.variants[i].name || String.fromCharCode(65 + i);
+}
+
+/**
+ * Where a pose is filed. A shared step is one row of the rail but can hold two
+ * readings of where the party stands, so an override is keyed by the step and,
+ * when the move belongs to one variant, by that variant too.
+ */
+export function poseKey(stepId: string, variantId?: string): string {
+  return variantId ? `${stepId}@${variantId}` : stepId;
+}
+
+/** The step half of a pose key — `poseKey` undone. */
+export function poseStep(key: string): string {
+  const at = key.indexOf("@");
+  return at < 0 ? key : key.slice(0, at);
+}
+
+/**
+ * Resolve an entity's properties for a given step: base props, then that step's
+ * overrides, then the ones belonging to the variant being played. So a move
+ * made in one reading of a mechanic lands there and nowhere else, while a step
+ * nobody has varied looks the same both ways.
  */
 export function resolveEntity<T extends Entity>(
   entity: T,
   stepId: string | undefined,
+  variantId?: string,
 ): T {
-  const ov = stepId ? entity.overrides?.[stepId] : undefined;
-  if (!ov || Object.keys(ov).length === 0) return entity;
-  return { ...entity, ...(ov as Partial<T>) };
+  if (!stepId) return entity;
+  const shared = entity.overrides?.[stepId];
+  const mine = variantId ? entity.overrides?.[poseKey(stepId, variantId)] : undefined;
+  if (!shared && !mine) return entity;
+  return { ...entity, ...(shared as Partial<T>), ...(mine as Partial<T>) };
 }
 
 /**
@@ -603,13 +839,27 @@ export function entitiesForStep(
   plan: Plan,
   stepId: string | undefined,
   live?: Map<string, { x: number; y: number }>,
+  /** Which reading of each mechanic is being played, by mechanic id. */
+  shown?: Record<string, string>,
 ): Entity[] {
+  /**
+   * Which reading of a step's mechanic is being played. Nobody saying means the
+   * one it opens on, so a plain read of the plan is a coherent fight rather
+   * than every reading at once.
+   */
+  const variantOf = (sid: string | undefined) => {
+    const step = sid ? plan.steps.find((s) => s.id === sid) : undefined;
+    const mechanic = step?.mechanic ? plan.mechanics?.find((m) => m.id === step.mechanic) : undefined;
+    if (!mechanic?.variants.length) return undefined;
+    const playing = shown?.[mechanic.id];
+    return mechanic.variants.some((v) => v.id === playing) ? playing : mechanic.variants[0].id;
+  };
   /** Every entity as it stands in one step, before any binding is solved. */
   const posesIn = (sid: string | undefined) =>
     plan.entities
       .filter((e) => entityInStep(e, sid, plan))
       .map((e) => {
-        const base = resolveEntity(e, sid);
+        const base = resolveEntity(e, sid, variantOf(sid));
         // A drag in progress: the canvas hands us where the thing is *right
         // now*, before any of it has been committed, so bindings solve against
         // the pose you are looking at instead of the one you started from.
@@ -637,11 +887,28 @@ export function entitiesForStep(
     const mech = raw.mech
       ? plan.mechs?.find((m) => m.id === raw.mech)
       : undefined;
-    // Before it goes off a mech is a telegraph on the floor, so it is drawn
+    // A cast gated to one reading is simply not there in the other.
+    if (mech?.variant && mech.variant !== variantOf(stepId)) continue;
+    // A mech's shapes wear its colour, whatever they were dropped as. And
+    // before it goes off a mech is a telegraph on the floor, so it is drawn
     // faint until the step it resolves in, where it reads as the hit it is.
+    // Colour, most particular first: what you set on the thing, then a colour
+    // picked for the mech by hand, then the family the shape belongs to, then
+    // the mech's own stand-in colour for everything that has no family —
+    // anchors, tethers, the marks that are not shapes.
+    const dressed = raw.color
+      ? undefined
+      : mech?.color ?? zoneFamilyColor(plan, raw) ?? (mech ? mechColor(plan, mech) : undefined);
     const e =
-      mech && stepId && stepId !== (mech.boom || mech.snap)
-        ? ({ ...raw, opacity: raw.opacity * 0.55 } as Entity)
+      dressed || mech
+        ? ({
+            ...raw,
+            ...(dressed ? { color: dressed } : {}),
+            opacity:
+              mech && stepId && stepId !== (mech.boom || mech.snap)
+                ? raw.opacity * 0.55
+                : raw.opacity,
+          } as Entity)
         : raw;
     if (!e.anchor) {
       out.push(e);

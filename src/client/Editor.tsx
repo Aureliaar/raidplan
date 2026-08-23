@@ -1,3 +1,4 @@
+import type { Dispatch, SetStateAction } from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import { api } from "./api";
@@ -7,8 +8,30 @@ import { Scene } from "./canvas/Scene";
 import { Inspector } from "./Inspector";
 import { ChatPanel } from "./ChatPanel";
 import type { Op } from "../shared/apply";
-import type { Entity, Mech, Plan, PlanRole, PlayerEntity, PropBag, User } from "../shared/schema";
-import { entitiesForStep, hydratePlan, mechLabel, mechSpan } from "../shared/schema";
+import type { PlanHistory, PlanRevision } from "../shared/history";
+import type {
+  Entity,
+  Mech,
+  Mechanic,
+  Plan,
+  PlanRole,
+  PlayerEntity,
+  PropBag,
+  Step,
+  User,
+} from "../shared/schema";
+import {
+  entitiesForStep,
+  hydratePlan,
+  mechLabel,
+  MECH_COLORS,
+  mechColor,
+  mechSpan,
+  mechanicLabel,
+  mechanicSteps,
+  variantColor,
+  variantLabel,
+} from "../shared/schema";
 import type { PaletteKind } from "../shared/ops";
 import {
   PALETTE,
@@ -20,6 +43,13 @@ import {
   resizeSpec,
 } from "../shared/ops";
 import { jobLabel, roleOf } from "../shared/jobs";
+import {
+  makeSymmetricAdds,
+  symmetricUpdates,
+  symmetryIds,
+  type SymmetryCount,
+  type SymmetryKind,
+} from "./symmetry";
 
 /**
  * The editor. Plan state arrives over the PlanAgent WebSocket — which is also
@@ -32,6 +62,24 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [stepIndex, setStepIndex] = useState(0);
   const [selected, setSelected] = useState<string | null>(null);
   const [scope, setScope] = useState<"step" | "all">("step");
+  const [symmetryCount, setSymmetryCount] = useState<SymmetryCount>(1);
+  const [symmetryKind, setSymmetryKind] = useState<SymmetryKind>("mirror");
+  /**
+   * Which reading of each mechanic is on screen, by mechanic id. Purely what
+   * you are looking at — nobody else's plan changes because you flipped to
+   * "Far first" — so it lives here and is never written to the document. It
+   * decides what the canvas draws, because a shared step can hold a different
+   * set of positions in each reading.
+   */
+  const [shown, setShown] = useState<Record<string, string>>({});
+  /**
+   * Bumped on every keyboard walk of the fight. A click means "show me that",
+   * and shows it; a keypress means "and then this happens", so the canvas walks
+   * into it. Only the counter changing says a move was asked for by hand.
+   */
+  const [glide, setGlide] = useState(0);
+  /** Whether that walk is forwards through the fight — S, rather than W or a reading. */
+  const [onward, setOnward] = useState(true);
   /**
    * Waymarks are the floor the fight is played on, not part of any one step, so
    * they are frozen until you come up to their layer on purpose.
@@ -40,9 +88,19 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [connected, setConnected] = useState(false);
+  const [history, setHistory] = useState<PlanHistory | null>(null);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
   /** What is in the hand mid-drag, purely so the drop targets can light up. */
   const [carrying, setCarrying] = useState<PaletteKind | null>(null);
   const [hover, setHover] = useState<GroupId | null>(null);
+  /**
+   * A whole group picked up by its card, on its way to somewhere on the floor.
+   * "G1 goes north" is a thing you say about a fight and, until now, eight
+   * drags to draw. Letting go makes a fresh tight stack rather than carrying
+   * whatever scattered formation the members happened to start in.
+   */
+  const [carryGroup, setCarryGroup] = useState<GroupId | null>(null);
   /** A bond whose members should ring on the canvas while you point at its row. */
   const [highlight, setHighlight] = useState<string | null>(null);
   /**
@@ -58,14 +116,29 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const planRef = useRef<Plan | null>(null);
   planRef.current = plan;
   /** Wheel notches land far faster than a round trip, so they are pooled. */
-  const pendingResize = useRef<{ ids: string[]; factor: number } | null>(null);
+  const pendingResize = useRef<{ ids: string[]; factor: number; what: "size" | "opacity" } | null>(null);
   const resizeTimer = useRef<number | null>(null);
+  const historyRefreshTimer = useRef<number | null>(null);
+  /** Stable for this browser tab, so edits are automatically grouped as one work session. */
+  const editSession = useRef("");
+  if (!editSession.current) {
+    const key = `raidplan:work-session:${planId}`;
+    editSession.current = sessionStorage.getItem(key) || crypto.randomUUID();
+    sessionStorage.setItem(key, editSession.current);
+  }
 
   useAgent({
     agent: "plan-agent",
     name: planId,
     onStateUpdate: (state: Plan) => {
-      if (state?.id) setPlan(hydratePlan(state));
+      if (state?.id) {
+        setPlan(hydratePlan(state));
+        // The broadcast can arrive just before its revision metadata is stored.
+        if (historyRefreshTimer.current !== null) window.clearTimeout(historyRefreshTimer.current);
+        historyRefreshTimer.current = window.setTimeout(() => {
+          void api.history(planId).then(setHistory).catch(() => undefined);
+        }, 80);
+      }
     },
     onOpen: () => setConnected(true),
     onClose: () => setConnected(false),
@@ -77,9 +150,18 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       .then((res) => {
         setPlan(hydratePlan(res.plan));
         setRole(res.role);
+        return api.history(planId);
       })
+      .then(setHistory)
       .catch((e) => setError(e.message));
   }, [planId]);
+
+  useEffect(
+    () => () => {
+      if (historyRefreshTimer.current !== null) window.clearTimeout(historyRefreshTimer.current);
+    },
+    []
+  );
 
   const editable = role !== "viewer";
   const step = plan?.steps[Math.min(stepIndex, (plan?.steps.length ?? 1) - 1)];
@@ -87,16 +169,93 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const run = useCallback(
     async (ops: Op | Op[]) => {
       try {
-        const res = await api.ops(planId, ops);
+        const current = planRef.current;
+        const symmetricCount = symmetryCount === 2 ? 2 : 4;
+        const expanded = (Array.isArray(ops) ? ops : [ops]).flatMap((op): Op[] => {
+          if (
+            op.op === "add_entity" &&
+            symmetryCount > 1 &&
+            typeof op.spec.x === "number" &&
+            typeof op.spec.y === "number" &&
+            !op.spec.anchor &&
+            !op.spec.bond &&
+            op.spec.type !== "tether"
+          )
+            return makeSymmetricAdds(op.spec, symmetryKind, symmetricCount);
+          if (op.op === "update_entity" && current && symmetryCount > 1)
+            return symmetricUpdates(
+              current,
+              op,
+              symmetryKind,
+              symmetricCount,
+              entitiesForStep(current, step?.id, undefined, shown)
+            );
+          if (op.op === "delete_entities" && current && symmetryCount > 1)
+            return [{ ...op, ids: symmetryIds(current, op.ids) }];
+          if (op.op === "assign_mech" && current && symmetryCount > 1)
+            return [{ ...op, ids: symmetryIds(current, op.ids) }];
+          return [op];
+        });
+        const res = await api.ops(planId, expanded, editSession.current);
         setPlan(hydratePlan(res.plan));
+        setHistory(res.history);
         return res;
       } catch (e) {
         setError((e as Error).message);
         throw e;
       }
     },
-    [planId]
+    [planId, symmetryCount, symmetryKind, shown, step?.id]
   );
+
+  const travelHistory = useCallback(
+    async (direction: "undo" | "redo" | "revert", revisionId?: string) => {
+      if (historyBusy) return;
+      setHistoryBusy(true);
+      try {
+        const res =
+          direction === "undo"
+            ? await api.undo(planId)
+            : direction === "redo"
+              ? await api.redo(planId)
+              : await api.revert(planId, revisionId!, editSession.current);
+        setPlan(hydratePlan(res.plan));
+        setHistory(res.history);
+        setSelected(null);
+        setNote(
+          direction === "undo"
+            ? "Undid last change"
+            : direction === "redo"
+              ? "Redid change"
+              : "Restored an earlier revision"
+        );
+      } catch (e) {
+        setError((e as Error).message);
+      } finally {
+        setHistoryBusy(false);
+      }
+    },
+    [historyBusy, planId]
+  );
+
+  /** Canvas authoring modes: 1/2/3 choose the coverage; Q changes the transform. */
+  useEffect(() => {
+    if (!editable) return;
+    const onKey = (ev: KeyboardEvent) => {
+      const el = ev.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (ev.key === "1" || ev.key === "2" || ev.key === "3") {
+        ev.preventDefault();
+        setSymmetryCount(ev.key === "1" ? 1 : ev.key === "2" ? 2 : 4);
+      } else if (ev.key.toLowerCase() === "q") {
+        ev.preventDefault();
+        setSymmetryKind((kind) => (kind === "mirror" ? "rotate" : "mirror"));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [editable]);
 
   /**
    * The two gestures every editor has. Deliberately not bound while a field has
@@ -108,6 +267,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       const el = ev.target as HTMLElement | null;
       if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
       const mod = ev.ctrlKey || ev.metaKey;
+      const key = ev.key.toLowerCase();
+      if (mod && (key === "z" || key === "y")) {
+        ev.preventDefault();
+        const redo = key === "y" || (key === "z" && ev.shiftKey);
+        void travelHistory(redo ? "redo" : "undo");
+        return;
+      }
       if (!mod && (ev.key === "Delete" || ev.key === "Backspace")) {
         if (!selected) return;
         ev.preventDefault();
@@ -143,7 +309,52 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editable, selected, plan, run]);
+  }, [editable, selected, plan, run, travelHistory]);
+
+  /**
+   * Walking the fight from the keyboard, on the rail's own two axes: W and S
+   * are the steps in order, A and D the readings of the mechanic you are in.
+   * Looking is not editing, so a viewer walks the plan too.
+   */
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      if (!plan?.steps.length) return;
+      const el = ev.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      const key = ev.key.toLowerCase();
+      if (!"wasd".includes(key) || key.length !== 1) return;
+      const here = Math.min(stepIndex, plan.steps.length - 1);
+      if (key === "w" || key === "s") {
+        ev.preventDefault();
+        setGlide((n) => n + 1);
+        setOnward(key === "s");
+        // The whole fight in order, not one section of it: walking off the end
+        // of a mechanic is walking into the next one, which is what it is.
+        setStepIndex(Math.max(0, Math.min(plan.steps.length - 1, here + (key === "s" ? 1 : -1))));
+        return;
+      }
+      // Sideways is the readings of the mechanic this step belongs to. Its
+      // steps are shared by all of them, so you stay on the step you are on
+      // and watch it go the other way.
+      const mechanic = plan.mechanics.find((m) => m.id === plan.steps[here].mechanic);
+      if (!mechanic || mechanic.variants.length < 2) return;
+      ev.preventDefault();
+      setGlide((n) => n + 1);
+      // Sideways is not the fight going on: the other reading is the same
+      // moment, so nothing in this one resolves.
+      setOnward(false);
+      setShown((was) => {
+        const at = mechanic.variants.findIndex((v) => v.id === was[mechanic.id]);
+        const from = at < 0 ? 0 : at;
+        const n = mechanic.variants.length;
+        const to = (from + (key === "d" ? 1 : n - 1)) % n;
+        return { ...was, [mechanic.id]: mechanic.variants[to].id };
+      });
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [plan, stepIndex]);
 
   if (error && !plan) return <div className="p-8 text-red-400">{error}</div>;
   if (!plan || !step) return <div className="p-8 text-ink-400">Loading plan…</div>;
@@ -151,6 +362,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const selectedEntity = plan.entities.find((e) => e.id === selected) ?? null;
   /** The mech slot currently open, if the one that was open still exists. */
   const openMech = plan.mechs.find((m) => m.id === mech) ?? null;
+
+  /**
+   * The reading of this step's mechanic that is being played, if it goes more
+   * than one way. It is what the canvas resolves positions through, and where
+   * a drag on this step lands.
+   */
+  const stepMechanic = plan.mechanics.find((m) => m.id === step.mechanic) ?? null;
+  const playing = stepMechanic?.variants.length
+    ? (stepMechanic.variants.find((v) => v.id === shown[stepMechanic.id]) ?? stepMechanic.variants[0])
+        .id
+    : undefined;
 
   /** Pointer position, in arena units, from a drag event over the stage. */
   function arenaPoint(ev: React.DragEvent): { x: number; y: number } {
@@ -165,7 +387,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
 
   /** A bait anchor under the drop point, if the drop landed on one. */
   function anchorAt(pt: { x: number; y: number }): string | undefined {
-    return entitiesForStep(plan!, step!.id).find(
+    return entitiesForStep(plan!, step!.id, undefined, shown).find(
       (e) =>
         e.type === "enemy" &&
         e.role === "anchor" &&
@@ -183,10 +405,20 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   }
 
   function membersOf(group: GroupId): PlayerEntity[] {
-    return entitiesForStep(plan!, step!.id).filter((e): e is PlayerEntity => {
+    return entitiesForStep(plan!, step!.id, undefined, shown).filter((e): e is PlayerEntity => {
       if (e.type !== "player") return false;
       if (group === "party") return true;
+      // The light parties, read off the callout names a static already uses:
+      // MT H1 M1 R1 against OT H2 M2 R2. Anyone named otherwise is in neither,
+      // which is honest — the plan has not said which side they are on.
+      if (group === "g1" || group === "g2") {
+        const name = (e.name ?? "").trim().toUpperCase();
+        const side = name === "MT" ? "g1" : name === "OT" ? "g2" : /1$/.test(name) ? "g1" : /2$/.test(name) ? "g2" : null;
+        return side === group;
+      }
       const r = roleOf(e.job) === "any" ? roleOf(e.name ?? "") : roleOf(e.job);
+      if (group === "tanks") return r === "tank";
+      if (group === "healers") return r === "healer";
       const support = r === "tank" || r === "healer";
       return group === "supports" ? support : !support;
     });
@@ -198,7 +430,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * it is the real dimensions that change, not `scale`, so the plan keeps
    * saying how big the thing is.
    */
-  function resize(id: string, factor: number) {
+  function resize(id: string, factor: number, what: "size" | "opacity" = "size") {
     const current = planRef.current;
     const target = current?.entities.find((e) => e.id === id);
     if (!current || !target) return;
@@ -206,9 +438,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       ? current.entities.filter((e) => e.bond?.id === target.bond!.id).map((e) => e.id)
       : [id];
     // Pointing somewhere else mid-spin: land what is owed before starting again.
-    if (pendingResize.current && pendingResize.current.ids[0] !== ids[0]) flushResize();
+    if (
+      pendingResize.current &&
+      (pendingResize.current.ids[0] !== ids[0] || pendingResize.current.what !== what)
+    )
+      flushResize();
     const carried = pendingResize.current?.factor ?? 1;
-    pendingResize.current = { ids, factor: carried * factor };
+    pendingResize.current = { ids, factor: carried * factor, what };
     if (resizeTimer.current === null) resizeTimer.current = window.setTimeout(flushResize, 90);
   }
 
@@ -222,7 +458,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const edits = job.ids.flatMap((id) => {
       const e = current.entities.find((x) => x.id === id);
       if (!e) return [];
-      const patch = resizeSpec(e, job.factor);
+      // Opacity is one number on everything; size is whatever dimensions the
+      // shape has. Either way the wheel says "by this much", never "to this".
+      const patch =
+        job.what === "opacity"
+          ? { opacity: Math.min(1, Math.max(0.05, Math.round(e.opacity * job.factor * 100) / 100)) }
+          : resizeSpec(e, job.factor);
       return Object.keys(patch).length ? [{ op: "update_entity" as const, id, patch }] : [];
     });
     if (edits.length) void run(edits);
@@ -268,6 +509,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     donut: "donut",
     protean: "cone",
     beam: "rect",
+    stack8: "stack",
+    stack4: "stack",
+    stack2: "stack",
+    linestack: "linestack",
+    flare: "flare",
   };
 
   /**
@@ -337,6 +583,33 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     return { declaredIn: step!.id, ...(openMech ? { mech: openMech.id } : {}) };
   }
 
+  /** Put a whole group into a tight stack centred where its card was dropped. */
+  async function moveGroup(group: GroupId, pt: { x: number; y: number }) {
+    const people = membersOf(group);
+    if (!people.length) return;
+    // Keep just enough offset to make every token visible and selectable. Even
+    // an eight-person party fits inside one default 60-unit player token; G1/G2
+    // span 40 units, and a healer pair spans 28.
+    const radius = people.length < 2 ? 0 : Math.min(20, 8 + people.length * 3);
+    await run(
+      people.map((e, i) => {
+        const angle = -Math.PI / 2 + (i * Math.PI * 2) / people.length;
+        return {
+          op: "update_entity" as const,
+          id: e.id,
+          patch: {
+            x: Math.round(pt.x + Math.cos(angle) * radius),
+            y: Math.round(pt.y + Math.sin(angle) * radius),
+          },
+          // The same bargain as dragging one person: a move belongs to the step
+          // you are on, and to the reading you are looking at.
+          stepId: scope === "step" ? step!.id : undefined,
+          variant: scope === "step" ? playing : undefined,
+        };
+      })
+    );
+  }
+
   /** Reads the payload of a drop; ignores drags that did not start in the palette. */
   function kindOf(ev: React.DragEvent): PaletteKind | null {
     const k = ev.dataTransfer.getData("text/plain") as PaletteKind;
@@ -344,7 +617,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="relative flex h-full flex-col">
       <header className="panel flex items-center gap-3 border-x-0 border-t-0 px-3 py-2">
         <button className="btn" onClick={() => navigate("/")}>
           ← Plans
@@ -368,9 +641,56 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         <span className="text-xs text-ink-400">
           rev {plan.rev} · {connected ? "live" : "offline"} · {role}
         </span>
+        {editable && (
+          <div className="flex items-center gap-1" aria-label="Edit history controls">
+            <button
+              className="btn"
+              disabled={historyBusy || !history?.canUndo}
+              title="Undo (Ctrl+Z)"
+              onClick={() => void travelHistory("undo")}
+            >
+              ↶
+            </button>
+            <button
+              className="btn"
+              disabled={historyBusy || !history?.canRedo}
+              title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
+              onClick={() => void travelHistory("redo")}
+            >
+              ↷
+            </button>
+            <button
+              className={`btn ${historyOpen ? "border-blue-400 text-blue-200" : ""}`}
+              title="Revision history and work sessions"
+              onClick={() => setHistoryOpen((open) => !open)}
+            >
+              History
+            </button>
+          </div>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {editable && (
             <>
+              <div className="flex items-center gap-1" aria-label="Symmetry controls">
+                {([1, 2, 4] as const).map((count, index) => (
+                  <button
+                    key={count}
+                    className={`btn ${symmetryCount === count ? "border-blue-400 text-blue-200" : ""}`}
+                    title={`${count === 1 ? "Normal editing" : `${count}-way symmetry`} (${index + 1})`}
+                    aria-pressed={symmetryCount === count}
+                    onClick={() => setSymmetryCount(count)}
+                  >
+                    {index + 1}: {count === 1 ? "normal" : `${count}-way`}
+                  </button>
+                ))}
+                <button
+                  className={`btn ${symmetryCount > 1 ? "border-violet-400 text-violet-200" : ""}`}
+                  title="Toggle mirror / rotational symmetry (Q)"
+                  onClick={() => setSymmetryKind((kind) => (kind === "mirror" ? "rotate" : "mirror"))}
+                >
+                  Q: {symmetryKind === "mirror" ? "mirror" : "rotate"}
+                </button>
+              </div>
               <span className="label">Drag moves</span>
               <select
                 className="field w-auto"
@@ -394,7 +714,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           plan={plan}
           index={stepIndex}
           editable={editable}
+          me={user?.id ?? null}
           openMech={openMech}
+          shown={shown}
+          onShow={setShown}
           onSelect={setStepIndex}
           run={run}
           setIndex={setStepIndex}
@@ -418,15 +741,25 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 };
               }}
               onDragOver={(ev) => {
-                if (!carrying || layer === "markers") return;
+                if ((!carrying && !carryGroup) || layer === "markers") return;
                 ev.preventDefault();
-                ev.dataTransfer.dropEffect = "copy";
+                ev.dataTransfer.dropEffect = carryGroup ? "move" : "copy";
               }}
               onDrop={(ev) => {
+                const payload = ev.dataTransfer.getData("text/plain");
+                const pt = arenaPoint(ev);
+                // A group carried onto the floor goes there; a palette shape is
+                // made there. Same gesture, different sentence.
+                if (payload.startsWith("group:")) {
+                  ev.preventDefault();
+                  const g = payload.slice(6) as GroupId;
+                  if ((GROUPS as readonly string[]).includes(g)) void moveGroup(g, pt);
+                  setCarryGroup(null);
+                  return;
+                }
                 const kind = kindOf(ev);
                 if (!kind) return;
                 ev.preventDefault();
-                const pt = arenaPoint(ev);
                 const on = anchorAt(pt);
                 void drop(kind, pt, on ? { at: "anchor", id: on } : { at: "free" });
                 setCarrying(null);
@@ -434,18 +767,24 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               }}
             >
               {openMech && (
-                <div className="pointer-events-none absolute inset-x-0 top-0 z-10 bg-blue-500/20 px-2 py-1 text-center text-xs text-blue-100">
+                <div
+                  className="pointer-events-none absolute inset-x-0 top-0 z-10 px-2 py-1 text-center text-xs text-white"
+                  style={{ background: tint(mechColor(plan, openMech), 0.35) }}
+                >
                   Filling “{mechLabel(plan, openMech)}” — what you drop goes in it
                 </div>
               )}
               <Scene
                 plan={plan}
                 stepId={step.id}
+                shown={shown}
                 size={size}
                 selected={selected}
                 editable={editable}
                 layer={layer}
                 highlight={highlight}
+                glide={glide}
+                onward={onward}
                 onSelect={setSelected}
                 onResize={resize}
                 onMove={(id, x, y) =>
@@ -454,6 +793,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                     id,
                     patch: { x, y },
                     stepId: scope === "step" ? step.id : undefined,
+                    // In a mechanic that goes two ways, a move belongs to the
+                    // reading you are playing. Nothing has to be said about it:
+                    // you moved somebody while looking at this reading.
+                    variant: scope === "step" ? playing : undefined,
                   })
                 }
               />
@@ -477,7 +820,18 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               return (
                 <div
                   key={g}
-                  title={`Drop a mechanic here to give one to each of the ${g}`}
+                  draggable={editable && layer === "step" && people > 0}
+                  onDragStart={(ev) => {
+                    ev.dataTransfer.setData("text/plain", "group:" + g);
+                    ev.dataTransfer.effectAllowed = "move";
+                    setCarryGroup(g);
+                  }}
+                  onDragEnd={() => setCarryGroup(null)}
+                  title={
+                    people > 0
+                      ? `Drag this onto the floor to stack the ${GROUP_LABEL[g]} tightly there. Drop a mechanic here to give one to each of them`
+                      : `Drop a mechanic here to give one to each of the ${g}`
+                  }
                   onDragOver={(ev) => {
                     if (!carrying || carrying === "anchor") return;
                     ev.preventDefault();
@@ -494,7 +848,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                     setHover(null);
                   }}
                   className={`rounded-lg border-2 border-dashed p-3 transition ${
-                    hover === g
+                    editable && layer === "step" && people > 0 ? "cursor-grab active:cursor-grabbing" : ""
+                  } ${
+                    carryGroup === g
+                      ? "border-blue-400 bg-blue-500/20"
+                      : hover === g
                       ? "border-blue-400 bg-blue-500/25"
                       : carrying && carrying !== "anchor"
                         ? "border-blue-500/60 bg-ink-800/80"
@@ -678,6 +1036,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             entity={selectedEntity}
             stepId={step.id}
             scope={scope}
+            variant={playing}
+            shown={shown}
             editable={editable}
             run={run}
             onDeselect={() => setSelected(null)}
@@ -692,8 +1052,114 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         </div>
       )}
 
+      {historyOpen && history && (
+        <HistoryPanel
+          history={history}
+          busy={historyBusy}
+          editable={editable}
+          onClose={() => setHistoryOpen(false)}
+          onUndo={() => void travelHistory("undo")}
+          onRedo={() => void travelHistory("redo")}
+          onRevert={(id) => void travelHistory("revert", id)}
+        />
+      )}
+
       {user && <ChatPanel planId={planId} />}
     </div>
+  );
+}
+
+function HistoryPanel({
+  history,
+  busy,
+  editable,
+  onClose,
+  onUndo,
+  onRedo,
+  onRevert,
+}: {
+  history: PlanHistory;
+  busy: boolean;
+  editable: boolean;
+  onClose: () => void;
+  onUndo: () => void;
+  onRedo: () => void;
+  onRevert: (id: string) => void;
+}) {
+  const sessions: { id: string; startedAt: number; actor: string; revisions: PlanRevision[] }[] = [];
+  for (const revision of history.revisions) {
+    const last = sessions[sessions.length - 1];
+    if (last?.id === revision.sessionId) last.revisions.push(revision);
+    else
+      sessions.push({
+        id: revision.sessionId,
+        startedAt: revision.sessionStartedAt,
+        actor: revision.actorName,
+        revisions: [revision],
+      });
+  }
+  const when = (time: number) =>
+    new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(time);
+
+  return (
+    <aside className="absolute inset-y-0 right-0 z-30 flex w-[360px] flex-col border-l border-ink-600 bg-ink-900 shadow-2xl">
+      <div className="flex items-center gap-2 border-b border-ink-700 p-3">
+        <div>
+          <h2 className="font-semibold text-ink-100">Revision history</h2>
+          <p className="text-xs text-ink-400">Automatic snapshots, grouped by work session</p>
+        </div>
+        <button className="btn ml-auto" onClick={onClose} aria-label="Close history">✕</button>
+      </div>
+      <div className="flex gap-1 border-b border-ink-700 p-2">
+        <button className="btn flex-1" disabled={busy || !history.canUndo} onClick={onUndo}>↶ Undo</button>
+        <button className="btn flex-1" disabled={busy || !history.canRedo} onClick={onRedo}>↷ Redo</button>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+        {sessions.map((session) => (
+          <section key={session.id} className="mb-4">
+            <div className="mb-1 flex items-baseline gap-2">
+              <span className="text-xs font-semibold text-ink-200">{session.actor}</span>
+              <time className="text-[11px] text-ink-400">{when(session.startedAt)}</time>
+            </div>
+            <div className="overflow-hidden rounded-lg border border-ink-700">
+              {session.revisions.map((revision) => {
+                const current = revision.id === history.currentId;
+                return (
+                  <div
+                    key={revision.id}
+                    className={`group flex items-center gap-2 border-b border-ink-700 px-3 py-2 last:border-b-0 ${
+                      current ? "bg-blue-500/15" : "bg-ink-800"
+                    }`}
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-sm text-ink-200">{revision.summary}</div>
+                      <div className="text-[11px] text-ink-400">
+                        {when(revision.createdAt)} · rev {revision.rev}{current ? " · current" : ""}
+                      </div>
+                    </div>
+                    {editable && !current && revision.summary !== "History started" && (
+                      <button
+                        className="btn opacity-0 group-hover:opacity-100 focus:opacity-100"
+                        disabled={busy}
+                        title={`Restore revision ${revision.rev} as a new revision`}
+                        onClick={() => onRevert(revision.id)}
+                      >
+                        Restore
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+        ))}
+      </div>
+    </aside>
   );
 }
 
@@ -729,26 +1195,60 @@ interface Drag {
   id: string;
   mode: "top" | "bottom";
   grabbed: number;
+  /** Row indices within the section the box is drawn in, not step numbers. */
   lo: number;
   hi: number;
   /** Where it started, so every move is measured from the same place. */
   from: [number, number];
+  /**
+   * Carried onto the row of readings: the one it would belong to if you let go,
+   * `to` unset meaning both of them. Set only while the pointer is on a pill,
+   * so a plain up-and-down drag never puts a cast anywhere.
+   */
+  gate?: { to?: string };
   moved: boolean;
 }
 
+/** A row or heading being carried to another slot in its list. */
+interface Slide {
+  id: string;
+  /** The slot it is over right now — where it would land if you let go. */
+  at: number;
+  moved: boolean;
+}
+
+/** A list with one item lifted out and put back at `at`: the drag, previewed. */
+function reordered<T extends { id: string }>(list: T[], id: string, at: number): T[] {
+  const from = list.findIndex((x) => x.id === id);
+  if (from < 0) return list;
+  const out = [...list];
+  const [item] = out.splice(from, 1);
+  out.splice(Math.max(0, Math.min(out.length, at)), 0, item);
+  return out;
+}
+
 /**
- * The steps, and the mechanics running alongside them.
+ * The outline of the encounter: Encounter → Mechanic → (Variant) → Steps.
  *
- * A mech is a box spanning the steps it is on the floor for — from the one it
- * snapshots in to the one it goes off in — laid out in the same grid rows as the
- * step list, so the fight reads down the page: this cast is in the air here, it
- * lands there, and these two overlap.
+ * A mechanic is a section of the fight — "Witch Hunt", "Electrope Edge 1" —
+ * owning a run of steps, and one of them may be played two ways, each variant
+ * with steps of its own. Exactly one section is open, and which one is not a
+ * thing to remember: it is the section holding the step you have selected, so
+ * clicking a heading opens it by selecting into it. Every step is in a
+ * section — a plan written before any of this existed is hydrated into one
+ * mechanic holding the whole fight — so the rail is one list of headings.
+ *
+ * Inside a section the mechs run alongside the steps exactly as before: a box
+ * spanning the rows it is on the floor for, so the fight reads down the page.
  */
 function StepRail({
   plan,
   index,
   editable,
+  me,
   openMech,
+  shown,
+  onShow,
   onSelect,
   run,
   setIndex,
@@ -758,9 +1258,13 @@ function StepRail({
   plan: Plan;
   index: number;
   editable: boolean;
+  /** Who is looking, so a reading can say whether it is yours. */
+  me: string | null;
   openMech: Mech | null;
+  shown: Record<string, string>;
+  onShow: Dispatch<SetStateAction<Record<string, string>>>;
   onSelect(i: number): void;
-  run(ops: Op | Op[]): Promise<{ values: unknown[] }>;
+  run(ops: Op | Op[]): Promise<{ values: unknown[]; plan: Plan }>;
   setIndex(i: number): void;
   onOpenMech(id: string | null): void;
   onHighlight(id: string | null): void;
@@ -770,14 +1274,28 @@ function StepRail({
   const at = Math.min(index, plan.steps.length - 1);
   const current = plan.steps[at];
 
-  // Where the step rows are on screen, so a box being dragged can say which step
+  const [drag, setDrag] = useState<Drag | null>(null);
+  /**
+   * A row or a heading on its way somewhere: what is being dragged and which
+   * slot it is currently over. Where a step or a section sits *is* what it
+   * says, so dragging it is how you say it — there is nothing else to edit.
+   */
+  const [rowDrag, setRowDrag] = useState<Slide | null>(null);
+  const [sectionDrag, setSectionDrag] = useState<Slide | null>(null);
+  /** A drag that moved ends in a click too; this is how that click is ignored. */
+  const dragged = useRef(false);
+  /** The step, mech, mechanic or variant whose name is a field right now. */
+  const [renaming, setRenaming] = useState<string | null>(null);
+  const setShown = onShow;
+
+  // Where the step rows are on screen, so a box being dragged can say which row
   // the pointer is over. The rows are the ruler; nothing else measures.
-  const rows = useRef<(HTMLElement | null)[]>([]);
-  const rowAt = (clientY: number) => {
+  const rowRefs = useRef(new Map<string, HTMLElement | null>());
+  const rowAt = (clientY: number, visible: Step[]) => {
     let best = 0;
     let closest = Infinity;
-    plan.steps.forEach((_, i) => {
-      const r = rows.current[i]?.getBoundingClientRect();
+    visible.forEach((s, i) => {
+      const r = rowRefs.current.get(s.id)?.getBoundingClientRect();
       if (!r) return;
       const d = Math.abs(clientY - (r.top + r.height / 2));
       if (d < closest) {
@@ -787,30 +1305,244 @@ function StepRail({
     });
     return best;
   };
-  const [drag, setDrag] = useState<Drag | null>(null);
-  /** The step or mech whose name is currently a field in the rail. */
-  const [renaming, setRenaming] = useState<string | null>(null);
 
-  // Mechs that overlap cannot share a column, so each takes the first free one —
-  // the plainest thing that keeps two casts in the air at once both readable.
-  const placed: { mech: Mech; lo: number; hi: number; lane: number }[] = [];
-  for (const mech of plan.mechs) {
-    const span = mechSpan(plan, mech);
-    if (!span.length) continue;
-    let lo = plan.steps.findIndex((s) => s.id === span[0]);
-    let hi = lo + span.length - 1;
-    // A box being dragged is laid out where the pointer has it, not where the
-    // plan still says it is: the drag is the edit, previewed.
-    if (drag?.id === mech.id) [lo, hi] = [drag.lo, drag.hi];
-    let lane = 0;
-    while (placed.some((p) => p.lane === lane && p.lo <= hi && p.hi >= lo)) lane++;
-    placed.push({ mech, lo, hi, lane });
+  /**
+   * The same ruler for the headings — but measured once, when the drag starts.
+   * Sections are not all the same height, so previewing a swap moves the very
+   * headings you are aiming at; a ruler that moves under the pointer makes the
+   * preview flicker between two answers. The rows do not have that problem:
+   * they are all one height, so their ladder is the same before and after.
+   */
+  const headerRefs = useRef(new Map<string, HTMLElement | null>());
+  const headerRuler = useRef<number[]>([]);
+  const slotAt = (clientY: number, centres: number[]) => {
+    let best = 0;
+    let closest = Infinity;
+    centres.forEach((c, i) => {
+      const d = Math.abs(clientY - c);
+      if (d < closest) {
+        closest = d;
+        best = i;
+      }
+    });
+    return best;
+  };
+
+  /** The section that is open: the one the selected step is in. */
+  const openId = current?.mechanic ?? null;
+  const shownIn = (m: Mechanic) =>
+    m.variants.some((v) => v.id === shown[m.id]) ? shown[m.id] : m.variants[0]?.id;
+  // A mechanic's steps are its steps, whichever way it goes: the readings do
+  // not own them.
+  const stepsIn = (m: Mechanic) => mechanicSteps(plan, m.id);
+
+  /** The steps the selected one shares its section with — what ↑ and ↓ walk. */
+  const openMechanic = plan.mechanics.find((m) => m.id === openId) ?? null;
+  const siblings = openMechanic ? stepsIn(openMechanic) : [];
+
+  /**
+   * Where the mech boxes go in one section: a box belongs to the section its
+   * snapshot is in, and a cast reaching past the end of that section is drawn
+   * to the end of it. Boxes that overlap take the first free lane.
+   *
+   * A mechanic that goes two ways splits the rail into areas — what happens
+   * either way first, then one area per reading — so which area a box sits in
+   * is the plan saying who the cast is for. The areas stand even while empty:
+   * a reading with no casts of its own is a fact about the fight, not a gap.
+   */
+  function layout(visible: Step[], mechanic: Mechanic | null) {
+    const row = new Map(visible.map((s, i) => [s.id, i]));
+    const areas: (string | undefined)[] = [undefined, ...(mechanic?.variants.map((v) => v.id) ?? [])];
+    const split = areas.length > 1;
+    type Placed = { mech: Mech; lo: number; hi: number; lane: number };
+    /** The rows a cast covers as the plan has it — the drag is not in this. */
+    const span = (mech: Mech): [number, number] | undefined => {
+      const rows = mechSpan(plan, mech)
+        .map((id) => row.get(id))
+        .filter((i): i is number => i !== undefined);
+      return rows.length ? [Math.min(...rows), Math.max(...rows)] : undefined;
+    };
+
+    // The widths are read off the plan, never off the drag: a box in the hand
+    // keeps its old area's lane, so no column moves while you carry it. A rail
+    // that reflowed under the pointer would slide the area you were aiming at
+    // out from under it.
+    const lanesOf: Placed[][] = [];
+    const groups: { variant?: string; from: number; lanes: number }[] = [];
+    let from = 0;
+    for (const area of areas) {
+      const mine: Placed[] = [];
+      for (const mech of plan.mechs) {
+        if (!row.has(mech.snap)) continue;
+        if ((mech.variant ?? undefined) !== area) continue;
+        const rows = span(mech);
+        if (!rows) continue;
+        const [lo, hi] = rows;
+        let lane = 0;
+        while (mine.some((p) => p.lane === lane && p.lo <= hi && p.hi >= lo)) lane++;
+        mine.push({ mech, lo, hi, lane });
+      }
+      const lanes = Math.max(
+        split ? 1 : 0,
+        mine.reduce((n, p) => Math.max(n, p.lane + 1), 0)
+      );
+      lanesOf.push(mine);
+      groups.push({ variant: area, from, lanes });
+      from += lanes;
+    }
+
+    // The box in the hand is then drawn where the pointer has it — the area it
+    // would land in, over the rows it would cover — inside the lanes its target
+    // area already has. The drag is the edit, previewed.
+    if (drag) {
+      const held = plan.mechs.find((m) => m.id === drag.id);
+      const to = held && (drag.gate ? drag.gate.to : (held.variant ?? undefined));
+      const at = held ? areas.findIndex((a) => a === to) : -1;
+      if (held && at >= 0) {
+        for (const mine of lanesOf) {
+          const i = mine.findIndex((p) => p.mech.id === held.id);
+          if (i >= 0) mine.splice(i, 1);
+        }
+        const mine = lanesOf[at];
+        const [lo, hi] = [drag.lo, drag.hi];
+        let lane = 0;
+        while (
+          lane < groups[at].lanes - 1 &&
+          mine.some((p) => p.lane === lane && p.lo <= hi && p.hi >= lo)
+        )
+          lane++;
+        mine.push({ mech: held, lo, hi, lane });
+      }
+    }
+
+    const placed: Placed[] = [];
+    lanesOf.forEach((mine, i) =>
+      mine.forEach((p) => placed.push({ ...p, lane: groups[i].from + p.lane }))
+    );
+    // Always in the plan's own order, whatever the drag is doing: the grid says
+    // where a box sits, so the list never has to be resorted — and a box that
+    // kept its place in the list keeps the pointer, which is the drag itself.
+    placed.sort((a, b) => plan.mechs.indexOf(a.mech) - plan.mechs.indexOf(b.mech));
+    return { placed, lanes: from, groups };
   }
-  const lanes = placed.reduce((n, p) => Math.max(n, p.lane + 1), 0);
 
-  // F2 renames what you are working on, where it sits: the mech you have open,
-  // or failing that the step you are looking at. Double-click does the same.
-  const renameTarget = openMech?.id ?? current.id;
+  /**
+   * The open section's rows as the pointer currently has them, and the mech
+   * boxes laid out against *that* order: a cast's span is read off the step
+   * order, so it has to re-lay itself out while you carry a row past it.
+   */
+  const visibleRows = rowDrag ? reordered(siblings, rowDrag.id, rowDrag.at) : siblings;
+  // Only the open section draws rows, so only it can want lanes.
+  const laid = openMechanic
+    ? layout(visibleRows, openMechanic)
+    : { placed: [], lanes: 0, groups: [] as { variant?: string; from: number; lanes: number }[] };
+  /** The sections in the order the pointer has them, same bargain. */
+  const sections = sectionDrag
+    ? reordered(plan.mechanics, sectionDrag.id, sectionDrag.at)
+    : plan.mechanics;
+
+  /**
+   * The pills that say which reading is playing are also where you put a cast:
+   * carrying its box onto one is how a cast becomes that reading's, and onto
+   * "both" is how it goes back to happening either way.
+   */
+  const pillRefs = useRef(new Map<string, HTMLElement | null>());
+  /**
+   * The areas themselves are the other way of saying it, and the plain one:
+   * carry a box left or right into an area and the cast is that reading's.
+   */
+  const areaRefs = useRef(new Map<string, HTMLElement | null>());
+  const areaAt = (clientX: number): { to?: string } | undefined => {
+    // The gaps between areas, and the reach past the last one, belong to the
+    // area nearest them: a 4px gutter is not the pointer saying "shared".
+    let best: { to?: string } | undefined;
+    let near = 40;
+    for (const [id, el] of areaRefs.current) {
+      const r = el?.getBoundingClientRect();
+      if (!r) continue;
+      const d = clientX < r.left ? r.left - clientX : clientX > r.right ? clientX - r.right : 0;
+      if (d <= near) [best, near] = [{ to: id || undefined }, d];
+    }
+    return best;
+  };
+  const pillAt = (clientX: number, clientY: number): { to?: string } | undefined => {
+    for (const [id, el] of pillRefs.current) {
+      const r = el?.getBoundingClientRect();
+      if (r && clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom)
+        return { to: id || undefined };
+    }
+    return undefined;
+  };
+
+  /** Let go of a row: the slot it was dropped on, or a plain click if it never moved. */
+  function endRowDrag() {
+    const settled = rowDrag;
+    setRowDrag(null);
+    if (!settled?.moved) return;
+    dragged.current = true;
+    setTimeout(() => (dragged.current = false), 0);
+    const landing = siblings[Math.max(0, Math.min(siblings.length - 1, settled.at))];
+    const to = plan.steps.indexOf(landing);
+    void run({ op: "move_step", stepId: settled.id, index: to });
+    setIndex(to);
+  }
+
+  /** The same for a heading: the whole section goes where you put it. */
+  function endSectionDrag() {
+    const settled = sectionDrag;
+    setSectionDrag(null);
+    if (!settled?.moved) return;
+    dragged.current = true;
+    setTimeout(() => (dragged.current = false), 0);
+    // The selection is a place in `plan.steps`, and moving a block of them
+    // changes what is at that place: hold on to the step itself instead, or
+    // the open section changes under you.
+    const keep = current?.id;
+    void run({ op: "move_mechanic", mechanicId: settled.id, index: settled.at }).then((res) => {
+      const i = res.plan.steps.findIndex((s) => s.id === keep);
+      if (i >= 0) setIndex(i);
+    });
+  }
+
+  /**
+   * A slide is followed on the window rather than through pointer capture: the
+   * thing being carried is the thing being reordered, and the browser drops the
+   * capture the moment React moves that node to its new slot in the list.
+   */
+  useEffect(() => {
+    if (!rowDrag) return;
+    const move = (ev: PointerEvent) => {
+      const to = rowAt(ev.clientY, visibleRows);
+      setRowDrag((d) => (d && d.at !== to ? { ...d, at: to, moved: true } : d));
+    };
+    const up = () => endRowDrag();
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+  });
+
+  useEffect(() => {
+    if (!sectionDrag) return;
+    const move = (ev: PointerEvent) => {
+      const to = slotAt(ev.clientY, headerRuler.current);
+      setSectionDrag((d) => (d && d.at !== to ? { ...d, at: to, moved: true } : d));
+    };
+    const up = () => endSectionDrag();
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    return () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+    };
+  });
+
+  // F2 renames what you are working on, where it sits: the heading you have
+  // your keyboard on, else the mech you have open, else the step you are
+  // looking at. Double-click does the same, wherever you click.
+  const renameTarget = openMech?.id ?? current?.id ?? null;
   useEffect(() => {
     if (!editable) return;
     const onKey = (ev: KeyboardEvent) => {
@@ -818,43 +1550,152 @@ function StepRail({
       const el = ev.target as HTMLElement | null;
       if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
       ev.preventDefault();
-      setRenaming(renameTarget);
+      // Asked of the DOM rather than remembered: a heading that renames itself
+      // is replaced by the field, and a remembered focus would never come back.
+      // A variant pill is the narrower thing, so it wins over its mechanic.
+      const pill = el?.closest?.("[data-variant]")?.getAttribute("data-variant");
+      const heading = el?.closest?.("[data-mechanic]")?.getAttribute("data-mechanic");
+      setRenaming(pill ?? heading ?? renameTarget);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [editable, renameTarget]);
 
-  /** Let go of a box: the span it was dropped on, or a plain click if it never moved. */
-  function endDrag(mech: Mech, lo: number, hi: number) {
+  /**
+   * Let go of a box: the reading it was carried onto, the span it was dropped
+   * on, or a plain click if it never moved.
+   */
+  function endDrag(mech: Mech, lo: number, hi: number, visible: Step[]) {
     const settled = drag;
     setDrag(null);
     if (!settled) return;
     if (!settled.moved) return onOpenMech(openMech?.id === mech.id ? null : mech.id);
-    void run({
-      op: "update_mech",
-      mechId: mech.id,
-      patch: { snap: plan.steps[lo].id, boom: plan.steps[hi].id },
-    });
+    // One drag can say both: which reading it is for, and when it happens.
+    const [wasLo, wasHi] = settled.from;
+    void (async () => {
+      if (settled.gate && (mech.variant ?? undefined) !== settled.gate.to)
+        await run({ op: "gate_mech", mechId: mech.id, variant: settled.gate.to });
+      if (lo !== wasLo || hi !== wasHi)
+        await run({
+          op: "update_mech",
+          mechId: mech.id,
+          patch: { snap: visible[lo].id, boom: visible[hi].id },
+        });
+    })();
   }
 
-  return (
-    <nav
-      className="panel shrink-0 overflow-y-auto border-y-0 border-l-0 p-2"
-      style={{ width: 224 + lanes * 70 }}
-    >
-      <div className="label mb-2">Steps{lanes ? " and mechs" : ""}</div>
+  /** Select a step by its place in the whole plan, which is what the canvas follows. */
+  const go = (step: Step | undefined) => {
+    if (step) onSelect(plan.steps.indexOf(step));
+  };
+
+  /** Show one reading of a mechanic, and step into it so the canvas follows. */
+  function showVariant(mechanic: Mechanic, variantId: string) {
+    setShown((s) => ({ ...s, [mechanic.id]: variantId }));
+    go(mechanicSteps(plan, mechanic.id)[0]);
+  }
+
+  /** Compact actions that live beside the step they act on. */
+  function stepActions(s: Step) {
+    if (!editable || s.id !== current?.id) return null;
+    const stepAt = plan.steps.indexOf(s);
+    const action = "grid h-6 w-6 shrink-0 place-items-center rounded text-xs text-ink-300 hover:bg-ink-600 hover:text-white disabled:opacity-30";
+    return (
+      <div className="flex shrink-0 items-center gap-0.5" aria-label="Step actions">
+        <button
+          className={action}
+          aria-label="Duplicate step"
+          title="Duplicate step"
+          onClick={async () => {
+            await run({ op: "duplicate_step", stepId: s.id });
+            setIndex(stepAt + 1);
+          }}
+        >
+          D
+        </button>
+        <button
+          className={action}
+          aria-label="Add step after this one"
+          title="Add step after this one"
+          onClick={async () => {
+            await run({ op: "add_step", index: stepAt + 1 });
+            setIndex(stepAt + 1);
+          }}
+        >
+          +
+        </button>
+        <button
+          className={`${action} hover:text-red-300`}
+          aria-label="Delete step"
+          title="Delete step"
+          disabled={plan.steps.length < 2}
+          onClick={async () => {
+            await run({ op: "delete_step", stepId: s.id });
+            setIndex(Math.max(0, stepAt - 1));
+          }}
+        >
+          ×
+        </button>
+      </div>
+    );
+  }
+
+  /** The steps of one section, with the mechs running alongside them. */
+  function grid(mechanic: Mechanic, visible: Step[], l: ReturnType<typeof layout>) {
+    const showing = shownIn(mechanic);
+    // The areas are labelled only when there is more than one of them: with a
+    // single reading the rail is just the casts, as it always was.
+    const split = l.groups.length > 1;
+    const head = split ? 1 : 0;
+    const end = visible.length + head + 1;
+    return (
       <div
         className="grid gap-x-1 gap-y-1"
-        style={{ gridTemplateColumns: `minmax(0, 1fr) repeat(${lanes}, 66px)` }}
+        style={{ gridTemplateColumns: `minmax(0, 1fr) repeat(${l.lanes}, 66px)` }}
       >
-        {plan.steps.map((s, i) =>
+        {split &&
+          l.groups.map((g) => {
+            const color = g.variant ? variantColor(mechanic, g.variant) : "#8b93a7";
+            const name = g.variant ? variantLabel(mechanic, g.variant) : "Shared";
+            return (
+              <Fragment key={g.variant ?? "shared"}>
+                {/* The area itself, standing behind its lanes for the whole
+                    section — so an empty reading still reads as a place. */}
+                <div
+                  aria-hidden
+                  ref={(el) => {
+                    areaRefs.current.set(g.variant ?? "", el);
+                  }}
+                  className="pointer-events-none rounded"
+                  style={{
+                    gridColumn: `${g.from + 2} / span ${g.lanes}`,
+                    gridRow: `1 / ${end}`,
+                    background: tint(color, 0.08),
+                  }}
+                />
+                <div
+                  data-area={g.variant ?? ""}
+                  className="truncate text-center text-[9px] uppercase tracking-wide"
+                  style={{ gridColumn: `${g.from + 2} / span ${g.lanes}`, gridRow: 1, color }}
+                  title={
+                    g.variant
+                      ? `Casts that only happen in ${name}`
+                      : "Casts that happen whichever way it goes"
+                  }
+                >
+                  {name}
+                </div>
+              </Fragment>
+            );
+          })}
+        {visible.map((s, i) =>
           renaming === s.id ? (
             <div
               key={s.id}
               ref={(el) => {
-                rows.current[i] = el;
+                rowRefs.current.set(s.id, el);
               }}
-              style={{ gridColumn: 1, gridRow: i + 1 }}
+              style={{ gridColumn: 1, gridRow: i + 1 + head }}
               className="flex items-center gap-1 text-sm"
             >
               <span className="text-ink-400">{i + 1}.</span>
@@ -868,34 +1709,54 @@ function StepRail({
               />
             </div>
           ) : (
-            <button
+            <div
               key={s.id}
               ref={(el) => {
-                rows.current[i] = el;
+                rowRefs.current.set(s.id, el);
               }}
-              style={{ gridColumn: 1, gridRow: i + 1 }}
-              className={`rounded px-2 py-1 text-left text-sm ${
-                i === at ? "bg-ink-600 text-white" : "hover:bg-ink-700"
-              }`}
-              onClick={() => onSelect(i)}
-              onDoubleClick={() => editable && setRenaming(s.id)}
-              title={editable ? "Double-click or F2 to rename" : undefined}
+              style={{ gridColumn: 1, gridRow: i + 1 + head }}
+              className={`flex min-w-0 items-center gap-0.5 rounded ${
+                s.id === current?.id ? "bg-ink-600 text-white" : "hover:bg-ink-700"
+              } ${rowDrag?.id === s.id ? "ring-1 ring-blue-300" : ""}`}
             >
-              {i + 1}. {s.name || "untitled"}
-            </button>
+              <button
+                data-step={s.id}
+                aria-current={s.id === current?.id ? "step" : undefined}
+                className={`min-w-0 flex-1 touch-none truncate px-2 py-1 text-left text-sm ${
+                  editable ? "cursor-grab active:cursor-grabbing" : ""
+                }`}
+                // The row is where the step is in the fight, so carrying it is the
+                // whole edit. It cannot leave the section: these are its rows.
+                onPointerDown={() => editable && setRowDrag({ id: s.id, at: i, moved: false })}
+                onClick={() => !dragged.current && go(s)}
+                onDoubleClick={() => editable && setRenaming(s.id)}
+                title={
+                  editable
+                    ? "Drag to move it in the sequence. W and S walk the steps. Double-click or F2 to rename"
+                    : "W and S walk the steps"
+                }
+              >
+                {i + 1}. {s.name || "untitled"}
+              </button>
+              {stepActions(s)}
+            </div>
           )
         )}
-        {placed.map(({ mech, lo, hi, lane }) => {
+        {l.placed.map(({ mech, lo, hi, lane }) => {
           const active = openMech?.id === mech.id;
           const label = mechLabel(plan, mech);
           const shapes = plan.entities.filter((e) => e.mech === mech.id).length;
-          const box = { gridColumn: lane + 2, gridRow: `${lo + 1} / ${hi + 2}` };
+          const box = { gridColumn: lane + 2, gridRow: `${lo + 1 + head} / ${hi + 2 + head}` };
+          const color = mechColor(plan, mech);
+          // Mid-drag the box says what letting go would do, reading and all.
+          const gate = drag?.id === mech.id && drag.gate ? drag.gate.to : mech.variant;
+          const skipped = !!gate && gate !== showing;
           if (renaming === mech.id)
             return (
               <div
                 key={mech.id}
-                style={box}
-                className="flex items-center rounded border-t-2 border-t-blue-300 bg-blue-500/20 px-1 py-1"
+                style={{ ...box, borderTopColor: color, background: tint(color, 0.25) }}
+                className="flex items-center rounded border-t-2 px-1 py-1"
               >
                 <Rename
                   title="Rename mech"
@@ -912,10 +1773,13 @@ function StepRail({
           return (
             <button
               key={mech.id}
-              style={box}
-              title={`${label} — snapshots in step ${lo + 1}, goes off in step ${hi + 1}. ${
+              data-mech={mech.id}
+              style={{ ...box, borderTopColor: color, background: tint(color, active ? 0.4 : 0.18) }}
+              title={`${label} — snapshots in step ${lo + 1}, goes off in step ${hi + 1}${
+                gate ? `, only in ${variantLabel(mechanic, gate)}` : ""
+              }. ${
                 editable
-                  ? "Drag its top half to move the snapshot, its bottom half to move the explosion. Click to fill it."
+                  ? "Drag its top half to move the snapshot, its bottom half to move the explosion, or carry it sideways into a reading's area to say it only happens that way. Click to fill it."
                   : ""
               }`}
               onMouseEnter={() => onHighlight(mech.id)}
@@ -930,7 +1794,7 @@ function StepRail({
                   id: mech.id,
                   // The half you grabbed is the end you are holding.
                   mode: e.clientY - r.top < r.height / 2 ? "top" : "bottom",
-                  grabbed: rowAt(e.clientY),
+                  grabbed: rowAt(e.clientY, visible),
                   lo,
                   hi,
                   from: [lo, hi],
@@ -939,26 +1803,46 @@ function StepRail({
               }}
               onPointerMove={(e) => {
                 if (drag?.id !== mech.id) return;
-                const row = rowAt(e.clientY);
+                // The pointer says both things at once: the area it is over is
+                // which reading the cast is for, the row it is on is when it
+                // happens. Carried up onto a reading pill counts as the area.
+                const onPill = mechanic.variants.length
+                  ? pillAt(e.clientX, e.clientY)
+                  : undefined;
+                const gate = mechanic.variants.length
+                  ? (onPill ?? areaAt(e.clientX) ?? drag.gate)
+                  : undefined;
+                const row = rowAt(e.clientY, visible);
                 const [wasLo, wasHi] = drag.from;
                 // The end you are holding cannot cross the other one: a cast
-                // goes off no sooner than it snapshots.
-                const next: [number, number] =
-                  drag.mode === "top" ? [Math.min(row, wasHi), wasHi] : [wasLo, Math.max(row, wasLo)];
-                if (next[0] === drag.lo && next[1] === drag.hi) return;
-                setDrag({ ...drag, lo: next[0], hi: next[1], moved: true });
+                // goes off no sooner than it snapshots. Held over the pills the
+                // span stays put — up there no row is meant.
+                const next: [number, number] = onPill
+                  ? [drag.lo, drag.hi]
+                  : drag.mode === "top"
+                    ? [Math.min(row, wasHi), wasHi]
+                    : [wasLo, Math.max(row, wasLo)];
+                // "No gate yet" and "gated to both" are different states, and
+                // both read as undefined: compare the gate itself, not its id.
+                const same =
+                  next[0] === drag.lo &&
+                  next[1] === drag.hi &&
+                  !!gate === !!drag.gate &&
+                  gate?.to === drag.gate?.to;
+                if (same) return;
+                setDrag({ ...drag, gate, lo: next[0], hi: next[1], moved: true });
               }}
-              onPointerUp={() => endDrag(mech, lo, hi)}
+              onPointerUp={() => endDrag(mech, lo, hi, visible)}
               onPointerCancel={() => setDrag(null)}
               onDoubleClick={() => editable && setRenaming(mech.id)}
               className={`flex touch-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight ${
                 editable ? "cursor-grab active:cursor-grabbing" : ""
-              } ${
-                active
-                  ? "border-t-blue-300 bg-blue-500/30 text-blue-50"
-                  : "border-t-ink-300 bg-ink-700/60 text-ink-200 hover:bg-ink-600/70"
-              } ${drag?.id === mech.id ? "ring-1 ring-blue-300" : ""}`}
+              } ${active ? "text-white" : "text-ink-200"} ${
+                drag?.id === mech.id ? "ring-1 ring-white/70" : ""
+              } ${skipped ? "opacity-60" : ""}`}
             >
+              {/* Which reading a cast is for is the area it sits in, so the box
+                  itself does not repeat it. */}
               <span className="w-full truncate text-center">{label}</span>
               {shapes > 0 && <span className="text-ink-400">×{shapes}</span>}
               {/* The bottom edge is where it goes off, and says so. */}
@@ -969,75 +1853,285 @@ function StepRail({
           );
         })}
       </div>
-      {editable && <MechBox plan={plan} open={openMech} stepId={current.id} run={run} onOpen={onOpenMech} />}
-      {editable && (
-        <div className="mt-3 space-y-1">
-          <div className="flex gap-1">
-            <button
-              className="btn flex-1"
-              disabled={at === 0}
-              title="Move this step earlier"
-              onClick={async () => {
-                await run({ op: "move_step", stepId: current.id, index: at - 1 });
-                setIndex(at - 1);
-              }}
-            >
-              ↑
-            </button>
-            <button
-              className="btn flex-1"
-              disabled={at === plan.steps.length - 1}
-              title="Move this step later"
-              onClick={async () => {
-                await run({ op: "move_step", stepId: current.id, index: at + 1 });
-                setIndex(at + 1);
-              }}
-            >
-              ↓
-            </button>
-          </div>
-          <button
-            className="btn w-full"
-            onClick={async () => {
-              await run({ op: "duplicate_step", stepId: current.id });
-              setIndex(at + 1);
-            }}
-          >
-            Duplicate step
-          </button>
-          <button
-            className="btn w-full"
-            onClick={async () => {
-              await run({ op: "add_step" });
-              setIndex(plan.steps.length);
-            }}
-          >
-            Blank step
-          </button>
-          <button
-            className="btn w-full"
-            disabled={plan.steps.length < 2}
-            onClick={async () => {
-              await run({ op: "delete_step", stepId: current.id });
-              setIndex(Math.max(0, at - 1));
-            }}
-          >
-            Delete step
-          </button>
+    );
+  }
+
+  /**
+   * Details for the step you are on. Its compact actions live on the row itself.
+   */
+  function controls() {
+    return (
+      <>
+        <MechBox plan={plan} open={openMech} stepId={current.id} run={run} onOpen={onOpenMech} />
+        <div className="mt-4">
+          <div className="label mb-1">Step notes</div>
+          {/* Uncontrolled + keyed: local typing stays smooth, remote edits reset it. */}
+          <textarea
+            key={`${current.id}:${current.notes}`}
+            className="field h-32 resize-none"
+            disabled={!editable}
+            defaultValue={current.notes}
+            onBlur={(e) =>
+              run({ op: "update_step", stepId: current.id, patch: { notes: e.target.value } })
+            }
+          />
         </div>
-      )}
-      <div className="mt-4">
-        <div className="label mb-1">Step notes</div>
-        {/* Uncontrolled + keyed: local typing stays smooth, remote edits reset it. */}
-        <textarea
-          key={`${current.id}:${current.notes}`}
-          className="field h-32 resize-none"
-          disabled={!editable}
-          defaultValue={current.notes}
-          onBlur={(e) => run({ op: "update_step", stepId: current.id, patch: { notes: e.target.value } })}
-        />
+      </>
+    );
+  }
+
+  /**
+   * The pills that choose which reading of a mechanic you are looking at.
+   * A mechanic that goes one way has no pills — only the "+" that would give
+   * it a second way, and nothing at all until you open the section.
+   */
+  function variantRow(mechanic: Mechanic) {
+    const showing = shownIn(mechanic);
+    return (
+      <div className="mb-1 flex flex-wrap items-center gap-1 px-1">
+        {mechanic.variants.length > 0 && <span className="label">Playing</span>}
+        {mechanic.variants.map((v) =>
+          renaming === v.id ? (
+            <Rename
+              key={v.id}
+              title="Rename variant"
+              value={v.name}
+              placeholder={variantLabel(mechanic, v.id)}
+              onDone={(name) => {
+                setRenaming(null);
+                if (name !== v.name)
+                  void run({
+                    op: "update_variant",
+                    mechanicId: mechanic.id,
+                    variantId: v.id,
+                    patch: { name },
+                  });
+              }}
+            />
+          ) : (
+            <Fragment key={v.id}>
+              <button
+                ref={(el) => {
+                  pillRefs.current.set(v.id, el);
+                }}
+                className={`rounded px-2 py-0.5 text-xs ${
+                  v.id === showing ? "text-white" : "text-ink-200 hover:bg-ink-700"
+                } ${drag?.gate?.to === v.id ? "ring-1 ring-white/80" : ""}`}
+                style={{
+                  background:
+                    v.id === showing || drag?.gate?.to === v.id
+                      ? tint(variantColor(mechanic, v.id), 0.5)
+                      : undefined,
+                }}
+                data-variant={v.id}
+                data-owner={v.ownerId ?? ""}
+                aria-pressed={v.id === showing}
+                title={`${
+                  v.ownerId
+                    ? v.ownerId === me
+                      ? "Your reading — yours to change, and nobody else's. "
+                      : `${v.ownerName || v.ownerId}'s reading — theirs to change; add your own to say it differently. `
+                    : "The plan's own reading, open to anyone who can edit it. "
+                }The reading on screen — what the canvas draws, and where a cast dropped on it belongs. A and D move between readings. Double-click or F2 to rename`}
+                onClick={() => showVariant(mechanic, v.id)}
+                onDoubleClick={() => editable && setRenaming(v.id)}
+              >
+                {variantLabel(mechanic, v.id)}
+                {/* Whose answer to the mechanic this is, when it is somebody's. */}
+                {v.ownerId && v.ownerId !== me && (
+                  <span className="ml-1 text-[10px] text-ink-400">
+                    {(v.ownerName || v.ownerId).split(/[:\s]/).pop()}
+                  </span>
+                )}
+              </button>
+              {v.id === showing && editable && (
+                <button
+                  className="px-0.5 text-ink-400 hover:text-red-300"
+                  title="Delete this reading and the casts only it has"
+                  onClick={async () => {
+                    const res = await run({
+                      op: "delete_variant",
+                      mechanicId: mechanic.id,
+                      variantId: v.id,
+                    });
+                    const i = res.plan.steps.findIndex((s) => s.mechanic === mechanic.id);
+                    setIndex(Math.max(0, i));
+                  }}
+                >
+                  ✕
+                </button>
+              )}
+            </Fragment>
+          )
+        )}
+        {/* While a cast is in the hand the readings are drop targets, and this
+            is the one that means "it happens either way". */}
+        {drag && mechanic.variants.length > 0 && (
+          <button
+            ref={(el) => {
+              pillRefs.current.set("", el);
+            }}
+            className={`rounded px-2 py-0.5 text-xs text-ink-200 ${
+              drag.gate && !drag.gate.to ? "bg-ink-600 ring-1 ring-white/80" : "bg-ink-800"
+            }`}
+            title="Drop a cast here and it goes off whichever way the mechanic goes"
+          >
+            both
+          </button>
+        )}
+        {editable && (
+          <button
+            className="rounded bg-ink-800 px-2 py-0.5 text-xs text-ink-200 hover:bg-ink-700"
+            title="Another way this mechanic goes. The steps are the same either way — what changes is which casts land and where the party stands"
+            onClick={() => addVariant(mechanic)}
+          >
+            {mechanic.variants.length ? "+" : "+ variant"}
+          </button>
+        )}
       </div>
+    );
+  }
+
+  /**
+   * Another reading of a mechanic. Nothing is copied: the steps stay one run,
+   * shared until you gate some of them. The first "+" makes two readings, since
+   * one reading is not a choice, and leaves you looking at the first.
+   */
+  async function addVariant(mechanic: Mechanic) {
+    const res = await run({ op: "add_variant", mechanicId: mechanic.id });
+    const made = res.values[0] as { id: string } | null;
+    if (!made) return;
+    setShown((s) => ({ ...s, [mechanic.id]: made.id }));
+  }
+
+  return (
+    <nav
+      className="panel shrink-0 overflow-y-auto border-y-0 border-l-0 p-2"
+      style={{ width: 236 + laid.lanes * 70 }}
+    >
+      <div className="label">Encounter</div>
+      <div className="mb-2 flex items-baseline gap-2">
+        <span className="min-w-0 truncate text-sm text-ink-200">{plan.name}</span>
+        <span className="ml-auto shrink-0 text-[11px] text-ink-400">
+          {plan.mechanics.length} {plan.mechanics.length === 1 ? "mechanic" : "mechanics"}
+        </span>
+      </div>
+
+      {sections.map((mechanic, index_) => {
+        const open = mechanic.id === openId;
+        const visible = stepsIn(mechanic);
+        return (
+          <div
+            key={mechanic.id}
+            className={`mt-1 rounded ${open ? "bg-ink-700 p-1" : ""}`}
+          >
+            {renaming === mechanic.id ? (
+              <div className="flex items-center gap-1 px-1 py-1">
+                <Chevron open={open} />
+                <Rename
+                  title="Rename mechanic"
+                  value={mechanic.name}
+                  placeholder={mechanicLabel(plan, mechanic)}
+                  onDone={(name) => {
+                    setRenaming(null);
+                    if (name !== mechanic.name)
+                      void run({ op: "update_mechanic", mechanicId: mechanic.id, patch: { name } });
+                  }}
+                />
+              </div>
+            ) : (
+              <div className="flex items-center">
+                <button
+                  data-mechanic={mechanic.id}
+                  ref={(el) => {
+                    headerRefs.current.set(mechanic.id, el);
+                  }}
+                  className={`flex min-w-0 flex-1 touch-none items-center gap-1 rounded px-1 py-1 text-left text-sm hover:bg-ink-600 ${
+                    editable ? "cursor-grab active:cursor-grabbing" : ""
+                  } ${sectionDrag?.id === mechanic.id ? "ring-1 ring-blue-300" : ""}`}
+                  title={
+                    editable
+                      ? "Drag to move this mechanic in the fight — its steps go with it. Double-click or F2 to rename"
+                      : `${visible.length} steps`
+                  }
+                  // A heading carries its whole block of steps: the order of the
+                  // sections is the order of the fight, and nothing else says it.
+                  onPointerDown={() => {
+                    if (!editable) return;
+                    headerRuler.current = plan.mechanics.map((m) => {
+                      const r = headerRefs.current.get(m.id)?.getBoundingClientRect();
+                      return r ? r.top + r.height / 2 : Infinity;
+                    });
+                    setSectionDrag({ id: mechanic.id, at: index_, moved: false });
+                  }}
+                  onClick={() => !dragged.current && go(visible[0])}
+                  onDoubleClick={() => editable && setRenaming(mechanic.id)}
+                >
+                  <Chevron open={open} />
+                  <span className="min-w-0 flex-1 truncate">{mechanicLabel(plan, mechanic)}</span>
+                  {mechanic.variants.length > 0 && (
+                    <span className="shrink-0 rounded bg-ink-600 px-1 text-[10px] text-ink-200">
+                      {mechanic.variants.map((v) => variantLabel(mechanic, v.id)).join(" / ")}
+                    </span>
+                  )}
+                  <span className="shrink-0 text-[11px] text-ink-400">{visible.length}</span>
+                </button>
+                {open && editable && (
+                  <button
+                    className="px-1 text-ink-400 hover:text-red-300"
+                    title="Delete this mechanic and its steps"
+                    onClick={async () => {
+                      await run({ op: "delete_mechanic", mechanicId: mechanic.id });
+                      setIndex(0);
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
+            {open && (
+              <>
+                {(editable || mechanic.variants.length > 0) && variantRow(mechanic)}
+                {grid(mechanic, visibleRows, laid)}
+                {editable && controls()}
+              </>
+            )}
+          </div>
+        );
+      })}
+
+      {editable && (
+        <button
+          className="btn mt-3 w-full"
+          title="A new section of the fight, with a step in it"
+          onClick={async () => {
+            const res = await run({ op: "add_mechanic" });
+            const made = res.values[0] as { id: string } | null;
+            const i = made ? res.plan.steps.findIndex((s) => s.mechanic === made.id) : -1;
+            if (i >= 0) setIndex(i);
+          }}
+        >
+          New mechanic
+        </button>
+      )}
     </nav>
+  );
+}
+
+/** Open or closed, drawn rather than spelled with a character. */
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      width="10"
+      height="10"
+      viewBox="0 0 10 10"
+      aria-hidden="true"
+      className="shrink-0 text-ink-400"
+      style={{ transform: open ? "rotate(90deg)" : undefined }}
+    >
+      <path d="M3 1 L7 5 L3 9" fill="none" stroke="currentColor" strokeWidth="1.6" />
+    </svg>
   );
 }
 
@@ -1046,6 +2140,14 @@ function StepRail({
  * between. Only the open one is editable — the boxes in the grid are the
  * overview, this is the thing you are filling.
  */
+/** A hex colour as a translucent CSS rgba, for tinting chrome with a mech's colour. */
+function tint(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 function MechBox({
   plan,
   open,
@@ -1073,7 +2175,10 @@ function MechBox({
         New mech here
       </button>
       {open && (
-        <div className="mt-2 rounded border border-blue-400/60 bg-blue-500/10 p-2 text-xs">
+        <div
+          className="mt-2 rounded border p-2 text-xs"
+          style={{ borderColor: tint(mechColor(plan, open), 0.6), background: tint(mechColor(plan, open), 0.1) }}
+        >
           <div className="flex items-center gap-1">
             <span className="min-w-0 flex-1 truncate font-semibold">{mechLabel(plan, open)}</span>
             <button
@@ -1086,6 +2191,20 @@ function MechBox({
             >
               ✕
             </button>
+          </div>
+          {/* Its colour is what tells its shapes apart from the next cast's. */}
+          <div className="mt-2 flex gap-1">
+            {MECH_COLORS.map((c) => (
+              <button
+                key={c}
+                className={`h-4 w-4 rounded-sm ${
+                  mechColor(plan, open) === c ? "ring-2 ring-white" : "hover:ring-1 hover:ring-white/60"
+                }`}
+                style={{ background: c }}
+                title={`Draw it in ${c}`}
+                onClick={() => void run({ op: "update_mech", mechId: open.id, patch: { color: c } })}
+              />
+            ))}
           </div>
           <p className="mt-1 text-ink-400">
             Drag the top half of its box beside the steps to move the snapshot, the bottom
@@ -1186,13 +2305,17 @@ function ShareButton({ planId, canShare }: { planId: string; canShare: boolean }
 
 /* ------------------------------------------------------------ drag and drop */
 
-const GROUPS = ["party", "supports", "damagers"] as const;
+const GROUPS = ["party", "g1", "g2", "supports", "damagers", "tanks", "healers"] as const;
 type GroupId = (typeof GROUPS)[number];
 
 const GROUP_LABEL: Record<GroupId, string> = {
   party: "Party",
+  g1: "G1",
+  g2: "G2",
   supports: "Supports",
   damagers: "Damagers",
+  tanks: "Tanks",
+  healers: "Healers",
 };
 
 /** Where a palette item was let go, which is the whole of what it means. */
@@ -1219,6 +2342,28 @@ function PaletteGlyph({ kind }: { kind: PaletteKind }) {
       )}
       {kind === "beam" && (
         <rect x="11" y="3" width="8" height="24" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
+      )}
+      {(kind === "stack8" || kind === "stack4" || kind === "stack2") && (
+        <g>
+          <circle cx="15" cy="15" r="11" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
+          <circle cx="15" cy="15" r="6" fill="none" stroke={stroke} strokeWidth="1.5" strokeDasharray="3 2" />
+          <text x="15" y="19" textAnchor="middle" fontSize="11" fontWeight="700" fill="#e8edf5">
+            {kind.slice(5)}
+          </text>
+        </g>
+      )}
+      {kind === "linestack" && (
+        <g>
+          <rect x="10" y="3" width="10" height="24" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
+          <path d="M12 11 l3 -3 l3 3 M12 17 l3 -3 l3 3 M12 23 l3 -3 l3 3" fill="none" stroke="#e8edf5" strokeWidth="1.5" />
+        </g>
+      )}
+      {kind === "flare" && (
+        <g stroke={stroke} strokeWidth="2" fill="none">
+          <circle cx="15" cy="15" r="11" fill="rgba(255,112,67,0.35)" />
+          <circle cx="15" cy="15" r="3" fill="#e8edf5" stroke="none" />
+          <path d="M15 4v5 M15 21v5 M4 15h5 M21 15h5 M7.2 7.2l3.5 3.5 M19.3 19.3l3.5 3.5 M22.8 7.2l-3.5 3.5 M10.7 19.3l-3.5 3.5" />
+        </g>
       )}
       {kind === "anchor" && (
         <g stroke="#e0b152" strokeWidth="2" fill="none">

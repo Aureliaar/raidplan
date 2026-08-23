@@ -33,5 +33,11 @@ reused here for a non-commercial fan tool, the same footing XIVPlan uses. FINAL 
 registered trademark of Square Enix Holdings Co., Ltd. This project is not affiliated with or
 endorsed by Square Enix.
 
+The encounter telegraphs under `public/assets/mechanic` are extracted from the FFXIV Strategy
+Board object sprite sheet distributed by
+**[ffxiv-strategy-board-viewer](https://github.com/Ennea/ffxiv-strategy-board-viewer)**. The
+source snapshot used was commit `aa170abe46a586c614a1476d418e4da64fda07f6`. The images are
+FINAL FANTASY XIV game assets © SQUARE ENIX CO., LTD.
+
 If you deploy this publicly and would rather not host that art, delete `public/assets` and
 run `npm run assets:manifest` — every renderer falls back to the vector tokens it ships with.

@@ -30,6 +30,7 @@ export function zoneCovers(zone: ZoneEntity, px: number, py: number): boolean {
   switch (zone.shape) {
     case "circle":
     case "stack":
+    case "flare":
     case "spread":
     case "tower":
     case "proximity":
@@ -49,6 +50,7 @@ export function zoneCovers(zone: ZoneEntity, px: number, py: number): boolean {
     case "rect":
     case "line":
     case "knockback":
+    case "linestack":
       return Math.abs(p.x) <= zone.width / 2 && Math.abs(p.y) <= zone.length / 2;
 
     case "triangle": {

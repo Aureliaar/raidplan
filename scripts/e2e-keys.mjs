@@ -92,5 +92,66 @@ if ((await load()).entities.length !== doc.entities.length)
   fail("Backspace in the name field deleted an entity");
 else console.log("Backspace in a text field is just a letter");
 
+/* --- WASD walks the fight: W/S the steps, A/D the readings ---------------- */
+
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({ ops: [{ op: "add_step", name: "Two" }, { op: "add_step", name: "Three" }] }),
+});
+await page.waitForTimeout(900);
+
+/** The step the rail says you are on, by name. */
+const on = () => page.locator("nav [data-step][aria-current]").innerText();
+/** The reading the rail says is playing. */
+const playing = () => page.locator("nav [data-variant][aria-pressed=true]").innerText();
+const press = async (key) => {
+  await page.keyboard.press(key);
+  await page.waitForTimeout(350);
+};
+
+// The canvas has the focus, as it would after clicking about on the floor.
+await page.mouse.click(600, 500);
+await page.waitForTimeout(300);
+await press("s");
+await press("s");
+if (!(await on()).includes("Three")) fail("S twice landed on " + (await on()));
+else console.log("S walks down the steps: " + (await on()).trim());
+
+await press("w");
+if (!(await on()).includes("Two")) fail("W went to " + (await on()));
+else console.log("W walks back up: " + (await on()).trim());
+
+await press("w");
+await press("w");
+await press("w");
+if (!(await on()).includes("1.")) fail("W past the first step went to " + (await on()));
+else console.log("and it stops at the first step rather than falling off the fight");
+
+// Two readings of the mechanic this step is in, so there is a sideways to go.
+await page.getByTitle(/Another way this mechanic goes/).click();
+await page.waitForTimeout(900);
+const at = await on();
+if ((await playing()).trim() !== "A") fail("the mechanic opened playing " + (await playing()));
+await page.mouse.click(600, 500);
+await page.waitForTimeout(300);
+await press("d");
+if ((await playing()).trim() !== "B") fail("D moved to reading " + (await playing()));
+else if ((await on()) !== at) fail("D also moved off the step, onto " + (await on()));
+else console.log("D moves to the next reading, on the same step: B");
+
+await press("a");
+if ((await playing()).trim() !== "A") fail("A moved to reading " + (await playing()));
+else console.log("A moves back: the two readings of the step you are standing on");
+
+// And none of it while you are typing: WASD in a name field is four letters.
+const field = page.locator("input").first();
+await field.click();
+await field.fill("");
+await field.type("swad");
+await page.waitForTimeout(400);
+if ((await on()) !== at) fail("typing in a field walked the steps, landing on " + (await on()));
+else if ((await playing()).trim() !== "A") fail("typing in a field changed the reading");
+else console.log("typing 'swad' in a text field is four letters, not four moves");
+
 console.log(process.exitCode ? "FAILED" : "OK - " + base + "/p/" + planId);
 await browser.close();

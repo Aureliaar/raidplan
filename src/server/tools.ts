@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { AppEnv } from "./env";
 import { registry } from "./registry";
+import { guardVariants } from "./variants";
 import { planStub } from "./plan-agent";
 import type { Op } from "../shared/apply";
 import {
@@ -25,10 +26,13 @@ import {
   ZONE_SHAPES,
   mechLabel,
   mechSpan,
+  mechanicLabel,
+  mechanicSteps,
+  variantLabel,
   type Plan,
 } from "../shared/schema";
 import { JOB_IDS } from "../shared/jobs";
-import { ACTOR_KEYS, ARENA_BACKGROUNDS, ASSETS, MARKER_KEYS } from "../shared/assets";
+import { ACTOR_KEYS, ARENA_BACKGROUNDS, ASSETS, MARKER_KEYS, MECHANIC_KEYS } from "../shared/assets";
 
 /**
  * The plan-editing tool table — the single definition used by BOTH the MCP
@@ -118,6 +122,38 @@ function mechIdOf(plan: Plan, mech: string): string {
   );
 }
 
+/** Accept a mechanic id, a 1-based index, or a mechanic name. */
+function mechanicIdOf(plan: Plan, mechanic: string): string {
+  const byId = plan.mechanics.find((m) => m.id === mechanic);
+  if (byId) return byId.id;
+  const n = Number(mechanic);
+  if (Number.isInteger(n) && n >= 1 && n <= plan.mechanics.length) return plan.mechanics[n - 1].id;
+  const byName = plan.mechanics.find(
+    (m) => mechanicLabel(plan, m).toLowerCase() === mechanic.toLowerCase()
+  );
+  if (byName) return byName.id;
+  throw new Error(
+    `No mechanic "${mechanic}". Mechanics: ${plan.mechanics.map((m, i) => `${i + 1}=${mechanicLabel(plan, m)} [${m.id}]`).join(", ") || "none yet"}`
+  );
+}
+
+/** Accept a variant id, a 1-based index within its mechanic, or its name (or letter). */
+function variantIdOf(plan: Plan, mechanicId: string, variant: string): string {
+  const mechanic = plan.mechanics.find((m) => m.id === mechanicId)!;
+  const byId = mechanic.variants.find((v) => v.id === variant);
+  if (byId) return byId.id;
+  const n = Number(variant);
+  if (Number.isInteger(n) && n >= 1 && n <= mechanic.variants.length)
+    return mechanic.variants[n - 1].id;
+  const byName = mechanic.variants.find(
+    (v) => variantLabel(mechanic, v.id).toLowerCase() === variant.toLowerCase()
+  );
+  if (byName) return byName.id;
+  throw new Error(
+    `No variant "${variant}" of ${mechanicLabel(plan, mechanic)}. Variants: ${mechanic.variants.map((v, i) => `${i + 1}=${variantLabel(mechanic, v.id)} [${v.id}]`).join(", ") || "none — it happens one way"}`
+  );
+}
+
 async function load(ctx: ToolContext, planId: string, need: "view" | "edit" | "own") {
   const role = await registry(ctx.env).roleFor(ctx.userId, planId);
   if (!role) throw new Error(`Plan ${planId} not found, or you do not have access to it`);
@@ -131,8 +167,22 @@ async function load(ctx: ToolContext, planId: string, need: "view" | "edit" | "o
 
 /** Read the plan, build ops from it, apply them, keep the index fresh. */
 async function edit(ctx: ToolContext, planId: string, make: (plan: Plan) => Op | Op[]) {
-  const { stub, plan } = await load(ctx, planId, "edit");
-  const res = await stub.apply(make(plan));
+  const { stub, plan, role } = await load(ctx, planId, "edit");
+  // A model editing on someone's behalf is still that someone: another
+  // player's reading of the fight is no more yours through a tool than by hand.
+  const me = await registry(ctx.env).getUser(ctx.userId);
+  const ops = guardVariants(
+    plan,
+    make(plan),
+    { id: ctx.userId, name: me?.name },
+    role,
+    (m) => new Error(m)
+  );
+  const res = await stub.apply(ops, {
+    actorId: ctx.userId,
+    actorName: me?.name,
+    source: "mcp",
+  });
   await registry(ctx.env).touchPlan(planId, { name: res.plan.name, encounter: res.plan.encounter });
   return res;
 }
@@ -145,7 +195,21 @@ const stepArg = {
     .string()
     .optional()
     .describe("Step id, 1-based index or name. Omit to affect the entity in every step."),
+  variant: z
+    .string()
+    .optional()
+    .describe(
+      "With `step`, in a mechanic that goes more than one way: file the pose under that reading only (id, index or name). A step shared by every reading can hold a different party layout in each."
+    ),
 };
+
+/** The variant a pose is filed under: named, and belonging to the step's mechanic. */
+function poseVariant(plan: Plan, stepId: string | undefined, variant?: string): string | undefined {
+  if (!stepId || !variant) return undefined;
+  const step = plan.steps.find((s) => s.id === stepId);
+  if (!step?.mechanic) throw new Error("That step is not in a mechanic, so it has no readings");
+  return variantIdOf(plan, step.mechanic, variant);
+}
 
 /* -------------------------------------------------------------------- tools */
 
@@ -307,7 +371,9 @@ export const TOOLS: ToolDef[] = [
     schema: { plan_id: z.string() },
     async run(ctx, a) {
       const { plan } = await load(ctx, a.plan_id, "view");
-      return plan.steps.map((s, i) => `${i + 1}. ${s.name} [${s.id}]${s.notes ? ` — ${s.notes}` : ""}`).join("\n");
+      return plan.steps
+        .map((s, i) => `${i + 1}. ${s.name} [${s.id}]${s.notes ? `: ${s.notes}` : ""}`)
+        .join("\n");
     },
   }),
 
@@ -320,17 +386,61 @@ export const TOOLS: ToolDef[] = [
       name: z.string().optional(),
       notes: z.string().optional().describe("What happens in this step"),
       copy_from: z.string().optional().describe("Step id or index to duplicate"),
+      mechanic: z
+        .string()
+        .optional()
+        .describe(
+          "Put it in a section of the fight (id, 1-based index or name) — it goes at the end of that mechanic's steps. Without one it joins whatever the step before it belongs to."
+        ),
     },
     async run(ctx, a) {
-      const res = await edit(ctx, a.plan_id, (plan) =>
-        a.copy_from
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        const mechanic = a.mechanic ? mechanicIdOf(plan, a.mechanic) : undefined;
+        return a.copy_from
           ? { op: "duplicate_step", stepId: stepIdOf(plan, a.copy_from)!, name: a.name }
-          : { op: "add_step", name: a.name, notes: a.notes }
-      );
+          : { op: "add_step", name: a.name, notes: a.notes, mechanic };
+      });
       const step = res.values[0] as { id: string; name: string };
       if (a.copy_from && a.notes)
         await edit(ctx, a.plan_id, () => ({ op: "update_step", stepId: step.id, patch: { notes: a.notes! } }));
       return `Added step "${step.name}" [${step.id}]`;
+    },
+  }),
+
+  def({
+    name: "gate_mech",
+    description:
+      "Say which reading of its mechanic a cast belongs to. Gated, the cast only goes off that way and its shapes are not on the floor in the other reading — which is how two readings of the same moment differ when the steps themselves are shared. Without `variant` it goes off whichever way the mechanic goes.",
+    schema: {
+      plan_id: z.string(),
+      mech: z.string().describe("Cast id or name"),
+      variant: z
+        .string()
+        .optional()
+        .describe("Variant id, 1-based index or name. Leave it out to put it back in both."),
+    },
+    async run(ctx, a) {
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        const mech =
+          plan.mechs.find((m) => m.id === a.mech) ??
+          plan.mechs.find((m) => mechLabel(plan, m).toLowerCase() === a.mech.toLowerCase());
+        if (!mech) throw new Error(`No cast "${a.mech}"`);
+        const step = plan.steps.find((s) => s.id === (mech.snap || mech.boom));
+        return {
+          op: "gate_mech",
+          mechId: mech.id,
+          variant:
+            a.variant && step?.mechanic ? variantIdOf(plan, step.mechanic, a.variant) : undefined,
+        };
+      });
+      const mech = res.plan.mechs.find(
+        (m) => m.id === a.mech || mechLabel(res.plan, m).toLowerCase() === a.mech.toLowerCase()
+      )!;
+      const step = res.plan.steps.find((s) => s.id === (mech.snap || mech.boom));
+      const mechanic = res.plan.mechanics.find((m) => m.id === step?.mechanic);
+      return mech.variant && mechanic
+        ? `${mechLabel(res.plan, mech)} only goes off in ${variantLabel(mechanic, mech.variant)}.`
+        : `${mechLabel(res.plan, mech)} goes off whichever way the mechanic goes.`;
     },
   }),
 
@@ -377,6 +487,183 @@ export const TOOLS: ToolDef[] = [
     },
   }),
 
+  /* ------------------------------------------------------------ mechanics */
+
+  def({
+    name: "list_mechanics",
+    description:
+      "The outline of the fight: its sections in order, the variants of any that go more than one way, and the steps under each.",
+    schema: { plan_id: z.string() },
+    async run(ctx, a) {
+      const { plan } = await load(ctx, a.plan_id, "view");
+      const lines: string[] = [];
+      const count = (n: number) => `${n} step${n === 1 ? "" : "s"}`;
+      plan.mechanics.forEach((m, i) => {
+        lines.push(`${i + 1}. ${mechanicLabel(plan, m)} [${m.id}]`);
+        if (!m.variants.length) {
+          const steps = mechanicSteps(plan, m.id);
+          lines.push(`   ${count(steps.length)}: ${steps.map((s) => s.name || s.id).join(", ")}`);
+          return;
+        }
+        const all = mechanicSteps(plan, m.id);
+        lines.push(`   ${count(all.length)}: ${all.map((x) => x.name || x.id).join(", ")}`);
+        lines.push(
+          `   goes ${m.variants
+            .map((v) => {
+              const casts = plan.mechs.filter((k) => k.variant === v.id);
+              const only = casts.length
+                ? `: ${casts.map((k) => mechLabel(plan, k)).join(", ")}`
+                : "";
+              return `${variantLabel(m, v.id)} [${v.id}]${only}`;
+            })
+            .join(" / ")} — same steps either way, different casts and party positions`
+        );
+      });
+      return lines.join("\n") || "No mechanics yet.";
+    },
+  }),
+
+  def({
+    name: "add_mechanic",
+    description:
+      "Add a section of the fight — Witch Hunt, Electrope Edge 1 — owning a run of steps. It comes with an empty step unless you hand it steps to adopt.",
+    schema: {
+      plan_id: z.string(),
+      name: z.string().optional(),
+      after: z.string().optional().describe("Mechanic id, index or name to sit after; default last"),
+      steps: z
+        .array(z.string())
+        .optional()
+        .describe("Existing steps to put in it, by id, index or name — they move together"),
+    },
+    async run(ctx, a) {
+      const res = await edit(ctx, a.plan_id, (plan) => ({
+        op: "add_mechanic",
+        name: a.name,
+        after: a.after ? mechanicIdOf(plan, a.after) : undefined,
+        stepIds: a.steps?.map((s) => stepIdOf(plan, s)!),
+      }));
+      const made = res.values[0] as { id: string };
+      const m = res.plan.mechanics.find((x) => x.id === made.id)!;
+      return `Added mechanic ${mechanicLabel(res.plan, m)} [${m.id}] with ${mechanicSteps(res.plan, m.id).length} step(s).`;
+    },
+  }),
+
+  def({
+    name: "update_mechanic",
+    description: "Rename a section of the fight.",
+    schema: {
+      plan_id: z.string(),
+      mechanic: z.string().describe("Mechanic id, 1-based index or name"),
+      name: z.string(),
+    },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => ({
+        op: "update_mechanic",
+        mechanicId: mechanicIdOf(plan, a.mechanic),
+        patch: { name: a.name },
+      }));
+      return "Mechanic updated.";
+    },
+  }),
+
+  def({
+    name: "delete_mechanic",
+    description:
+      "Delete a section of the fight. Its steps are the mechanic and go with it, unless you keep them — kept steps are merged into the neighbouring section, the one before it or the one after if it was first.",
+    schema: {
+      plan_id: z.string(),
+      mechanic: z.string().describe("Mechanic id, 1-based index or name"),
+      keep_steps: z.boolean().optional(),
+    },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => ({
+        op: "delete_mechanic",
+        mechanicId: mechanicIdOf(plan, a.mechanic),
+        keepSteps: a.keep_steps,
+      }));
+      return a.keep_steps ? "Mechanic deleted, its steps kept." : "Mechanic deleted with its steps.";
+    },
+  }),
+
+  def({
+    name: "move_mechanic",
+    description:
+      "Move a section of the fight earlier or later. Its whole block of steps travels with it. `to` counts from 1.",
+    schema: {
+      plan_id: z.string(),
+      mechanic: z.string(),
+      to: z.number().int().min(1).describe("Where it should sit afterwards, 1 = first"),
+    },
+    async run(ctx, a) {
+      const res = await edit(ctx, a.plan_id, (plan) => ({
+        op: "move_mechanic",
+        mechanicId: mechanicIdOf(plan, a.mechanic),
+        index: a.to - 1,
+      }));
+      return (
+        "The fight now goes: " +
+        res.plan.mechanics.map((m, i) => `${i + 1}. ${mechanicLabel(res.plan, m)}`).join(", ")
+      );
+    },
+  }),
+
+  def({
+    name: "add_variant",
+    description:
+      "Give a mechanic another way of going — 'Near first' against 'Far first'. Nothing is copied: the mechanic keeps its one run of steps, shared by every reading, and you gate the steps that differ with `gate_step`. The first call makes two readings, since one reading is not a choice.",
+    schema: {
+      plan_id: z.string(),
+      mechanic: z.string(),
+      name: z.string().optional().describe("Defaults to the next letter"),
+    },
+    async run(ctx, a) {
+      let mechanicId = "";
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        mechanicId = mechanicIdOf(plan, a.mechanic);
+        return { op: "add_variant", mechanicId, name: a.name };
+      });
+      const m = res.plan.mechanics.find((x) => x.id === mechanicId)!;
+      return `${mechanicLabel(res.plan, m)} now goes ${m.variants.map((v) => `${variantLabel(m, v.id)} [${v.id}]`).join(" / ")}. All ${mechanicSteps(res.plan, mechanicId).length} of its steps are shared until you gate some.`;
+    },
+  }),
+
+  def({
+    name: "update_variant",
+    description: "Rename one reading of a mechanic.",
+    schema: { plan_id: z.string(), mechanic: z.string(), variant: z.string(), name: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        const mechanicId = mechanicIdOf(plan, a.mechanic);
+        return {
+          op: "update_variant",
+          mechanicId,
+          variantId: variantIdOf(plan, mechanicId, a.variant),
+          patch: { name: a.name },
+        };
+      });
+      return "Variant updated.";
+    },
+  }),
+
+  def({
+    name: "delete_variant",
+    description:
+      "Delete one reading of a mechanic, and the steps that are it. Take the last-but-one and the mechanic is plain again.",
+    schema: { plan_id: z.string(), mechanic: z.string(), variant: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        const mechanicId = mechanicIdOf(plan, a.mechanic);
+        return {
+          op: "delete_variant",
+          mechanicId,
+          variantId: variantIdOf(plan, mechanicId, a.variant),
+        };
+      });
+      return "Variant deleted with its steps.";
+    },
+  }),
+
   /* ---------------------------------------------------------------- mechs */
 
   def({
@@ -411,6 +698,7 @@ export const TOOLS: ToolDef[] = [
       name: z.string().optional().describe("Defaults to whatever goes in it first"),
       snapshot_in: z.string().optional().describe("Step id, index or name. Defaults to the first step"),
       goes_off_in: z.string().optional().describe("Step id, index or name. Defaults to the snapshot step"),
+      color: z.string().optional().describe("Hex colour its shapes are drawn in. Defaults to the least-used of the palette"),
     },
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => ({
@@ -418,6 +706,7 @@ export const TOOLS: ToolDef[] = [
         name: a.name,
         snap: stepIdOf(plan, a.snapshot_in) ?? plan.steps[0]?.id,
         boom: stepIdOf(plan, a.goes_off_in),
+        color: a.color,
       }));
       const mech = res.values[0] as { id: string };
       return `Mech ${mechLabel(res.plan, res.plan.mechs.find((m) => m.id === mech.id)!)} added [${mech.id}].`;
@@ -426,13 +715,14 @@ export const TOOLS: ToolDef[] = [
 
   def({
     name: "update_mech",
-    description: "Rename a mechanic, or move where it snapshots or goes off.",
+    description: "Rename a mechanic, recolour it, or move where it snapshots or goes off.",
     schema: {
       plan_id: z.string(),
       mech: z.string().describe("Mech id, 1-based index or name"),
       name: z.string().optional(),
       snapshot_in: z.string().optional().describe("Step id, index or name"),
       goes_off_in: z.string().optional().describe("Step id, index or name"),
+      color: z.string().optional().describe("Hex colour its shapes are drawn in"),
     },
     async run(ctx, a) {
       // Resolved on the way in: after a rename the name it was found by is gone.
@@ -444,6 +734,7 @@ export const TOOLS: ToolDef[] = [
           name: a.name,
           snap: stepIdOf(plan, a.snapshot_in),
           boom: stepIdOf(plan, a.goes_off_in),
+          color: a.color,
         },
       }));
       const m = res.plan.mechs.find((x) => x.id === mechId)!;
@@ -882,6 +1173,7 @@ export const TOOLS: ToolDef[] = [
           id: target.id,
           patch: { ...pos, ...(a.rotation !== undefined ? { rotation: a.rotation } : {}) },
           stepId,
+          variant: poseVariant(plan, stepId, a.variant),
         };
       });
       return `Moved ${moved.id} to (${Math.round(moved.x)}, ${Math.round(moved.y)})${moved.step}`;
@@ -906,6 +1198,7 @@ export const TOOLS: ToolDef[] = [
         id: resolveRef(plan, a.entity).id,
         patch: a.patch,
         stepId: stepIdOf(plan, a.step),
+        variant: poseVariant(plan, stepIdOf(plan, a.step), a.variant),
       }));
       return `Updated ${idOf(res.values[0])}`;
     },
@@ -945,9 +1238,9 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "list_assets",
     description:
-      "List the bundled FFXIV art you can reference: job/role/enemy tokens (actor/…), field markers such as attack1-8, bind, ignore, limit-cut, tankbuster, targets (marker/…), and arena backdrops (arena/…).",
+      "List the bundled FFXIV art you can reference: job/role/enemy tokens (actor/…), field markers (marker/…), encounter telegraphs such as stack, tower, gaze, proximity and knockback (mechanic/…), and arena backdrops (arena/…).",
     schema: {
-      kind: z.enum(["actor", "marker", "arena"]).describe("Which catalogue to list"),
+      kind: z.enum(["actor", "marker", "mechanic", "arena"]).describe("Which catalogue to list"),
       query: z.string().optional().describe("Substring filter, e.g. 'attack' or 'p12'"),
     },
     async run(_ctx, a) {
@@ -956,7 +1249,7 @@ export const TOOLS: ToolDef[] = [
         const hits = ARENA_BACKGROUNDS.filter((b) => !q || b.key.toLowerCase().includes(q));
         return hits.map((b) => `- ${b.key} — ${b.label}`).join("\n") || "No matches.";
       }
-      const keys = a.kind === "actor" ? ACTOR_KEYS : MARKER_KEYS;
+      const keys = a.kind === "actor" ? ACTOR_KEYS : a.kind === "mechanic" ? MECHANIC_KEYS : MARKER_KEYS;
       const hits = keys.filter((k) => !q || k.toLowerCase().includes(q));
       return hits.join("\n") || "No matches.";
     },
@@ -965,7 +1258,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "add_icon",
     description:
-      "Place a bundled marker icon on the arena — attack1-8, bind1-8, ignore1-8, limit1-8, tankbuster, eye, proximity, targets, shapes. Use list_assets to see them all.",
+      "Place bundled FFXIV art on the arena — field markers or encounter telegraphs such as stack, tower, gaze, proximity, tankbuster and knockback. Use list_assets to see them all.",
     schema: {
       plan_id: z.string(),
       icon: z.string().describe("Asset key, e.g. marker/attack1, or an image URL"),

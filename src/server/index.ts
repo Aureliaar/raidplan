@@ -8,7 +8,9 @@ import { RaidPlanMCP } from "./mcp";
 import { chatRoutes } from "./chat";
 import { createPlan, encounterSetup } from "../shared/ops";
 import type { Op } from "../shared/apply";
+import { guardVariants } from "./variants";
 import type { PlanRole, User } from "../shared/schema";
+import type { HistoryActor } from "../shared/history";
 
 export { PlanAgent } from "./plan-agent";
 export { Registry } from "./registry";
@@ -37,6 +39,10 @@ class HttpError extends Error {
   ) {
     super(message);
   }
+}
+
+function historyActor(user: User, sessionId?: string, source: HistoryActor["source"] = "editor"): HistoryActor {
+  return { actorId: user.id, actorName: user.name, sessionId: sessionId?.slice(0, 128), source };
 }
 
 app.onError((err, c) => {
@@ -131,12 +137,62 @@ app.get("/api/plans/:id", async (c) => {
 
 app.post("/api/plans/:id/ops", async (c) => {
   const id = c.req.param("id");
-  await roleOrThrow(c, id, "edit");
-  const body = (await c.req.json()) as { ops: Op | Op[] };
+  const role = await roleOrThrow(c, id, "edit");
+  const body = (await c.req.json()) as { ops: Op | Op[]; sessionId?: string };
   const stub = await planStub(c.env, id);
-  const res = await stub.apply(body.ops);
+  // Somebody else's reading of the fight is theirs, even from an editor's hands.
+  const user = requireUser(c);
+  const ops = guardVariants(
+    await stub.getPlan(),
+    body.ops,
+    { id: user.id, name: user.name },
+    role,
+    (m) => new HttpError(403, m)
+  );
+  const res = await stub.apply(ops, historyActor(user, body.sessionId));
   await registry(c.env).touchPlan(id, { name: res.plan.name, encounter: res.plan.encounter });
-  return c.json({ rev: res.plan.rev, values: res.values, plan: res.plan });
+  return c.json({
+    rev: res.plan.rev,
+    values: res.values,
+    plan: res.plan,
+    history: await stub.history(),
+  });
+});
+
+app.get("/api/plans/:id/history", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "view");
+  return c.json(await (await planStub(c.env, id)).history());
+});
+
+app.post("/api/plans/:id/history/undo", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "edit");
+  const result = await (await planStub(c.env, id)).undo();
+  await registry(c.env).touchPlan(id, { name: result.plan.name, encounter: result.plan.encounter });
+  return c.json(result);
+});
+
+app.post("/api/plans/:id/history/redo", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "edit");
+  const result = await (await planStub(c.env, id)).redo();
+  await registry(c.env).touchPlan(id, { name: result.plan.name, encounter: result.plan.encounter });
+  return c.json(result);
+});
+
+app.post("/api/plans/:id/history/revert", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "edit");
+  const user = requireUser(c);
+  const body = (await c.req.json()) as { revisionId?: string; sessionId?: string };
+  if (!body.revisionId) throw new HttpError(400, "Choose a revision to restore");
+  const result = await (await planStub(c.env, id)).revert(
+    body.revisionId,
+    historyActor(user, body.sessionId)
+  );
+  await registry(c.env).touchPlan(id, { name: result.plan.name, encounter: result.plan.encounter });
+  return c.json(result);
 });
 
 /* The decided floor of a fight: its arena and waymarks, shared by every plan
@@ -165,7 +221,11 @@ app.post("/api/plans/:id/encounter/apply", async (c) => {
     ? await registry(c.env).getEncounter(requireUser(c).id, plan.encounter)
     : null;
   if (!setup) return c.json({ error: `Nothing saved for "${plan.encounter || "this encounter"}"` }, 404);
-  const res = await stub.apply({ op: "apply_encounter", setup });
+  const user = requireUser(c);
+  const res = await stub.apply(
+    { op: "apply_encounter", setup },
+    historyActor(user, undefined, "editor")
+  );
   return c.json({ rev: res.plan.rev, plan: res.plan });
 });
 
@@ -195,6 +255,31 @@ app.post("/api/plans/:id/share", async (c) => {
   if (remove) await registry(c.env).unshare(id, userId);
   else await registry(c.env).share(id, userId, role ?? "editor");
   return c.json({ ok: true });
+});
+
+/**
+ * Take a whole plan document in, over an existing plan you own: how a fight
+ * built on one instance gets to another. The document decides what is drawn;
+ * this instance keeps the plan's id, its owner and who it is shared with.
+ */
+app.post("/api/plans/:id/import", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "own");
+  const body = (await c.req.json()) as { plan?: unknown };
+  const stub = await planStub(c.env, id);
+  const user = requireUser(c);
+  const plan = await stub.replace(
+    body.plan ?? body,
+    { id, ownerId: user.id },
+    historyActor(user, undefined, "editor")
+  );
+  await registry(c.env).registerPlan({
+    id,
+    name: plan.name,
+    encounter: plan.encounter,
+    ownerId: plan.ownerId,
+  });
+  return c.json({ ok: true, name: plan.name, steps: plan.steps.length });
 });
 
 app.post("/api/plans/:id/public", async (c) => {

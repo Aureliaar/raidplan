@@ -5,8 +5,10 @@ import {
   type Entity,
   type EntityType,
   type Mech,
+  type Mechanic,
   type Plan,
   type Step,
+  type Variant,
   type PropBag,
   type EncounterSetup,
   type MarkerId,
@@ -17,8 +19,15 @@ import {
   PlanSchema,
   entitiesForStep,
   mechLabel,
+  MECH_COLORS,
+  mechColor,
   mechSpan,
+  mechanicLabel,
+  mechanicSteps,
+  poseKey,
+  poseStep,
   resolveEntity,
+  variantLabel,
 } from "./schema";
 import { DEFAULT_PARTY, jobLabel } from "./jobs";
 import { zoneCovers } from "./hits";
@@ -44,6 +53,7 @@ export function createPlan(opts: {
   withParty?: boolean;
 }): Plan {
   const stepId = newId("step");
+  const mechanicId = newId("mechanic");
   const now = Date.now();
   const plan: Plan = PlanSchema.parse({
     id: opts.id ?? newId("plan"),
@@ -51,7 +61,10 @@ export function createPlan(opts: {
     encounter: opts.encounter ?? "",
     ownerId: opts.ownerId ?? "",
     arena: ArenaSchema.parse(opts.arena ?? {}),
-    steps: [{ id: stepId, name: "Step 1", notes: "" }],
+    // Every step is in a mechanic, so a plan opens on a section rather than on
+    // a rail with nothing to hang the first step off.
+    mechanics: [{ id: mechanicId, name: "", variants: [] }],
+    steps: [{ id: stepId, name: "Step 1", notes: "", mechanic: mechanicId }],
     entities: [],
     createdAt: now,
     updatedAt: now,
@@ -108,7 +121,9 @@ export function pointToCompass(x: number, y: number): string {
 
 const DEFAULTS_BY_TYPE: Record<EntityType, PropBag> = {
   marker: { marker: "A" },
-  player: { job: "any" },
+  // Players sit under the telegraphs, not over them; a touch of transparency
+  // keeps the edge of a shape visible through a token standing on it.
+  player: { job: "any", opacity: 0.85 },
   enemy: {},
   zone: { shape: "circle" },
   tether: { from: "", to: "" },
@@ -137,13 +152,16 @@ export function getEntity(plan: Plan, id: string): Entity | undefined {
 /**
  * Patch an entity. With `stepId`, the patch is written as a per-step override
  * (so the entity keeps its base pose in every other step); without one it edits
- * the base properties.
+ * the base properties. Name a variant as well and the override belongs to that
+ * reading of the mechanic only — the same step played the other way is
+ * untouched, which is how one shared step holds two sets of positions.
  */
 export function updateEntity(
   plan: Plan,
   id: string,
   patch: PropBag,
-  stepId?: string
+  stepId?: string,
+  variantId?: string
 ): { plan: Plan; entity: Entity } {
   const idx = plan.entities.findIndex((e) => e.id === id);
   if (idx < 0) throw new Error(`No entity ${id}`);
@@ -159,7 +177,8 @@ export function updateEntity(
   // drag on one is always a mistake: it would give the same fight a different
   // A depending on which mechanic you were looking at.
   if (stepId && current.type !== "marker") {
-    const overrides = { ...current.overrides, [stepId]: { ...current.overrides?.[stepId], ...clean } };
+    const key = poseKey(stepId, variantId);
+    const overrides = { ...current.overrides, [key]: { ...current.overrides?.[key], ...clean } };
     next = { ...current, overrides } as Entity;
     // Validate the merged result so a bad override is rejected at write time.
     EntitySchema.parse({ ...current, ...clean, overrides: {} });
@@ -172,12 +191,17 @@ export function updateEntity(
   return { plan: touch({ ...plan, entities }), entity: next };
 }
 
-/** Drop a step's overrides for an entity, so it reverts to its base pose. */
-export function clearOverride(plan: Plan, id: string, stepId: string): Plan {
+/**
+ * Drop a step's overrides for an entity, so it reverts to its base pose. Name a
+ * variant and only that reading's move is dropped; without one the step goes
+ * back to base in every reading.
+ */
+export function clearOverride(plan: Plan, id: string, stepId: string, variantId?: string): Plan {
   const idx = plan.entities.findIndex((e) => e.id === id);
   if (idx < 0) throw new Error(`No entity ${id}`);
   const overrides = { ...plan.entities[idx].overrides };
-  delete overrides[stepId];
+  if (variantId) delete overrides[poseKey(stepId, variantId)];
+  else for (const k of Object.keys(overrides)) if (poseStep(k) === stepId) delete overrides[k];
   const entities = [...plan.entities];
   entities[idx] = { ...entities[idx], overrides } as Entity;
   return touch({ ...plan, entities });
@@ -291,18 +315,33 @@ export function resolveRef(plan: Plan, ref: string): Entity {
 
 /* -------------------------------------------------------------------- steps */
 
-export function addStep(plan: Plan, opts: { name?: string; notes?: string; index?: number } = {}): {
+/**
+ * Add a step, in the section it lands in.
+ *
+ * A step belongs to whatever run of steps it is placed into — the outline has
+ * no room for a loose step in the middle of a mechanic — so unless the caller
+ * names a mechanic, the new step inherits the one it is placed after.
+ */
+export function addStep(
+  plan: Plan,
+  opts: { name?: string; notes?: string; index?: number; mechanic?: string } = {}
+): {
   plan: Plan;
   step: Step;
 } {
+  const index = Math.max(0, Math.min(plan.steps.length, opts.index ?? plan.steps.length));
+  const after = plan.steps[index - 1];
+  const mechanic = opts.mechanic ?? after?.mechanic;
   const step: Step = {
     id: newId("step"),
-    name: opts.name ?? `Step ${plan.steps.length + 1}`,
+    // Steps are numbered within their own section, which is how the rail reads.
+    name: opts.name ?? `Step ${mechanicSteps(plan, mechanic).length + 1}`,
     notes: opts.notes ?? "",
+    ...(mechanic ? { mechanic } : {}),
   };
   const steps = [...plan.steps];
-  steps.splice(opts.index ?? steps.length, 0, step);
-  return { plan: touch({ ...plan, steps }), step };
+  steps.splice(index, 0, step);
+  return { plan: touch(reflowSteps({ ...plan, steps })), step };
 }
 
 /**
@@ -316,13 +355,22 @@ export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan
   const idx = plan.steps.findIndex((s) => s.id === stepId);
   if (idx < 0) throw new Error(`No step ${stepId}`);
   const src = plan.steps[idx];
-  const step: Step = { id: newId("step"), name: name ?? `${src.name} (copy)`, notes: src.notes };
+  // The copy is the same moment again, so it is in the same section: mechanic
+  // and variant come along with the poses.
+  const step: Step = { ...src, id: newId("step"), name: name ?? `${src.name} (copy)` };
   const steps = [...plan.steps];
   steps.splice(idx + 1, 0, step);
 
   const entities = plan.entities.map((e) => {
     const next = { ...e } as Entity;
-    if (e.overrides?.[stepId]) next.overrides = { ...e.overrides, [step.id]: { ...e.overrides[stepId] } };
+    const mine = Object.keys(e.overrides ?? {}).filter((k) => poseStep(k) === stepId);
+    if (mine.length) {
+      const overrides = { ...e.overrides };
+      // Every reading of the step comes along, each still filed under its own
+      // variant: a copy of a step people stand two ways in is the same step.
+      for (const k of mine) overrides[step.id + k.slice(stepId.length)] = { ...e.overrides![k] };
+      next.overrides = overrides;
+    }
     return next;
   });
 
@@ -334,41 +382,331 @@ export function updateStep(plan: Plan, stepId: string, patch: Partial<Omit<Step,
   return touch({ ...plan, steps });
 }
 
-export function deleteStep(plan: Plan, stepId: string): Plan {
-  if (plan.steps.length <= 1) throw new Error("A plan needs at least one step");
-  const steps = plan.steps.filter((s) => s.id !== stepId);
+/**
+ * Take steps out of a plan, with everything that hung off them.
+ *
+ * Shared by `delete_step` and by the mechanic ops, which drop a whole block at
+ * once: doing it one step at a time would collapse a mech onto a step that is
+ * about to go too, and bump the revision once per row.
+ */
+function removeSteps(plan: Plan, ids: string[]): Plan {
+  const gone = new Set(ids);
+  const steps = plan.steps.filter((s) => !gone.has(s.id));
   // A mech that loses one end collapses onto the other; one that loses both was
-  // entirely inside the step that just went away, and goes with it.
+  // entirely inside the steps that just went away, and goes with them.
   const mechs = plan.mechs
     .map((m) => ({
       ...m,
-      snap: m.snap === stepId ? "" : m.snap,
-      boom: m.boom === stepId ? "" : m.boom,
+      snap: gone.has(m.snap) ? "" : m.snap,
+      boom: gone.has(m.boom) ? "" : m.boom,
     }))
     .filter((m) => m.snap || m.boom)
     .map((m) => ({ ...m, snap: m.snap || m.boom, boom: m.boom || m.snap }));
-  const gone = new Set(plan.mechs.filter((m) => !mechs.some((k) => k.id === m.id)).map((m) => m.id));
+  const dead = new Set(plan.mechs.filter((m) => !mechs.some((k) => k.id === m.id)).map((m) => m.id));
   const entities = plan.entities
     .map((e) => {
       const overrides = { ...e.overrides };
-      delete overrides[stepId];
-      const steps2 = Array.isArray(e.steps) ? e.steps.filter((s) => s !== stepId) : e.steps;
+      for (const k of Object.keys(overrides)) if (gone.has(poseStep(k))) delete overrides[k];
+      const steps2 = Array.isArray(e.steps) ? e.steps.filter((s) => !gone.has(s)) : e.steps;
       return { ...e, overrides, steps: steps2 } as Entity;
     })
-    // An entity that only existed in the deleted step goes away with it — and
-    // so does one whose mech did.
-    .filter((e) => !(e.mech && gone.has(e.mech)))
+    // An entity that only existed in a deleted step goes away with it — and so
+    // does one whose mech did.
+    .filter((e) => !(e.mech && dead.has(e.mech)))
     .filter((e) => e.mech || e.steps === "all" || (e.steps as string[]).length > 0);
-  return touch({ ...plan, steps, mechs, entities });
+  return { ...plan, steps, mechs, entities };
 }
 
+/**
+ * Delete a step.
+ *
+ * A section is its steps: the last step out of a variant takes that variant
+ * with it, and the last step out of a mechanic takes the mechanic — a heading
+ * with nothing under it is not something the outline can draw.
+ */
+export function deleteStep(plan: Plan, stepId: string): Plan {
+  const step = plan.steps.find((s) => s.id === stepId);
+  if (!step) throw new Error(`No step ${stepId}`);
+  if (plan.steps.length <= 1) throw new Error("A plan needs at least one step");
+  const next = removeSteps(plan, [stepId]);
+  return touch(reflowSteps(step.mechanic ? pruneMechanic(next, step.mechanic) : next));
+}
+
+/**
+ * Move a step within its own section. A step belongs to the mechanic it is
+ * part of, so ↑ and ↓ shuffle it among its siblings rather than sliding it out
+ * of the run of steps it names.
+ */
 export function moveStep(plan: Plan, stepId: string, index: number): Plan {
   const from = plan.steps.findIndex((s) => s.id === stepId);
   if (from < 0) throw new Error(`No step ${stepId}`);
+  const me = plan.steps[from];
+  const siblings = plan.steps
+    .map((s, i) => ({ s, i }))
+    .filter(({ s }) => s.mechanic === me.mechanic)
+    .map(({ i }) => i);
+  const to = Math.max(siblings[0], Math.min(siblings[siblings.length - 1], index));
   const steps = [...plan.steps];
   const [s] = steps.splice(from, 1);
-  steps.splice(Math.max(0, Math.min(steps.length, index)), 0, s);
+  steps.splice(to, 0, s);
   return touch({ ...plan, steps });
+}
+
+/* ---------------------------------------------------------------- mechanics */
+
+/**
+ * The outline of the fight: Encounter → Mechanic → (Variant) → Steps.
+ *
+ * `plan.steps` stays the one flat, globally ordered list everything else is
+ * written against; a mechanic is a label on a contiguous run of it. Every op
+ * here keeps that true, which is what `reflowSteps` is for: sections in the
+ * order of `plan.mechanics`, and inside one, the order they were written in.
+ * Every step is in a section — `hydratePlan` sees to that on the way in — so
+ * the rail is one list of headings and never two competing ones.
+ */
+function reflowSteps(plan: Plan): Plan {
+  const rank = new Map<string, number>();
+  plan.mechanics.forEach((m, i) => rank.set(m.id, i + 1));
+  // A step whose mechanic has just gone is on its way out with it; sorting it
+  // to the front keeps the comparison total instead of leaving it undefined.
+  // Variants do not sort: a step gated to one sits where it happens in the
+  // fight, in among the shared steps around it.
+  const key = (s: Step) => (!s.mechanic ? 0 : (rank.get(s.mechanic) ?? 0));
+  const steps = plan.steps
+    .map((s, i) => ({ s, i }))
+    .sort((a, b) => key(a.s) - key(b.s) || a.i - b.i)
+    .map(({ s }) => s);
+  return { ...plan, steps };
+}
+
+/** A, B, C… — what a variant is called until somebody names it "Near first". */
+const variantName = (n: number) => String.fromCharCode(65 + n);
+
+/**
+ * Tidy a mechanic after steps were taken out of it: one lone variant is
+ * dissolved back into a plain mechanic (a single reading is not a choice), and
+ * a mechanic with no steps left goes entirely. A variant with no steps of its
+ * own is left alone — that is a reading that differs only in where people
+ * stand, which is the ordinary case.
+ */
+function pruneMechanic(plan: Plan, mechanicId: string): Plan {
+  const mechanic = plan.mechanics.find((m) => m.id === mechanicId);
+  if (!mechanic) return plan;
+  const mine = plan.steps.filter((s) => s.mechanic === mechanicId);
+  if (!mine.length) return { ...plan, mechanics: plan.mechanics.filter((m) => m.id !== mechanicId) };
+  let variants = mechanic.variants;
+  let mechs = plan.mechs;
+  let entities = plan.entities;
+  if (variants.length <= 1) {
+    const gone = new Set(variants.map((v) => v.id));
+    variants = [];
+    mechs = mechs.map((m) => (m.variant && gone.has(m.variant) ? { ...m, variant: undefined } : m));
+    // Poses filed under a reading that no longer exists would never be read
+    // again, and would come back to life if the mechanic gained a variant with
+    // the same id. They go with it.
+    entities = entities.map((e) => {
+      const overrides = { ...e.overrides };
+      for (const k of Object.keys(overrides)) {
+        const at = k.indexOf("@");
+        if (at >= 0 && gone.has(k.slice(at + 1))) delete overrides[k];
+      }
+      return { ...e, overrides } as Entity;
+    });
+  }
+  const mechanics = plan.mechanics.map((m) => (m.id === mechanicId ? { ...m, variants } : m));
+  return { ...plan, mechanics, mechs, entities };
+}
+
+/**
+ * A plan always has a step, and every step is in a mechanic: deleting the last
+ * section leaves a fresh empty one rather than a rail with nothing in it.
+ */
+function keepAStep(plan: Plan, doomed: Set<string>): Plan {
+  if (plan.steps.some((s) => !doomed.has(s.id))) return plan;
+  const mechanic: Mechanic = { id: newId("mechanic"), name: "", variants: [] };
+  return {
+    ...plan,
+    mechanics: [...plan.mechanics, mechanic],
+    steps: [...plan.steps, { id: newId("step"), name: "Step 1", notes: "", mechanic: mechanic.id }],
+  };
+}
+
+/**
+ * A new section of the fight. It comes with a step in it — an empty mechanic
+ * is a heading and nothing else — unless you hand it steps to adopt.
+ */
+export function addMechanic(
+  plan: Plan,
+  opts: { name?: string; after?: string; stepIds?: string[] } = {}
+): { plan: Plan; mechanic: Mechanic } {
+  const at = opts.after ? plan.mechanics.findIndex((m) => m.id === opts.after) : -1;
+  if (opts.after && at < 0) throw new Error(`No mechanic ${opts.after}`);
+  const mechanic: Mechanic = {
+    id: newId("mechanic"),
+    // Unnamed, it goes by where it is in the fight — see `mechanicLabel`.
+    name: opts.name ?? "",
+    variants: [],
+  };
+  const mechanics = [...plan.mechanics];
+  mechanics.splice(at < 0 ? mechanics.length : at + 1, 0, mechanic);
+  const adopt = new Set(opts.stepIds ?? []);
+  const steps = adopt.size
+    ? plan.steps.map((s) =>
+        adopt.has(s.id) ? { ...s, mechanic: mechanic.id, variant: undefined } : s
+      )
+    : [...plan.steps, { id: newId("step"), name: "Step 1", notes: "", mechanic: mechanic.id }];
+  return { plan: touch(reflowSteps({ ...plan, mechanics, steps })), mechanic };
+}
+
+export function updateMechanic(plan: Plan, mechanicId: string, patch: { name?: string }): Plan {
+  if (!plan.mechanics.some((m) => m.id === mechanicId)) throw new Error(`No mechanic ${mechanicId}`);
+  const mechanics = plan.mechanics.map((m) =>
+    m.id === mechanicId ? { ...m, ...defined(patch) } : m
+  );
+  return touch({ ...plan, mechanics });
+}
+
+/**
+ * Delete a mechanic. Its steps are the mechanic and go with it — unless you
+ * keep them, which merges them into the neighbouring section (the one before
+ * it, or the one after if it was first): every step is in a mechanic, so there
+ * is nowhere else for them to go — both readings of a mechanic with variants
+ * become plain steps of the section they join. The only mechanic in a plan has
+ * no neighbour, and cannot hand its steps on.
+ */
+export function deleteMechanic(plan: Plan, mechanicId: string, keepSteps = false): Plan {
+  const at = plan.mechanics.findIndex((m) => m.id === mechanicId);
+  if (at < 0) throw new Error(`No mechanic ${mechanicId}`);
+  const mechanics = plan.mechanics.filter((m) => m.id !== mechanicId);
+  if (keepSteps) {
+    const into = plan.mechanics[at - 1] ?? plan.mechanics[at + 1];
+    if (!into)
+      throw new Error("This is the only mechanic — its steps have no other section to go to");
+    const steps = plan.steps.map((s) =>
+      s.mechanic === mechanicId
+        ? { ...s, mechanic: into.id, variant: into.variants[0]?.id }
+        : s
+    );
+    return touch(reflowSteps({ ...plan, mechanics, steps }));
+  }
+  const doomed = plan.steps.filter((s) => s.mechanic === mechanicId).map((s) => s.id);
+  const kept = keepAStep({ ...plan, mechanics }, new Set(doomed));
+  return touch(reflowSteps(removeSteps(kept, doomed)));
+}
+
+/** Move a section of the fight, carrying its whole block of steps with it. */
+export function moveMechanic(plan: Plan, mechanicId: string, index: number): Plan {
+  const from = plan.mechanics.findIndex((m) => m.id === mechanicId);
+  if (from < 0) throw new Error(`No mechanic ${mechanicId}`);
+  const mechanics = [...plan.mechanics];
+  const [m] = mechanics.splice(from, 1);
+  mechanics.splice(Math.max(0, Math.min(mechanics.length, index)), 0, m);
+  return touch(reflowSteps({ ...plan, mechanics }));
+}
+
+/**
+ * Give a mechanic another reading.
+ *
+ * The steps are not copied: the mechanic keeps its one run of steps, and a
+ * variant is a lane beside them. The first call makes two readings at once —
+ * one reading is not a choice — with every existing step shared between them,
+ * so you start from "the same fight both ways" and gate the steps that differ.
+ */
+export function addVariant(
+  plan: Plan,
+  mechanicId: string,
+  opts: { name?: string; ownerId?: string; ownerName?: string } = {}
+): { plan: Plan; variant: Variant } {
+  const mechanic = plan.mechanics.find((m) => m.id === mechanicId);
+  if (!mechanic) throw new Error(`No mechanic ${mechanicId}`);
+  const made: Variant[] = [];
+  let variants = mechanic.variants;
+  if (!variants.length) {
+    const first: Variant = { id: newId("variant"), name: variantName(0) };
+    variants = [first];
+    made.push(first);
+  }
+  // The reading you asked for is yours. The one conjured alongside it, when a
+  // mechanic that went one way suddenly goes two, is nobody's: it is what the
+  // plan already said, and it belongs to the plan.
+  const variant: Variant = {
+    id: newId("variant"),
+    name: opts.name ?? variantName(variants.length),
+    ...(opts.ownerId ? { ownerId: opts.ownerId, ownerName: opts.ownerName } : {}),
+  };
+  variants = [...variants, variant];
+  made.push(variant);
+  const next = {
+    ...plan,
+    mechanics: plan.mechanics.map((m) => (m.id === mechanicId ? { ...m, variants } : m)),
+  };
+  return { plan: touch(next), variant: made[0] };
+}
+
+export function gateMech(plan: Plan, mechId: string, variantId?: string): Plan {
+  const mech = plan.mechs.find((m) => m.id === mechId);
+  if (!mech) throw new Error(`No mech ${mechId}`);
+  if (variantId) {
+    const step = plan.steps.find((s) => s.id === (mech.snap || mech.boom));
+    const mechanic = plan.mechanics.find((m) => m.id === step?.mechanic);
+    if (!mechanic?.variants.some((v) => v.id === variantId))
+      throw new Error(`No variant ${variantId} in this mechanic`);
+  }
+  const mechs = plan.mechs.map((m) =>
+    m.id === mechId ? ({ ...m, variant: variantId || undefined } as Mech) : m
+  );
+  return touch({ ...plan, mechs });
+}
+
+export function updateVariant(
+  plan: Plan,
+  mechanicId: string,
+  variantId: string,
+  patch: { name?: string }
+): Plan {
+  const mechanic = plan.mechanics.find((m) => m.id === mechanicId);
+  if (!mechanic) throw new Error(`No mechanic ${mechanicId}`);
+  if (!mechanic.variants.some((v) => v.id === variantId)) throw new Error(`No variant ${variantId}`);
+  const mechanics = plan.mechanics.map((m) =>
+    m.id === mechanicId
+      ? { ...m, variants: m.variants.map((v) => (v.id === variantId ? { ...v, ...defined(patch) } : v)) }
+      : m
+  );
+  return touch({ ...plan, mechanics });
+}
+
+/**
+ * Delete one reading of a mechanic, and what only it had: the casts that went
+ * off only that way, with their shapes, and the poses filed under it. The steps
+ * are the mechanic's either way and stay exactly as they are. Take the
+ * last-but-one and the mechanic is left plain.
+ */
+export function deleteVariant(plan: Plan, mechanicId: string, variantId: string): Plan {
+  const mechanic = plan.mechanics.find((m) => m.id === mechanicId);
+  if (!mechanic) throw new Error(`No mechanic ${mechanicId}`);
+  if (!mechanic.variants.some((v) => v.id === variantId)) throw new Error(`No variant ${variantId}`);
+  const doomedMechs = new Set(plan.mechs.filter((m) => m.variant === variantId).map((m) => m.id));
+  let next: Plan = {
+    ...plan,
+    mechs: plan.mechs.filter((m) => !doomedMechs.has(m.id)),
+    entities: plan.entities.filter((e) => !(e.mech && doomedMechs.has(e.mech))),
+  };
+  // The poses that were this reading's go with it; the shared ones stay.
+  next = {
+    ...next,
+    entities: next.entities.map((e) => {
+      const overrides = { ...e.overrides };
+      for (const k of Object.keys(overrides)) if (k.endsWith(`@${variantId}`)) delete overrides[k];
+      return { ...e, overrides } as Entity;
+    }),
+  };
+  next = {
+    ...next,
+    mechanics: next.mechanics.map((m) =>
+      m.id === mechanicId ? { ...m, variants: m.variants.filter((v) => v.id !== variantId) } : m
+    ),
+  };
+  return touch(reflowSteps(pruneMechanic(next, mechanicId)));
 }
 
 /* -------------------------------------------------------------------- mechs */
@@ -379,14 +717,20 @@ export function moveStep(plan: Plan, stepId: string, index: number): Plan {
  */
 export function addMech(
   plan: Plan,
-  opts: { name?: string; snap?: string; boom?: string } = {},
+  opts: { name?: string; snap?: string; boom?: string; color?: string } = {},
 ): { plan: Plan; mech: Mech } {
   const here = opts.snap ?? plan.steps[0]?.id ?? "";
+  // The least-used colour, so the second cast never matches the first and a
+  // plan with a handful of them spreads across the palette.
+  const used = (c: string) => plan.mechs.filter((m) => mechColor(plan, m) === c).length;
+  const color =
+    opts.color ?? MECH_COLORS.reduce((best, c) => (used(c) < used(best) ? c : best), MECH_COLORS[0]);
   const mech: Mech = {
     id: newId("mech"),
     name: opts.name ?? "",
     snap: here,
     boom: opts.boom ?? here,
+    color,
   };
   return { plan: touch({ ...plan, mechs: [...plan.mechs, mech] }), mech };
 }
@@ -421,10 +765,17 @@ export function assignMech(plan: Plan, ids: string[], mechId: string | null): Pl
 
 /* -------------------------------------------------------------- convenience */
 
-export function setArena(plan: Plan, patch: Partial<Arena>): Plan {
+/** `null` is the explicit wire value for removing an optional backdrop. */
+export type ArenaPatch = Omit<Partial<Arena>, "image"> & { image?: string | null };
+
+export function setArena(plan: Plan, patch: ArenaPatch): Plan {
+  const clearImage = patch.image === null;
+  const { image: _oldImage, ...arenaWithoutImage } = plan.arena;
+  const clean = defined(patch);
+  if (clearImage) delete clean.image;
   const arena = ArenaSchema.parse({
-    ...plan.arena,
-    ...defined(patch),
+    ...(clearImage ? arenaWithoutImage : plan.arena),
+    ...clean,
     grid: { ...plan.arena.grid, ...defined(patch.grid) },
   });
   return touch({ ...plan, arena });
@@ -604,6 +955,8 @@ export const BAIT_KINDS = [
   "spread",
   "puddle",
   "stack",
+  "linestack",
+  "flare",
   "tower",
   "proximity",
   "tether",
@@ -611,7 +964,7 @@ export const BAIT_KINDS = [
 export type BaitKind = (typeof BAIT_KINDS)[number];
 
 /** Kinds that fire *from* something — they need a source to aim from. */
-const AIMED: BaitKind[] = ["beam", "cone", "tether"];
+const AIMED: BaitKind[] = ["beam", "cone", "linestack", "tether"];
 
 /** Does this kind need a source? The editor asks before offering the picker. */
 export const baitNeedsSource = (kind: BaitKind) => AIMED.includes(kind);
@@ -623,6 +976,8 @@ const BAIT_DEFAULTS: Record<BaitKind, PropBag & { type: EntityType }> = {
   spread: { type: "zone", shape: "spread", radius: 120 },
   puddle: { type: "zone", shape: "circle", radius: 200 },
   stack: { type: "zone", shape: "stack", radius: 200, soak: 4 },
+  linestack: { type: "zone", shape: "linestack", width: 120, soak: 4, extend: true },
+  flare: { type: "zone", shape: "flare", radius: 320 },
   tower: { type: "zone", shape: "tower", radius: 140, soak: 1 },
   proximity: { type: "zone", shape: "proximity", radius: 250 },
   tether: { type: "tether", style: "line" },
@@ -670,7 +1025,18 @@ export function baitSpec(
  * mechanics a plan is actually made of, and each one means something different
  * depending on what you drop it on — a player group, a bait anchor, bare floor.
  */
-export const PALETTE = ["circle", "donut", "protean", "beam", "anchor"] as const;
+export const PALETTE = [
+  "circle",
+  "donut",
+  "protean",
+  "beam",
+  "stack8",
+  "stack4",
+  "stack2",
+  "linestack",
+  "flare",
+  "anchor",
+] as const;
 export type PaletteKind = (typeof PALETTE)[number];
 
 export const PALETTE_LABEL: Record<PaletteKind, string> = {
@@ -678,6 +1044,11 @@ export const PALETTE_LABEL: Record<PaletteKind, string> = {
   donut: "Donut",
   protean: "Protean",
   beam: "Beam",
+  stack8: "Stack ×8",
+  stack4: "Stack ×4",
+  stack2: "Stack ×2",
+  linestack: "Line stack",
+  flare: "Flare",
   anchor: "Bait anchor",
 };
 
@@ -686,6 +1057,11 @@ export const PALETTE_HINT: Record<PaletteKind, string> = {
   donut: "A donut AoE: everything but the hole. Drop it on somebody to have it centred on them.",
   protean: "A narrow cone per player, thrown from the boss.",
   beam: "A line AoE from the boss through whoever it is aimed at.",
+  stack8: "A full-party stack on somebody: everyone piles in.",
+  stack4: "A light-party stack: four people share it.",
+  stack2: "A pair stack: two people share it.",
+  linestack: "A line stack: a beam from the boss that several people line up in.",
+  flare: "A flare: a big circle on somebody, who carries it away from the others.",
   anchor: "A point mechanics come out of that is not the boss — an add, an orb, a portal.",
 };
 
@@ -695,6 +1071,11 @@ const PALETTE_BAIT: Record<Exclude<PaletteKind, "anchor">, { kind: BaitKind; pro
   donut: { kind: "donut", props: { radius: 450, innerRadius: 150 } },
   protean: { kind: "cone", props: { angle: 30 } },
   beam: { kind: "beam", props: { width: 160 } },
+  stack8: { kind: "stack", props: { radius: 160, soak: 8 } },
+  stack4: { kind: "stack", props: { radius: 160, soak: 4 } },
+  stack2: { kind: "stack", props: { radius: 140, soak: 2 } },
+  linestack: { kind: "linestack", props: { width: 120, soak: 4 } },
+  flare: { kind: "flare", props: { radius: 320 } },
 };
 
 /** The same four, dropped on bare floor: a shape you place and move yourself. */
@@ -703,6 +1084,11 @@ const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
   donut: { type: "zone", shape: "donut", radius: 300, innerRadius: 120 },
   protean: { type: "zone", shape: "cone", angle: 30, radius: 500 },
   beam: { type: "zone", shape: "rect", width: 160, length: 600 },
+  stack8: { type: "zone", shape: "stack", radius: 160, soak: 8 },
+  stack4: { type: "zone", shape: "stack", radius: 160, soak: 4 },
+  stack2: { type: "zone", shape: "stack", radius: 140, soak: 2 },
+  linestack: { type: "zone", shape: "linestack", width: 120, length: 600, soak: 4 },
+  flare: { type: "zone", shape: "flare", radius: 320 },
   anchor: { type: "enemy", role: "anchor", size: 60, ring: false, showFacing: false },
 };
 
@@ -728,7 +1114,7 @@ export function paletteBait(
 /* ------------------------------------------------------------------ resize */
 
 /** Rect-ish shapes are sized by their footprint, everything else by radius. */
-const BOXY = ["rect", "line", "arrow", "knockback"];
+const BOXY = ["rect", "line", "arrow", "knockback", "linestack"];
 
 /**
  * What "make this bigger" multiplies, per entity. It is the real dimensions
@@ -838,7 +1224,25 @@ export function describePlan(plan: Plan, stepId?: string): string {
       `Origin is the centre; +x east, +y south; rotation 0 = north, clockwise.`
   );
   const steps = stepId ? plan.steps.filter((s) => s.id === stepId) : plan.steps;
+  // The outline the steps hang off: which section of the fight this run of
+  // steps is, and which reading of it. Printed as it changes, so the document
+  // reads down the page the way the rail does.
+  let section = "";
   for (const step of steps) {
+    const here = step.mechanic ?? "";
+    if (here !== section) {
+      section = here;
+      const mechanic = plan.mechanics.find((m) => m.id === step.mechanic);
+      if (mechanic) {
+        lines.push("", `## Mechanic: ${mechanicLabel(plan, mechanic)} [${mechanic.id}]`);
+        if (mechanic.variants.length)
+          lines.push(
+            `Goes ${mechanic.variants
+              .map((v) => `${variantLabel(mechanic, v.id)} [${v.id}]`)
+              .join(" / ")} — same steps either way; the casts and the party's positions differ. Read as ${variantLabel(mechanic, mechanic.variants[0].id)}.`
+          );
+      }
+    }
     lines.push("");
     lines.push(`## Step ${plan.steps.indexOf(step) + 1}: ${step.name} [${step.id}]`);
     if (step.notes) lines.push(`Notes: ${step.notes}`);
@@ -850,7 +1254,7 @@ export function describePlan(plan: Plan, stepId?: string): string {
           live
             .map(
               (m) =>
-                `${mechLabel(plan, m)} [${m.id}] ${
+                `${mechLabel(plan, m)} [${m.id}]${m.variant ? " (one reading only)" : ""} ${
                   m.boom === step.id ? (m.snap === step.id ? "snapshots and goes off here" : "goes off here") : m.snap === step.id ? "snapshots here" : "in the air"
                 }`
             )

@@ -7,6 +7,7 @@ import {
   anchoredPose,
   entitiesForStep,
   mechLabel,
+  mechColor,
   BAIT_RULES,
   type BaitRule,
   ZONE_SHAPES,
@@ -52,6 +53,8 @@ function BaitTarget({
   anchor,
   stepId,
   scope,
+  variant,
+  shown,
   editable,
   run,
 }: {
@@ -60,6 +63,10 @@ function BaitTarget({
   anchor: NonNullable<Entity["anchor"]>;
   stepId: string;
   scope: "step" | "all";
+  /** The reading of this step's mechanic being played, when it goes two ways. */
+  variant?: string;
+  /** Which reading of every mechanic is on screen, for solving baits. */
+  shown?: Record<string, string>;
   editable: boolean;
   run(ops: Op | Op[]): Promise<unknown>;
 }) {
@@ -67,10 +74,10 @@ function BaitTarget({
   const setAnchor = (props: Partial<NonNullable<Entity["anchor"]>>) =>
     run({ op: "update_entity", id: entity.id, patch: { anchor: { ...anchor, ...props } } });
 
-  const resolved = entitiesForStep(plan, stepId);
+  const resolved = entitiesForStep(plan, stepId, undefined, shown);
   const now = anchorTarget({ ...entity, anchor } as Entity, new Map(resolved.map((e) => [e.id, e])));
   const candidates = plan.entities.filter((e) => !e.anchor && e.type !== "tether" && e.id !== entity.id);
-  const nudged = resolveEntity(entity, stepId);
+  const nudged = resolveEntity(entity, stepId, variant);
 
   return (
     <div className="mb-3 rounded bg-ink-800 p-2 text-xs">
@@ -159,6 +166,7 @@ function BaitTarget({
                 id: entity.id,
                 patch: { x: 0, y: 0 },
                 stepId: scope === "step" ? stepId : undefined,
+                variant: scope === "step" ? variant : undefined,
               })
             }
           >
@@ -172,7 +180,7 @@ function BaitTarget({
               run({
                 op: "update_entity",
                 id: entity.id,
-                patch: { anchor: null, ...freeze(plan, stepId, entity) },
+                patch: { anchor: null, ...freeze(plan, stepId, entity, shown) },
               })
             }
           >
@@ -194,6 +202,7 @@ function BaitPanel({
   target,
   stepId,
   scope,
+  variant,
   editable,
   run,
 }: {
@@ -201,6 +210,10 @@ function BaitPanel({
   target: Entity;
   stepId: string;
   scope: "step" | "all";
+  /** The reading of this step's mechanic being played, when it goes two ways. */
+  variant?: string;
+  /** Which reading of every mechanic is on screen, for solving baits. */
+  shown?: Record<string, string>;
   editable: boolean;
   run(ops: Op | Op[]): Promise<unknown>;
 }) {
@@ -260,8 +273,8 @@ function BaitPanel({
 }
 
 /** Unbinding keeps the bait where it currently is, rather than snapping it home. */
-function freeze(plan: Plan, stepId: string, entity: Entity) {
-  const byId = new Map(entitiesForStep(plan, stepId).map((e) => [e.id, e]));
+function freeze(plan: Plan, stepId: string, entity: Entity, shown?: Record<string, string>) {
+  const byId = new Map(entitiesForStep(plan, stepId, undefined, shown).map((e) => [e.id, e]));
   return anchoredPose(entity, byId, plan.arena) ?? {};
 }
 
@@ -277,6 +290,8 @@ export function Inspector({
   entity,
   stepId,
   scope,
+  variant,
+  shown: playing,
   editable,
   run,
   onDeselect,
@@ -285,6 +300,10 @@ export function Inspector({
   entity: Entity | null;
   stepId: string;
   scope: "step" | "all";
+  /** The reading of this step's mechanic being played, when it goes two ways. */
+  variant?: string;
+  /** Which reading of every mechanic is on screen, for solving baits. */
+  shown?: Record<string, string>;
   editable: boolean;
   run(ops: Op | Op[]): Promise<unknown>;
   onDeselect(): void;
@@ -299,10 +318,18 @@ export function Inspector({
     );
   }
 
-  const shown = resolveEntity(entity, stepId);
-  const overridden = !!entity.overrides?.[stepId];
+  const mechOf = entity.mech ? plan.mechs.find((m) => m.id === entity.mech) : undefined;
+  const shown = resolveEntity(entity, stepId, variant);
+  const overridden =
+    !!entity.overrides?.[stepId] || (!!variant && !!entity.overrides?.[`${stepId}@${variant}`]);
   const patch = (props: Record<string, unknown>) =>
-    run({ op: "update_entity", id: entity.id, patch: props, stepId: scope === "step" ? stepId : undefined });
+    run({
+      op: "update_entity",
+      id: entity.id,
+      patch: props,
+      stepId: scope === "step" ? stepId : undefined,
+      variant: scope === "step" ? variant : undefined,
+    });
 
   const num = (key: string, label: string, step = 1) => (
     <Field label={label} key={key}>
@@ -338,7 +365,15 @@ export function Inspector({
       {entity.type === "zone" && entity.shape !== "arrow" && <Hits plan={plan} stepId={stepId} zoneId={entity.id} />}
 
       {!entity.anchor && entity.type !== "tether" && (
-        <BaitPanel plan={plan} target={entity} stepId={stepId} scope={scope} editable={editable} run={run} />
+        <BaitPanel
+          plan={plan}
+          target={entity}
+          stepId={stepId}
+          scope={scope}
+          variant={variant}
+          editable={editable}
+          run={run}
+        />
       )}
 
       {shown.anchor && (
@@ -348,6 +383,8 @@ export function Inspector({
           anchor={shown.anchor}
           stepId={stepId}
           scope={scope}
+          variant={variant}
+          shown={playing}
           editable={editable}
           run={run}
         />
@@ -572,6 +609,13 @@ export function Inspector({
             </button>
             {/* Which cast this shape is part of: a mech times it and aims it,
                 so moving it between slots is a real edit, not a label. */}
+            {mechOf && (
+              <span
+                className="inline-block h-3 w-3 shrink-0 rounded-sm"
+                style={{ background: mechColor(plan, mechOf) }}
+                title="Drawn in its mech's colour"
+              />
+            )}
             <select
               className="field w-auto"
               disabled={!editable}
@@ -659,7 +703,7 @@ function ArenaFields({
           className="field"
           disabled={!editable}
           value={plan.arena.image ?? ""}
-          onChange={(e) => set({ image: e.target.value || undefined })}
+          onChange={(e) => set({ image: e.target.value || null })}
         >
           <option value="">none</option>
           {ARENA_BACKGROUNDS.map((b) => (

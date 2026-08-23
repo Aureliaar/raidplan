@@ -125,6 +125,59 @@ else if (boundTo.join() !== "H1,H2,MT,OT")
 else console.log("a circle on Supports bound one to each: " + boundTo.join());
 if (doc.entities.length !== before + 4) fail("Supports added " + (doc.entities.length - before) + " entities");
 
+/* --- a stack on Healers goes to the two healers, numbered ----------------- */
+
+await page.locator("div", { hasText: /Stack ×8$/ }).last().dragTo(chip("Healers"));
+await page.waitForTimeout(700);
+doc = await load();
+const stacks = doc.entities.filter((e) => e.type === "zone" && e.shape === "stack");
+const stackOn = stacks.map((c) => doc.entities.find((e) => e.id === c.anchor.to)?.name).sort();
+if (stacks.length !== 2) fail("Healers should have taken 2 stacks, got " + stacks.length);
+else if (stackOn.join() !== "H1,H2") fail("the stacks went to " + stackOn.join());
+else if (!stacks.every((s) => s.soak === 8)) fail("a Stack ×8 should want 8 people: " + stacks.map((s) => s.soak));
+else console.log("a Stack ×8 on Healers put an 8-person stack on " + stackOn.join(" and "));
+
+// A line stack is aimed: it comes out of the boss like a beam does.
+await page.locator("div", { hasText: /^Line stack$/ }).last().dragTo(chip("Tanks"));
+await page.waitForTimeout(700);
+doc = await load();
+const lines = doc.entities.filter((e) => e.type === "zone" && e.shape === "linestack");
+const source = doc.entities.find((e) => e.id === lines[0]?.anchor?.from);
+if (lines.length !== 2) fail("Tanks should have taken 2 line stacks, got " + lines.length);
+else if (!source || !lines.every((l) => l.anchor.from === source.id))
+  fail("the line stacks are not aimed from anything");
+else console.log("a line stack on Tanks fires from " + source.name + " through each tank");
+
+/* --- and what a shape is coloured says what kind of thing it is ------------ */
+
+// Nobody has picked any colour: these are the defaults the canvas draws.
+const painted = await page.evaluate(
+  async ([id]) => {
+    const d = await (await fetch("/api/plans/" + id)).json().then((p) => p.plan ?? p);
+    const m = await import("/src/shared/schema.ts");
+    const drawn = m.entitiesForStep(d, d.steps[0].id);
+    const of = (pred) => [...new Set(drawn.filter(pred).map((e) => e.color))];
+    return {
+      families: m.ZONE_FAMILIES,
+      stacks: of((e) => e.shape === "stack"),
+      beams: of((e) => e.shape === "rect" && e.anchor),
+      circles: of((e) => e.shape === "circle" && e.anchor),
+    };
+  },
+  [planId]
+);
+// One drop is one shade; two separate drops of the same kind may differ, so
+// long as both are of the family.
+const family = (got, name) =>
+  got.length && got.every((c) => painted.families[name].includes(c))
+    ? true
+    : (fail(name + " should be one of " + painted.families[name].join(",") + ", got " + got.join(",")), false);
+if (family(painted.stacks, "stack")) console.log("a stack is yellow: " + painted.stacks[0]);
+// The beams come off the bait anchor, and where a thing comes from beats what
+// shape it is.
+if (family(painted.beams, "bait")) console.log("a beam off the bait anchor is green: " + painted.beams.join(", "));
+if (family(painted.circles, "cast")) console.log("a circle is red-orange: " + painted.circles[0]);
+
 /* --- a protean on Party comes from the boss ------------------------------- */
 
 await page.locator("div", { hasText: /^Protean$/ }).last().dragTo(chip("Party"));

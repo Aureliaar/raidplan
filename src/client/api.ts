@@ -1,5 +1,6 @@
 import type { Op } from "../shared/apply";
 import type { Plan, PlanRole, PlanSummary, User } from "../shared/schema";
+import type { HistoryResult, PlanHistory } from "../shared/history";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -35,10 +36,20 @@ export const api = {
     req<{ userId: string; role: PlanRole; name: string | null }[]>(`/api/plans/${id}/collaborators`),
 
   /** Every mutation in the app goes through here. */
-  ops: (planId: string, ops: Op | Op[]) =>
-    req<{ rev: number; values: unknown[]; plan: Plan }>(`/api/plans/${planId}/ops`, {
+  ops: (planId: string, ops: Op | Op[], sessionId?: string) =>
+    req<{ rev: number; values: unknown[]; plan: Plan; history: PlanHistory }>(`/api/plans/${planId}/ops`, {
       method: "POST",
-      body: JSON.stringify({ ops }),
+      body: JSON.stringify({ ops, sessionId }),
+    }),
+  history: (planId: string) => req<PlanHistory>(`/api/plans/${planId}/history`),
+  undo: (planId: string) =>
+    req<HistoryResult>(`/api/plans/${planId}/history/undo`, { method: "POST" }),
+  redo: (planId: string) =>
+    req<HistoryResult>(`/api/plans/${planId}/history/redo`, { method: "POST" }),
+  revert: (planId: string, revisionId: string, sessionId?: string) =>
+    req<HistoryResult>(`/api/plans/${planId}/history/revert`, {
+      method: "POST",
+      body: JSON.stringify({ revisionId, sessionId }),
     }),
 
   listTokens: () => req<{ id: string; label: string; createdAt: number; lastUsedAt?: number }[]>("/api/tokens"),

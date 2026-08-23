@@ -211,6 +211,45 @@ if (pulled.snap !== run_) fail("dragging the middle down moved the snapshot too"
 else if (pulled.boom !== doc.steps[3].id) fail("dragging down did not carry the explosion to After");
 else console.log("dragging down from the middle stretched it to After, snapshot untouched");
 
+/* --- a mech has a colour, and its shapes wear it --------------------------- */
+
+const mod = (fn) => page.evaluate(async ([id, src]) => {
+  const d = await (await fetch("/api/plans/" + id)).json().then((p) => p.plan ?? p);
+  const m = await import("/src/shared/schema.ts");
+  return new Function("m", "d", "return (" + src + ")(m, d)")(m, d);
+}, [planId, fn.toString()]);
+
+const m_cast = await mod((m) => [...m.ZONE_FAMILIES.cast]);
+const first = (await mod((m, d) => m.mechColor(d, d.mechs[0])));
+const worn = (await drawn(run_)).filter((e) => e.mech === mechId);
+// `drawn` does not report colour; read it the same way the canvas does.
+const colors = await mod((m, d) =>
+  [...new Set(m.entitiesForStep(d, d.steps[1].id).filter((e) => e.mech).map((e) => e.color))]);
+// Nobody has picked a colour for this cast, so its shapes go by family: a
+// donut is something the boss throws, so it is a shade of red-orange, and all
+// eight of them are the same shade because they are the same cast.
+if (colors.length !== 1) fail("the donuts came out in " + colors.length + " colours: " + colors.join(","));
+else if (!m_cast.includes(colors[0]))
+  fail("the donuts are drawn in " + colors[0] + ", which is no shade of the cast family");
+else console.log("the donuts wear a shade of their family, " + colors[0]);
+
+// A second cast is told apart from the first by colour without anyone asking.
+await ops({ op: "add_mech", snap: run_ });
+const second = await mod((m, d) => m.mechColor(d, d.mechs[1]));
+if (second === first) fail("the second mech came out the same colour as the first");
+else console.log("a second mech is a different colour: " + second);
+await ops({ op: "delete_mech", mechId: (await load()).mechs[1].id });
+
+// And the swatches in the mech panel change it, shapes and all.
+const swatch = page.getByTitle(/^Draw it in #/).nth(3);
+const picked = (await swatch.getAttribute("title")).slice("Draw it in ".length);
+await swatch.click();
+await page.waitForTimeout(500);
+const after = await mod((m, d) => m.entitiesForStep(d, d.steps[1].id).find((e) => e.mech).color);
+if (after !== picked) fail("picking " + picked + " left the donuts " + after);
+else console.log("picking a swatch recoloured the cast to " + picked);
+if (!worn.length) fail("nothing of the mech was drawn in Run");
+
 /* --- the slot is the object ----------------------------------------------- */
 
 await page.keyboard.press("F2");
