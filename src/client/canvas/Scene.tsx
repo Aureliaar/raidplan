@@ -27,6 +27,12 @@ import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
 import { entitiesForStep, resolveEntity } from "../../shared/schema";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { assetUrl, enemyIconKey, jobIconKey, waymarkIconKey } from "../../shared/assets";
+import {
+  symmetricUpdates,
+  symmetryMemberIds,
+  type SymmetryCount,
+  type SymmetryKind,
+} from "../symmetry";
 
 /**
  * Top-down arena renderer. Everything is drawn in arena units inside one scaled
@@ -87,6 +93,8 @@ export interface SceneProps {
   size: number;
   selected: string | null;
   editable: boolean;
+  symmetryCount?: SymmetryCount;
+  symmetryKind?: SymmetryKind;
   layer?: EditLayer;
   /** A bond or mech id whose shapes should light up — the row being hovered. */
   highlight?: string | null;
@@ -221,6 +229,8 @@ export function Scene({
   size,
   selected,
   editable,
+  symmetryCount = 1,
+  symmetryKind = "mirror",
   layer = "step",
   highlight,
   glide = 0,
@@ -251,8 +261,38 @@ export function Scene({
   const frozen = (e: Entity) => offLayer(e) || !!e.bond || going.has(e.id);
 
   const committed = useMemo(() => entitiesForStep(plan, stepId, undefined, shown), [plan, stepId, shown]);
+  const selectedIds = useMemo(
+    () =>
+      new Set(
+        selected && symmetryCount > 1
+          ? symmetryMemberIds(plan, selected, symmetryKind, symmetryCount as 2 | 4, committed)
+          : selected
+            ? [selected]
+            : []
+      ),
+    [plan, selected, symmetryCount, symmetryKind, committed]
+  );
   const settled = useMemo(() => {
-    const live = dragging ? new Map([[dragging.id, { x: dragging.x, y: dragging.y }]]) : undefined;
+    const updates =
+      dragging && symmetryCount > 1
+        ? symmetricUpdates(
+            plan,
+            { op: "update_entity", id: dragging.id, patch: { x: dragging.x, y: dragging.y } },
+            symmetryKind,
+            symmetryCount as 2 | 4,
+            committed
+          )
+        : dragging
+          ? [{ op: "update_entity" as const, id: dragging.id, patch: { x: dragging.x, y: dragging.y } }]
+          : [];
+    const live = updates.length
+      ? new Map(
+          updates.map((update) => [
+            update.id,
+            { x: Number(update.patch.x), y: Number(update.patch.y) },
+          ])
+        )
+      : undefined;
     const sorted = sortForDrawing(live ? entitiesForStep(plan, stepId, live, shown) : committed);
     // On the waymark layer the marks come to the top: they normally lie on the
     // floor under the party, which is right for reading a plan and useless for
@@ -260,7 +300,7 @@ export function Scene({
     return layer === "markers"
       ? [...sorted].sort((a, b) => Number(a.type === "marker") - Number(b.type === "marker"))
       : sorted;
-  }, [plan, stepId, committed, dragging, layer]);
+  }, [plan, stepId, shown, committed, dragging, layer, symmetryCount, symmetryKind]);
   // What is actually on the floor this frame: the step's shapes, or them on
   // their way there. Everything below reads this, so a walk moves the lot.
   const { entities, going, blast } = useGlide(settled, glide, onward);
@@ -387,7 +427,7 @@ export function Scene({
           <ArenaFloor plan={plan} />
           {entities.map((e) =>
             e.type === "tether" ? (
-              <Tether key={e.id} entity={e} byId={byId} selected={selected === e.id} dim={offLayer(e)} />
+              <Tether key={e.id} entity={e} byId={byId} selected={selectedIds.has(e.id)} dim={offLayer(e)} />
             ) : (
               <Group
                 key={e.id}
@@ -410,7 +450,7 @@ export function Scene({
               >
                 <GrabTarget entity={e} />
                 <EntityShape entity={e} blast={blast.get(e.id) ?? 0} />
-                {(selected === e.id ||
+                {(selectedIds.has(e.id) ||
                   (!!highlight && (e.bond?.id === highlight || e.mech === highlight))) && (
                   <SelectionRing entity={e} />
                 )}
@@ -549,7 +589,16 @@ function GrabTarget({ entity }: { entity: Entity }) {
 
 function SelectionRing({ entity }: { entity: Entity }) {
   const r = radiusHint(entity) + 14;
-  return <Circle radius={r} stroke="#7aa2f7" strokeWidth={4} dash={[12, 8]} listening={false} />;
+  return (
+    <Circle
+      name="selection"
+      radius={r}
+      stroke="#7aa2f7"
+      strokeWidth={4}
+      dash={[12, 8]}
+      listening={false}
+    />
+  );
 }
 
 const TETHER_HIT_WIDTH = 30;

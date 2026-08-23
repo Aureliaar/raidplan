@@ -1023,9 +1023,11 @@ export function baitSpec(
 /**
  * The things you drag onto the arena. Deliberately short: these are the
  * mechanics a plan is actually made of, and each one means something different
- * depending on what you drop it on — a player group, a bait anchor, bare floor.
+ * depending on what you drop it on — a player group, an enemy source, bare floor.
  */
 export const PALETTE = [
+  "boss",
+  "add",
   "circle",
   "donut",
   "protean",
@@ -1038,8 +1040,15 @@ export const PALETTE = [
   "anchor",
 ] as const;
 export type PaletteKind = (typeof PALETTE)[number];
+export type PaletteSourceKind = Extract<PaletteKind, "boss" | "add" | "anchor">;
+export type PaletteMechanicKind = Exclude<PaletteKind, PaletteSourceKind>;
+
+export const isPaletteSource = (kind: PaletteKind): kind is PaletteSourceKind =>
+  kind === "boss" || kind === "add" || kind === "anchor";
 
 export const PALETTE_LABEL: Record<PaletteKind, string> = {
+  boss: "Boss",
+  add: "Add",
   circle: "Circle",
   donut: "Donut",
   protean: "Protean",
@@ -1053,6 +1062,8 @@ export const PALETTE_LABEL: Record<PaletteKind, string> = {
 };
 
 export const PALETTE_HINT: Record<PaletteKind, string> = {
+  boss: "A large enemy. Drop mechanics on it to use it as their source.",
+  add: "A medium enemy. Drop mechanics on it to use it as their source.",
   circle: "A desolation: a circle AoE. Drop it on a group to give each of them one.",
   donut: "A donut AoE: everything but the hole. Drop it on somebody to have it centred on them.",
   protean: "A narrow cone per player, thrown from the boss.",
@@ -1066,7 +1077,7 @@ export const PALETTE_HINT: Record<PaletteKind, string> = {
 };
 
 /** Which bait preset each palette kind becomes once it is bound to somebody. */
-const PALETTE_BAIT: Record<Exclude<PaletteKind, "anchor">, { kind: BaitKind; props: PropBag }> = {
+const PALETTE_BAIT: Record<PaletteMechanicKind, { kind: BaitKind; props: PropBag }> = {
   circle: { kind: "puddle", props: { radius: 200 } },
   donut: { kind: "donut", props: { radius: 450, innerRadius: 150 } },
   protean: { kind: "cone", props: { angle: 30 } },
@@ -1078,8 +1089,10 @@ const PALETTE_BAIT: Record<Exclude<PaletteKind, "anchor">, { kind: BaitKind; pro
   flare: { kind: "flare", props: { radius: 320 } },
 };
 
-/** The same four, dropped on bare floor: a shape you place and move yourself. */
+/** A palette item dropped on bare floor: an enemy or a shape you place and move yourself. */
 const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
+  boss: { type: "enemy", role: "enemy", icon: "actor/enemy_large", size: 140 },
+  add: { type: "enemy", role: "enemy", icon: "actor/enemy_medium", size: 90 },
   circle: { type: "zone", shape: "circle", radius: 200 },
   donut: { type: "zone", shape: "donut", radius: 300, innerRadius: 120 },
   protean: { type: "zone", shape: "cone", angle: 30, radius: 500 },
@@ -1093,7 +1106,7 @@ const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
 };
 
 export const paletteNeedsSource = (kind: PaletteKind) =>
-  kind !== "anchor" && baitNeedsSource(PALETTE_BAIT[kind].kind);
+  !isPaletteSource(kind) && baitNeedsSource(PALETTE_BAIT[kind].kind);
 
 /** A free-standing shape at a point on the floor. */
 export function paletteSpec(kind: PaletteKind, props: PropBag = {}): PropBag & { type: EntityType } {
@@ -1102,7 +1115,7 @@ export function paletteSpec(kind: PaletteKind, props: PropBag = {}): PropBag & {
 
 /** The same palette item, bound: on a named target, or on whoever is nearest. */
 export function paletteBait(
-  kind: Exclude<PaletteKind, "anchor">,
+  kind: PaletteMechanicKind,
   target: string | { pick: BaitRule; rank?: number; of?: "player" | "enemy" | "any" },
   sourceId: string | undefined,
   props: PropBag = {}

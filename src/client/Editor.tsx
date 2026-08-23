@@ -32,11 +32,12 @@ import {
   variantColor,
   variantLabel,
 } from "../shared/schema";
-import type { PaletteKind } from "../shared/ops";
+import type { PaletteKind, PaletteMechanicKind, PaletteSourceKind } from "../shared/ops";
 import {
   PALETTE,
   PALETTE_HINT,
   PALETTE_LABEL,
+  isPaletteSource,
   paletteBait,
   paletteNeedsSource,
   paletteSpec,
@@ -386,12 +387,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     };
   }
 
-  /** A bait anchor under the drop point, if the drop landed on one. */
-  function anchorAt(pt: { x: number; y: number }): string | undefined {
+  /** An enemy source under the drop point: boss, add, or bare bait anchor. */
+  function sourceAt(pt: { x: number; y: number }): string | undefined {
     return entitiesForStep(plan!, step!.id, undefined, shown).find(
       (e) =>
         e.type === "enemy" &&
-        e.role === "anchor" &&
         Math.hypot(e.x - pt.x, e.y - pt.y) <= e.size * 0.9 * e.scale
     )?.id;
   }
@@ -470,11 +470,14 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     if (edits.length) void run(edits);
   }
 
-  /** The sets a group holds, in the order they were dropped. */
+  /** The sets this group holds in the mechanic currently being filled. */
   function bondsOf(group: GroupId): { id: string; label: string; ids: string[] }[] {
     const out = new Map<string, { id: string; label: string; ids: string[] }>();
     for (const e of plan!.entities) {
-      if (e.bond?.group !== group) continue;
+      // A group card is part of the current authoring context. Showing bonds
+      // from other mechs here made their remove controls appear to belong to
+      // whichever mech happened to be open.
+      if (e.bond?.group !== group || e.mech !== openMech?.id) continue;
       const seen = out.get(e.bond.id) ?? { id: e.bond.id, label: e.bond.label ?? "set", ids: [] };
       seen.ids.push(e.id);
       out.set(e.bond.id, seen);
@@ -482,11 +485,18 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     return [...out.values()];
   }
 
-  async function placeAnchor(x: number, y: number) {
-    const n = plan!.entities.filter((e) => e.type === "enemy" && e.role === "anchor").length + 1;
+  async function placeSource(kind: PaletteSourceKind, x: number, y: number) {
+    const matching = plan!.entities.filter(
+      (e) =>
+        e.type === "enemy" &&
+        (kind === "anchor"
+          ? e.role === "anchor"
+          : e.role !== "anchor" && e.icon === `actor/enemy_${kind === "boss" ? "large" : "medium"}`)
+    ).length;
+    const name = kind === "anchor" ? `anchor ${matching + 1}` : `${kind} ${matching + 1}`;
     const res = await run({
       op: "add_entity",
-      spec: paletteSpec("anchor", { x, y, name: `anchor ${n}`, ...stamp() }) as never,
+      spec: paletteSpec(kind, { x, y, name, ...stamp() }) as never,
     });
     const created = res.values[0] as { id: string } | null;
     if (created) setSelected(created.id);
@@ -500,12 +510,14 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    */
   async function sourceForAimed() {
     const enemies = plan!.entities.filter((e) => e.type === "enemy");
-    const boss = enemies.find((e) => e.role !== "anchor") ?? enemies[0];
-    return boss ? boss.id : await placeAnchor(0, 0);
+    const boss = enemies
+      .filter((e) => e.role !== "anchor")
+      .sort((a, b) => b.size - a.size)[0] ?? enemies[0];
+    return boss ? boss.id : await placeSource("anchor", 0, 0);
   }
 
-  /** Zone shape each palette kind lands as — used to count what an anchor has. */
-  const SHAPE_OF: Record<Exclude<PaletteKind, "anchor">, string> = {
+  /** Zone shape each mechanic tile lands as — used to count what a source has. */
+  const SHAPE_OF: Record<PaletteMechanicKind, string> = {
     circle: "circle",
     donut: "donut",
     protean: "cone",
@@ -520,12 +532,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   /**
    * A palette item let go over the arena. What it becomes is decided entirely by
    * what it landed on: bare floor makes a shape you move yourself, a group makes
-   * one per person, and an anchor makes a bait — a second of the same kind on
-   * the same anchor takes the second-closest player, and so on.
+   * one per person, and an enemy source makes a bait — a second of the same kind
+   * on that source takes the second-closest player, and so on.
    */
   async function drop(kind: PaletteKind, pt: { x: number; y: number }, target: DropTarget) {
-    if (kind === "anchor") {
-      await placeAnchor(pt.x, pt.y);
+    if (isPaletteSource(kind)) {
+      await placeSource(kind, pt.x, pt.y);
       return;
     }
     if (target.at === "group") {
@@ -551,7 +563,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       setSelected(null);
       return;
     }
-    if (target.at === "anchor") {
+    if (target.at === "source") {
       const taken = plan!.entities.filter(
         (e) =>
           e.type === "zone" &&
@@ -780,8 +792,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 const kind = kindOf(ev);
                 if (!kind) return;
                 ev.preventDefault();
-                const on = anchorAt(pt);
-                void drop(kind, pt, on ? { at: "anchor", id: on } : { at: "free" });
+                const on = sourceAt(pt);
+                void drop(kind, pt, on ? { at: "source", id: on } : { at: "free" });
                 setCarrying(null);
                 setHover(null);
               }}
@@ -801,6 +813,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 size={size}
                 selected={selected}
                 editable={editable}
+                symmetryCount={symmetryCount}
+                symmetryKind={symmetryKind}
                 layer={layer}
                 highlight={highlight}
                 glide={glide}
@@ -925,8 +939,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         <aside className="panel w-[320px] shrink-0 overflow-y-auto border-y-0 border-r-0 p-3">
           <h2 className="label mb-2">Add</h2>
           <p className="mb-2 text-xs text-ink-400">
-            Drag onto the floor to place one, onto a group to give everybody one, onto a bait
-            anchor to have it thrown at whoever stands nearest. Scroll over anything on the
+            Drag onto the floor to place one, onto a group to give everybody one, or onto a boss,
+            add, or bait anchor to have it thrown at whoever stands nearest. Scroll over anything on the
             arena to size it — shift for fine steps.
           </p>
           <div className="mb-4 grid grid-cols-2 gap-1">
@@ -938,6 +952,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 onDragStart={(ev) => {
                   ev.dataTransfer.setData("text/plain", k);
                   ev.dataTransfer.effectAllowed = "copy";
+                  // Carry the telegraph itself, not a translucent snapshot of
+                  // the rectangular palette card. The drop target can change
+                  // what it binds to, but it is already a circle, donut, etc.
+                  const glyph = ev.currentTarget.querySelector("[data-palette-glyph]");
+                  if (glyph instanceof Element) ev.dataTransfer.setDragImage(glyph, 15, 15);
                   setCarrying(k);
                 }}
                 onDragEnd={() => {
@@ -2339,13 +2358,26 @@ const GROUP_LABEL: Record<GroupId, string> = {
 };
 
 /** Where a palette item was let go, which is the whole of what it means. */
-type DropTarget = { at: "free" } | { at: "group"; group: GroupId } | { at: "anchor"; id: string };
+type DropTarget = { at: "free" } | { at: "group"; group: GroupId } | { at: "source"; id: string };
 
 /** A glyph, so the palette reads as shapes rather than as four words. */
 function PaletteGlyph({ kind }: { kind: PaletteKind }) {
   const stroke = "#7aa2f7";
   return (
-    <svg width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+    <svg data-palette-glyph width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+      {(kind === "boss" || kind === "add") && (
+        <g>
+          <circle
+            cx="15"
+            cy="15"
+            r={kind === "boss" ? "12" : "9"}
+            fill={kind === "boss" ? "#8f3029" : "#a64b42"}
+            stroke="#e8edf5"
+            strokeWidth="2"
+          />
+          <path d="M10 12 l2 -5 l3 4 l3 -4 l2 5" fill="none" stroke="#e0b152" strokeWidth="1.8" />
+        </g>
+      )}
       {kind === "circle" && (
         <circle cx="15" cy="15" r="9" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
       )}

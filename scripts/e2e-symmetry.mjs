@@ -54,6 +54,9 @@ const box = await canvas.boundingBox();
 const scale = box.width / 1000;
 const at = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 const read = async () => (await api(`/api/plans/${id}`)).plan;
+let plan = await read();
+let mt = plan.entities.find((e) => e.name === "MT");
+let ot = plan.entities.find((e) => e.name === "OT");
 
 // Key 2 enables two-way; Q changes the transform to rotation. These players
 // were made through the API and therefore deliberately have no saved group.
@@ -66,12 +69,32 @@ const to = at(-160, -90);
 await page.mouse.move(from.x, from.y);
 await page.mouse.down();
 await page.mouse.move(to.x, to.y, { steps: 12 });
+await page.waitForTimeout(200);
+
+const live = await page.evaluate(
+  ([otherId]) => {
+    const stage = window.Konva.stages[0];
+    const other = stage.findOne("#" + otherId);
+    return {
+      other: other ? { x: Math.round(other.x()), y: Math.round(other.y()) } : null,
+      selected: stage.find(".selection").map((ring) => ring.getParent()?.id()).filter(Boolean),
+    };
+  },
+  [ot.id]
+);
+if (!live.other || Math.hypot(live.other.x - 160, live.other.y - 90) > 12)
+  fail(`counterpart waited for drop instead of moving live: ${JSON.stringify(live.other)}`);
+else console.log("mid-drag: rotational counterpart is already moving");
+if (!live.selected.includes(mt.id) || !live.selected.includes(ot.id))
+  fail(`counterparts are not both selected: ${live.selected.join(", ")}`);
+else console.log("selection rings appear on both matched players");
+
 await page.mouse.up();
 await page.waitForTimeout(700);
 
-let plan = await read();
-const mt = plan.entities.find((e) => e.name === "MT");
-const ot = plan.entities.find((e) => e.name === "OT");
+plan = await read();
+mt = plan.entities.find((e) => e.name === "MT");
+ot = plan.entities.find((e) => e.name === "OT");
 if (Math.hypot(mt.x + 160, mt.y + 90) > 8) fail(`MT moved to ${mt.x},${mt.y}`);
 if (Math.hypot(ot.x - 160, ot.y - 90) > 8)
   fail(`same-role rotational counterpart moved to ${ot.x},${ot.y}`);

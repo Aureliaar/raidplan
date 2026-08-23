@@ -1,7 +1,7 @@
 /**
- * The palette: four things you drag, and what they mean depends on where you
- * let go. Bare floor makes a shape you own; a bait anchor makes a mechanic
- * thrown at whoever stands nearest it; the group chips give everybody one.
+ * The palette: things you drag, whose meaning depends on where you let go.
+ * Bare floor makes a shape you own; an enemy source makes a mechanic thrown
+ * at whoever stands nearest it; the group chips give everybody one.
  *
  *   node scripts/e2e-palette.mjs http://localhost:59577
  */
@@ -234,6 +234,28 @@ const free = doc.entities.find(
 );
 if (!free) fail("a circle dropped on bare floor did not land there unbound");
 else console.log("a circle on bare floor is yours to move: " + free.x + "," + free.y);
+
+/* --- bosses and adds are enemy sources, not reticle anchors --------------- */
+
+await dropOnFloor("Boss", -300, -300);
+await dropOnFloor("Add", 300, 300);
+doc = await load();
+const boss = doc.entities.find((e) => e.name === "boss 1");
+const add = doc.entities.find((e) => e.name === "add 1");
+if (!boss || boss.type !== "enemy" || boss.role === "anchor" || boss.icon !== "actor/enemy_large")
+  fail("Boss did not create a large, ordinary enemy: " + JSON.stringify(boss));
+if (!add || add.type !== "enemy" || add.role === "anchor" || add.icon !== "actor/enemy_medium")
+  fail("Add did not create a medium, ordinary enemy: " + JSON.stringify(add));
+
+await dropOnFloor("Beam", -300, -300);
+await dropOnFloor("Beam", 300, 300);
+doc = await load();
+const sourced = doc.entities.filter(
+  (e) => e.type === "zone" && e.shape === "rect" && (e.anchor?.from === boss?.id || e.anchor?.from === add?.id)
+);
+if (sourced.length !== 2)
+  fail("Boss and Add did not accept mechanics as sources: " + JSON.stringify(sourced.map((e) => e.anchor)));
+else console.log("Boss and Add are droppable mechanic sources without becoming bait anchors");
 
 console.log(process.exitCode ? "FAILED" : "OK - " + base + "/p/" + planId);
 await browser.close();

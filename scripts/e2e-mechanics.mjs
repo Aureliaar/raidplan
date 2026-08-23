@@ -149,6 +149,8 @@ await page
   .last()
   .dragTo(page.locator("div", { hasText: /^Party$/ }).last());
 await page.waitForTimeout(1100);
+if (!(await page.getByText("Donut ×8", { exact: true }).count()))
+  fail("the open cast's Party set is missing from the group card");
 await page.getByRole("button", { name: "done filling" }).click();
 await page.waitForTimeout(300);
 doc = await load();
@@ -156,6 +158,14 @@ const mechId = doc.mechs[0]?.id;
 const donuts = doc.entities.filter((e) => e.mech === mechId);
 if (donuts.length !== 8) fail("the cast in the section holds " + donuts.length + " shapes");
 else console.log("a cast with eight donuts snapshots in the section's first step");
+if (await page.getByText("Donut ×8", { exact: true }).count())
+  fail("the closed cast's Party set leaked into the unscoped group card");
+await page.locator(`[data-mech="${mechId}"]`).click();
+await page.waitForTimeout(200);
+if (!(await page.getByText("Donut ×8", { exact: true }).count()))
+  fail("the Party set did not return when its cast was selected again");
+else console.log("group-card sets follow the cast currently selected");
+await page.getByRole("button", { name: "done filling" }).click();
 
 /* --- another reading of the mechanic copies nothing ----------------------- */
 

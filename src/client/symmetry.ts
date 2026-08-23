@@ -6,6 +6,7 @@ export type SymmetryKind = "mirror" | "rotate";
 export type SymmetryCount = 1 | 2 | 4;
 
 type Symmetry = NonNullable<Entity["symmetry"]>;
+type MatchedMember = { member: Entity; symmetry: Symmetry };
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
 const angle = (n: number) => ((round(n) % 360) + 360) % 360;
@@ -99,54 +100,16 @@ export function symmetricUpdates(
   kind: SymmetryKind,
   count: 2 | 4,
   visible: Entity[] = plan.entities
-): Op[] {
+): Extract<Op, { op: "update_entity" }>[] {
   const source = plan.entities.find((e) => e.id === op.id);
   if (!source) return [op];
-  let members: Entity[];
-  let sourceSymmetry: Symmetry;
-  if (source.symmetry) {
-    sourceSymmetry = source.symmetry;
-    members = plan.entities.filter((e) => e.symmetry?.id === source.symmetry!.id);
-  } else {
-    // Existing party layouts predate symmetry groups. While moving a player,
-    // pair it with the nearest player of the same role around each expected
-    // transformed position. The generous radius tolerates hand-drawn layouts
-    // without accidentally pairing a tank with a healer or DPS.
-    if (source.type !== "player" || !("x" in op.patch || "y" in op.patch)) return [op];
-    const posed =
-      visible.find(
-        (e): e is Extract<Entity, { type: "player" }> => e.id === source.id && e.type === "player"
-      ) ?? source;
-    const role = roleOf(posed.job) === "any" ? roleOf(posed.name ?? "") : roleOf(posed.job);
-    const tolerance = Math.max(posed.size * 2.5, Math.max(plan.arena.width, plan.arena.height) * 0.12);
-    const used = new Set([source.id]);
-    const matches: { member: Entity; index: number }[] = [{ member: source, index: 0 }];
-    for (let index = 1; index < count; index++) {
-      const expected = symmetryPoint(posed.x, posed.y, kind, count, index);
-      const nearest = visible
-        .filter((e): e is Extract<Entity, { type: "player" }> => {
-          if (e.type !== "player" || used.has(e.id)) return false;
-          const candidateRole = roleOf(e.job) === "any" ? roleOf(e.name ?? "") : roleOf(e.job);
-          return candidateRole === role;
-        })
-        .map((e) => ({ e, distance: Math.hypot(e.x - expected.x, e.y - expected.y) }))
-        .filter((hit) => hit.distance <= tolerance)
-        .sort((a, b) => a.distance - b.distance)[0]?.e;
-      if (nearest) {
-        used.add(nearest.id);
-        matches.push({ member: nearest, index });
-      }
-    }
-    sourceSymmetry = { id: "loose", kind, count, index: 0 };
-    members = matches.map(({ member, index }) => ({
-      ...member,
-      symmetry: { ...sourceSymmetry, index },
-    })) as Entity[];
-  }
+  const matched = matchSymmetryMembers(plan, source, kind, count, visible);
+  if (!matched) return [op];
+  const { members, sourceSymmetry } = matched;
   const current = { x: source.x, y: source.y, rotation: source.rotation, ...op.patch };
   const base = canonicalPose(current.x, current.y, current.rotation, sourceSymmetry);
-  return members.map((member) => {
-    const p = symmetryPoint(base.x, base.y, sourceSymmetry.kind, sourceSymmetry.count, member.symmetry!.index);
+  return members.map(({ member, symmetry }) => {
+    const p = symmetryPoint(base.x, base.y, sourceSymmetry.kind, sourceSymmetry.count, symmetry.index);
     const patch: PropBag = { ...op.patch };
     if ("x" in op.patch || "y" in op.patch) Object.assign(patch, p);
     if ("rotation" in op.patch)
@@ -154,10 +117,70 @@ export function symmetricUpdates(
         base.rotation,
         sourceSymmetry.kind,
         sourceSymmetry.count,
-        member.symmetry!.index
+        symmetry.index
       );
     return { ...op, id: member.id, patch };
   });
+}
+
+/** All faces that should read as selected with this entity in the active mode. */
+export function symmetryMemberIds(
+  plan: Plan,
+  sourceId: string,
+  kind: SymmetryKind,
+  count: 2 | 4,
+  visible: Entity[] = plan.entities
+): string[] {
+  const source = plan.entities.find((e) => e.id === sourceId);
+  if (!source) return [sourceId];
+  return matchSymmetryMembers(plan, source, kind, count, visible)?.members.map(({ member }) => member.id) ?? [sourceId];
+}
+
+/** Resolve both saved symmetry sets and older, loosely symmetric party layouts. */
+function matchSymmetryMembers(
+  plan: Plan,
+  source: Entity,
+  kind: SymmetryKind,
+  count: 2 | 4,
+  visible: Entity[]
+): { members: MatchedMember[]; sourceSymmetry: Symmetry } | null {
+  if (source.symmetry) {
+    return {
+      sourceSymmetry: source.symmetry,
+      members: plan.entities
+        .filter((e) => e.symmetry?.id === source.symmetry!.id)
+        .map((member) => ({ member, symmetry: member.symmetry! })),
+    };
+  }
+  // Existing party layouts predate symmetry groups. Pair the selected player
+  // with the nearest same-role player around every expected transformed pose.
+  if (source.type !== "player") return null;
+  const posed =
+    visible.find(
+      (e): e is Extract<Entity, { type: "player" }> => e.id === source.id && e.type === "player"
+    ) ?? source;
+  const role = roleOf(posed.job) === "any" ? roleOf(posed.name ?? "") : roleOf(posed.job);
+  const tolerance = Math.max(posed.size * 2.5, Math.max(plan.arena.width, plan.arena.height) * 0.12);
+  const sourceSymmetry: Symmetry = { id: "loose", kind, count, index: 0 };
+  const used = new Set([source.id]);
+  const members: MatchedMember[] = [{ member: source, symmetry: sourceSymmetry }];
+  for (let index = 1; index < count; index++) {
+    const expected = symmetryPoint(posed.x, posed.y, kind, count, index);
+    const nearest = visible
+      .filter((e): e is Extract<Entity, { type: "player" }> => {
+        if (e.type !== "player" || used.has(e.id)) return false;
+        const candidateRole = roleOf(e.job) === "any" ? roleOf(e.name ?? "") : roleOf(e.job);
+        return candidateRole === role;
+      })
+      .map((e) => ({ e, distance: Math.hypot(e.x - expected.x, e.y - expected.y) }))
+      .filter((hit) => hit.distance <= tolerance)
+      .sort((a, b) => a.distance - b.distance)[0]?.e;
+    if (nearest) {
+      used.add(nearest.id);
+      members.push({ member: nearest, symmetry: { ...sourceSymmetry, index } });
+    }
+  }
+  return { members, sourceSymmetry };
 }
 
 export function symmetryIds(plan: { entities: Entity[] }, ids: string[]): string[] {
