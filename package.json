@@ -26,6 +26,7 @@
     "e2e:owners": "node scripts/e2e-variant-owners.mjs",
     "e2e:size": "node scripts/e2e-size.mjs",
     "e2e:source": "node scripts/e2e-source.mjs",
+    "e2e:symmetry": "node scripts/e2e-symmetry.mjs",
     "e2e:steps": "node scripts/e2e-steps.mjs",
     "mcp": "node scripts/mcp-call.mjs",
     "preview": "vite preview",

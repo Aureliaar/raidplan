@@ -245,6 +245,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       const el = ev.target as HTMLElement | null;
       if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
       if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (ev.repeat) return;
       if (ev.key === "1" || ev.key === "2" || ev.key === "3") {
         ev.preventDefault();
         setSymmetryCount(ev.key === "1" ? 1 : ev.key === "2" ? 2 : 4);
@@ -671,24 +672,43 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         <div className="ml-auto flex items-center gap-2">
           {editable && (
             <>
-              <div className="flex items-center gap-1" aria-label="Symmetry controls">
+              <div
+                className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-md border border-ink-600 bg-ink-900/70 p-0.5 shadow-inner"
+                role="group"
+                aria-label="Symmetry controls"
+              >
                 {([1, 2, 4] as const).map((count, index) => (
                   <button
                     key={count}
-                    className={`btn ${symmetryCount === count ? "border-blue-400 text-blue-200" : ""}`}
+                    type="button"
+                    className={`flex min-w-10 items-center justify-center gap-1 whitespace-nowrap rounded px-1.5 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-300 ${
+                      symmetryCount === count
+                        ? "bg-blue-500/25 font-semibold text-blue-100 shadow-sm"
+                        : "text-ink-400 hover:bg-ink-700 hover:text-ink-200"
+                    }`}
                     title={`${count === 1 ? "Normal editing" : `${count}-way symmetry`} (${index + 1})`}
+                    aria-label={`${index + 1}: ${count === 1 ? "normal" : `${count}-way`}`}
                     aria-pressed={symmetryCount === count}
                     onClick={() => setSymmetryCount(count)}
                   >
-                    {index + 1}: {count === 1 ? "normal" : `${count}-way`}
+                    <kbd className="text-[10px] font-normal text-ink-400">{index + 1}</kbd>
+                    <span>{count === 1 ? "Off" : `${count}×`}</span>
                   </button>
                 ))}
                 <button
-                  className={`btn ${symmetryCount > 1 ? "border-violet-400 text-violet-200" : ""}`}
+                  type="button"
+                  className={`ml-0.5 flex min-w-[88px] items-center justify-center gap-1.5 whitespace-nowrap border-l border-ink-600 px-2 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-violet-300 ${
+                    symmetryCount > 1
+                      ? "bg-violet-500/20 font-medium text-violet-100 hover:bg-violet-500/30"
+                      : "text-ink-400 hover:bg-ink-700 hover:text-ink-200"
+                  }`}
                   title="Toggle mirror / rotational symmetry (Q)"
+                  aria-label={`Q: ${symmetryKind}`}
                   onClick={() => setSymmetryKind((kind) => (kind === "mirror" ? "rotate" : "mirror"))}
                 >
-                  Q: {symmetryKind === "mirror" ? "mirror" : "rotate"}
+                  <kbd className="text-[10px] font-normal text-ink-400">Q</kbd>
+                  <span aria-hidden="true">{symmetryKind === "mirror" ? "↔" : "↻"}</span>
+                  <span>{symmetryKind === "mirror" ? "Mirror" : "Rotate"}</span>
                 </button>
               </div>
               <span className="label">Drag moves</span>

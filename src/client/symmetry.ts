@@ -1,4 +1,4 @@
-import type { Entity, Plan, PlayerEntity, PropBag } from "../shared/schema";
+import type { Entity, Plan, PropBag } from "../shared/schema";
 import type { Op } from "../shared/apply";
 import { roleOf } from "../shared/jobs";
 
@@ -83,9 +83,7 @@ export function makeSymmetricAdds(
       ...spec,
       x: symmetryPoint(spec.x, spec.y, kind, count, index).x,
       y: symmetryPoint(spec.x, spec.y, kind, count, index).y,
-      ...(typeof spec.rotation === "number"
-        ? { rotation: symmetryRotation(spec.rotation, kind, count, index) }
-        : {}),
+      rotation: symmetryRotation(typeof spec.rotation === "number" ? spec.rotation : 0, kind, count, index),
       symmetry: { id: group, kind, count, index },
     },
   }));
@@ -115,9 +113,10 @@ export function symmetricUpdates(
     // transformed position. The generous radius tolerates hand-drawn layouts
     // without accidentally pairing a tank with a healer or DPS.
     if (source.type !== "player" || !("x" in op.patch || "y" in op.patch)) return [op];
-    const posed = (visible.find(
-      (e): e is PlayerEntity => e.id === source.id && e.type === "player"
-    ) ?? source) as PlayerEntity;
+    const posed =
+      visible.find(
+        (e): e is Extract<Entity, { type: "player" }> => e.id === source.id && e.type === "player"
+      ) ?? source;
     const role = roleOf(posed.job) === "any" ? roleOf(posed.name ?? "") : roleOf(posed.job);
     const tolerance = Math.max(posed.size * 2.5, Math.max(plan.arena.width, plan.arena.height) * 0.12);
     const used = new Set([source.id]);
