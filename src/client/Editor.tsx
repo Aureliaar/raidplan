@@ -619,7 +619,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
 
   return (
     <div className="relative flex h-full flex-col">
-      <header className="panel flex items-center gap-3 border-x-0 border-t-0 px-3 py-2">
+      <header className="panel flex flex-wrap items-center gap-3 border-x-0 border-t-0 px-3 py-2">
         <button className="btn" onClick={() => navigate("/")}>
           ← Plans
         </button>
@@ -643,7 +643,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           rev {plan.rev} · {connected ? "live" : "offline"} · {role}
         </span>
         {editable && (
-          <div className="flex items-center gap-1" aria-label="Edit history controls">
+          <div className="flex shrink-0 items-center gap-1" aria-label="Edit history controls">
             <button
               className="btn"
               disabled={historyBusy || !history?.canUndo}
@@ -669,7 +669,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             </button>
           </div>
         )}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex shrink-0 items-center gap-2">
           {editable && (
             <>
               <div
