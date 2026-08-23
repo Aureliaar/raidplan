@@ -50,8 +50,8 @@ await page.waitForSelector("canvas");
 await page.waitForTimeout(1000);
 
 const canvas = page.locator("canvas").first();
-const box = await canvas.boundingBox();
-const scale = box.width / 1000;
+let box = await canvas.boundingBox();
+let scale = box.width / 1000;
 const at = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 const read = async () => (await api(`/api/plans/${id}`)).plan;
 let plan = await read();
@@ -100,9 +100,82 @@ if (Math.hypot(ot.x - 160, ot.y - 90) > 8)
   fail(`same-role rotational counterpart moved to ${ot.x},${ot.y}`);
 else console.log("loose same-role player counterpart follows a rotational move");
 
-// Exercise buttons as well as keys: mirror + four-way, then drop one circle.
-await page.getByRole("button", { name: "Q: rotate" }).click();
+// Party symmetry uses encounter pairings rather than exact job roles. In
+// particular BRD R1 and BLM R2 are the ranged pair, while four-way matching
+// spans all four supports or all four damage dealers.
+await api(`/api/plans/${id}/ops`, {
+  method: "POST",
+  body: JSON.stringify({
+    ops: [
+      { op: "update_entity", id: mt.id, patch: { x: -140, y: -140 } },
+      { op: "update_entity", id: ot.id, patch: { x: 140, y: 140 } },
+      { op: "add_entity", spec: { type: "player", job: "WHM", name: "H1", x: 140, y: -140 } },
+      { op: "add_entity", spec: { type: "player", job: "SCH", name: "H2", x: -140, y: 140 } },
+      { op: "add_entity", spec: { type: "player", job: "BRD", name: "R1", x: -270, y: -270 } },
+      { op: "add_entity", spec: { type: "player", job: "BLM", name: "R2", x: 270, y: -270 } },
+      { op: "add_entity", spec: { type: "player", job: "SAM", name: "M1", x: 270, y: 270 } },
+      { op: "add_entity", spec: { type: "player", job: "DRG", name: "M2", x: -270, y: 270 } },
+    ],
+  }),
+});
+await page.reload();
+await page.waitForSelector("canvas");
+await page.waitForTimeout(700);
+box = await canvas.boundingBox();
+scale = box.width / 1000;
+await page.locator("header select").selectOption("all");
+const dragPlayer = async (name, dx, dy) => {
+  const current = await read();
+  const player = current.entities.find((e) => e.name === name);
+  const point = await page.evaluate(
+    (playerId) => window.Konva.stages[0].findOne("#" + playerId)?.getAbsolutePosition(),
+    player.id
+  );
+  await page.mouse.move(box.x + point.x, box.y + point.y);
+  await page.mouse.down();
+  await page.mouse.move(box.x + point.x + dx * scale, box.y + point.y + dy * scale, { steps: 10 });
+  await page.mouse.up();
+};
+
+await page.mouse.click(800, 500);
+await page.keyboard.press("2");
+await dragPlayer("R1", 20, 20);
+await page.waitForTimeout(600);
+plan = await read();
+let r1 = plan.entities.find((e) => e.name === "R1");
+let r2 = plan.entities.find((e) => e.name === "R2");
+if (Math.hypot(r2.x - 250, r2.y + 250) > 8)
+  fail(`two-way R1/R2 pairing left R1/R2 at ${r1.x},${r1.y} / ${r2.x},${r2.y}`);
+else console.log("two-way symmetry pairs physical-ranged R1 with caster R2");
+
 await page.getByRole("button", { name: "3: 4-way" }).click();
+await dragPlayer("R1", 20, 20);
+await page.waitForTimeout(600);
+plan = await read();
+const damageExpected = { R1: [-230, -230], R2: [230, -230], M1: [230, 230], M2: [-230, 230] };
+if (
+  Object.entries(damageExpected).some(([name, [x, y]]) => {
+    const player = plan.entities.find((e) => e.name === name);
+    return !player || Math.hypot(player.x - x, player.y - y) > 8;
+  })
+)
+  fail("four-way symmetry did not move all four damage dealers");
+else console.log("four-way symmetry moves all four damage dealers");
+
+await dragPlayer("MT", 20, 20);
+await page.waitForTimeout(600);
+plan = await read();
+const supportExpected = { MT: [-120, -120], H1: [120, -120], OT: [120, 120], H2: [-120, 120] };
+if (
+  Object.entries(supportExpected).some(([name, [x, y]]) => {
+    const player = plan.entities.find((e) => e.name === name);
+    return !player || Math.hypot(player.x - x, player.y - y) > 8;
+  })
+)
+  fail("four-way symmetry did not move all four supports");
+else console.log("four-way symmetry moves all four supports");
+
+// Exercise persistent symmetric creation as well: drop one circle.
 const target = { x: box.width / 2 - 190 * scale, y: box.height / 2 - 140 * scale };
 await page.getByText("Circle", { exact: true }).dragTo(canvas, { targetPosition: target });
 await page.waitForTimeout(700);

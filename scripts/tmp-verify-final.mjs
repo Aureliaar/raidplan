@@ -1,0 +1,20 @@
+import { chromium } from "playwright";
+const browser = await chromium.launch();
+const page = await browser.newPage();
+const errors = [];
+page.on("pageerror", (e) => errors.push(e.message));
+await page.goto("http://localhost:7777/", { waitUntil: "domcontentloaded", timeout: 60000 });
+await page.waitForTimeout(6000);
+const kids = await page.evaluate(() => {
+  const p = PROJECTS.find((x) => x.name === "raidplan");
+  return { live: p?.live, children: (p?.children || []).map((c) => c.port) };
+});
+const dotTitle = await page.locator(".row[data-name='raidplan'] .dot").getAttribute("title");
+const known = await page.locator("#known > summary").innerText().catch(() => "no tab");
+const childRows = await page.locator(".row.child").allInnerTexts();
+console.log("raidplan live:", kids.live, "| children ports:", JSON.stringify(kids.children));
+console.log("raidplan dot:", dotTitle);
+console.log("all child rows on page:", JSON.stringify(childRows));
+console.log("known tab:", known);
+if (errors.length) console.log("page errors:", errors.slice(0, 3));
+await browser.close();

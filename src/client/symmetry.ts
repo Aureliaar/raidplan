@@ -7,9 +7,35 @@ export type SymmetryCount = 1 | 2 | 4;
 
 type Symmetry = NonNullable<Entity["symmetry"]>;
 type MatchedMember = { member: Entity; symmetry: Symmetry };
+type LooseSymmetryRole =
+  | "tank"
+  | "healer"
+  | "melee"
+  | "ranged"
+  | "dps"
+  | "support"
+  | "damager"
+  | "any";
 
 const round = (n: number) => Math.round(n * 1000) / 1000;
 const angle = (n: number) => ((round(n) % 360) + 360) % 360;
+
+/**
+ * Party symmetry follows encounter slots, rather than the game's more granular
+ * job-role taxonomy. R1/R2 are one two-way pair even when one is physical
+ * ranged and the other is a caster; four-way symmetry spans either half of the
+ * party (all supports or all damage dealers).
+ */
+function looseSymmetryRole(entity: Extract<Entity, { type: "player" }>, count: 2 | 4): LooseSymmetryRole {
+  const role = roleOf(entity.job) === "any" ? roleOf(entity.name ?? "") : roleOf(entity.job);
+  if (count === 4) {
+    if (role === "tank" || role === "healer") return "support";
+    if (role === "melee" || role === "ranged" || role === "caster" || role === "dps")
+      return "damager";
+  }
+  if (role === "caster") return "ranged";
+  return role;
+}
 
 /** Apply one face of a symmetry set to a point authored in face zero. */
 export function symmetryPoint(
@@ -159,7 +185,7 @@ function matchSymmetryMembers(
     visible.find(
       (e): e is Extract<Entity, { type: "player" }> => e.id === source.id && e.type === "player"
     ) ?? source;
-  const role = roleOf(posed.job) === "any" ? roleOf(posed.name ?? "") : roleOf(posed.job);
+  const role = looseSymmetryRole(posed, count);
   const tolerance = Math.max(posed.size * 2.5, Math.max(plan.arena.width, plan.arena.height) * 0.12);
   const sourceSymmetry: Symmetry = { id: "loose", kind, count, index: 0 };
   const used = new Set([source.id]);
@@ -169,7 +195,7 @@ function matchSymmetryMembers(
     const nearest = visible
       .filter((e): e is Extract<Entity, { type: "player" }> => {
         if (e.type !== "player" || used.has(e.id)) return false;
-        const candidateRole = roleOf(e.job) === "any" ? roleOf(e.name ?? "") : roleOf(e.job);
+        const candidateRole = looseSymmetryRole(e, count);
         return candidateRole === role;
       })
       .map((e) => ({ e, distance: Math.hypot(e.x - expected.x, e.y - expected.y) }))
