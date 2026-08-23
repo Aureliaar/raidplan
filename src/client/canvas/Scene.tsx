@@ -16,7 +16,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
-import { entitiesForStep } from "../../shared/schema";
+import { entitiesForStep, resolveEntity } from "../../shared/schema";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { assetUrl, enemyIconKey, jobIconKey, waymarkIconKey } from "../../shared/assets";
 
@@ -61,20 +61,73 @@ function sortForDrawing(entities: Entity[]): Entity[] {
     .map((e) => e.entity);
 }
 
+/**
+ * Which layer the pointer is working on. Waymarks sit under the whole plan and
+ * never move once the fight starts, so a stray drag on one while you are laying
+ * out a mechanic is always a mistake: they are frozen unless you deliberately
+ * switch to their layer, and then everything else is frozen instead.
+ */
+export type EditLayer = "step" | "markers";
+
 export interface SceneProps {
   plan: Plan;
   stepId?: string;
   size: number;
   selected: string | null;
   editable: boolean;
+  layer?: EditLayer;
+  /** A bond or mech id whose shapes should light up — the row being hovered. */
+  highlight?: string | null;
   onSelect(id: string | null): void;
   onMove(id: string, x: number, y: number): void;
+  /** Wheel over something: resize it by that factor. Absent, the wheel does nothing. */
+  onResize?(id: string, factor: number): void;
 }
 
-export function Scene({ plan, stepId, size, selected, editable, onSelect, onMove }: SceneProps) {
+export function Scene({
+  plan,
+  stepId,
+  size,
+  selected,
+  editable,
+  layer = "step",
+  highlight,
+  onSelect,
+  onMove,
+  onResize,
+}: SceneProps) {
   const { arena } = plan;
   const scale = size / Math.max(arena.width, arena.height);
-  const entities = useMemo(() => sortForDrawing(entitiesForStep(plan, stepId)), [plan, stepId]);
+
+  /**
+   * Where the thing under the pointer is mid-drag, before the op that commits
+   * it. Everything derived — tethers, baits, which player an autobait picks —
+   * is solved from this, so the plan you are looking at while you drag is the
+   * plan you will get when you let go.
+   */
+  const [dragging, setDragging] = useState<{ id: string; x: number; y: number } | null>(null);
+  useEffect(() => setDragging(null), [plan.rev]);
+
+  /**
+   * Off-layer things are there for reference only: no clicks, no drags. A bonded
+   * shape is off-layer too, always: it is one face of a set that lives with its
+   * group, so grabbing the face would be grabbing the wrong thing.
+   */
+  /** The other layer's things: still drawn, but faded to say "not now". */
+  const offLayer = (e: Entity) => (layer === "markers" ? e.type !== "marker" : e.type === "marker");
+  const frozen = (e: Entity) => offLayer(e) || !!e.bond;
+
+  const committed = useMemo(() => entitiesForStep(plan, stepId), [plan, stepId]);
+  const entities = useMemo(() => {
+    const live = dragging ? new Map([[dragging.id, { x: dragging.x, y: dragging.y }]]) : undefined;
+    const sorted = sortForDrawing(live ? entitiesForStep(plan, stepId, live) : committed);
+    // On the waymark layer the marks come to the top: they normally lie on the
+    // floor under the party, which is right for reading a plan and useless for
+    // dropping an A on the exact tile you mean.
+    return layer === "markers"
+      ? [...sorted].sort((a, b) => Number(a.type === "marker") - Number(b.type === "marker"))
+      : sorted;
+  }, [plan, stepId, committed, dragging, layer]);
   const byId = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities]);
 
   const footprints = useMemo(
@@ -83,49 +136,121 @@ export function Scene({ plan, stepId, size, selected, editable, onSelect, onMove
   );
 
   /**
+   * Where each bait would sit with no nudge of its own — the point a drag is
+   * measured against. A bait keeps following its target; dragging it says "and
+   * a bit that way", which is the only reading that survives the target moving.
+   */
+  const anchorBase = useMemo(() => {
+    const m = new Map<string, { x: number; y: number }>();
+    for (const e of committed) {
+      if (!e.anchor) continue;
+      const authored = plan.entities.find((b) => b.id === e.id);
+      if (!authored) continue;
+      const nudge = resolveEntity(authored, stepId);
+      m.set(e.id, { x: e.x - nudge.x, y: e.y - nudge.y });
+    }
+    return m;
+  }, [committed, plan, stepId]);
+
+  /** A node's live position as the entity would store it: an offset, if anchored. */
+  const poseOf = (id: string, node: { x(): number; y(): number }) => {
+    const base = anchorBase.get(id);
+    return { x: node.x() - (base?.x ?? 0), y: node.y() - (base?.y ?? 0) };
+  };
+
+  /**
    * Konva would hand us the topmost shape, which means a big AoE drawn over the
    * party makes the party unclickable. Pick whichever candidate under the pointer
    * covers the least ground instead — the one you had to aim at is the one you
    * meant — and start its drag by hand, so draw order stays purely visual.
    */
-  function pickAt(evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+  function under(
+    evt: Konva.KonvaEventObject<MouseEvent | TouchEvent | WheelEvent>,
+    /** The wheel resizes a bonded set through any of its faces; a click cannot. */
+    include: (e: Entity) => boolean = (e) => !frozen(e)
+  ) {
     const stage = evt.target.getStage();
     const point = stage?.getPointerPosition();
-    if (!stage || !point) return;
+    if (!stage || !point) return undefined;
 
     const hits = stage.getAllIntersections(point);
+    const arenaAt = { x: (point.x - size / 2) / scale, y: (point.y - size / 2) / scale };
     let best: { node: Konva.Group; id: string } | undefined;
     let bestSize = Infinity;
     for (const shape of hits) {
       const group = shape.findAncestor(".entity", true) as Konva.Group | undefined;
       const id = group?.id();
       if (!group || !id) continue;
+      // A short tether covers less ground than the tokens it joins, which made
+      // the token at either end unclickable — you would grab the tether instead,
+      // and tethers do not drag, so the token simply stopped responding. A
+      // tether is grabbed along its length, not on the people it connects.
+      const entity = byId.get(id);
+      if (entity && !include(entity)) continue;
+      if (entity?.type === "tether" && onTetherEnd(entity, arenaAt, byId)) continue;
       const footprint = footprints.get(id) ?? Infinity;
       if (footprint < bestSize) {
         best = { node: group, id };
         bestSize = footprint;
       }
     }
+    return best;
+  }
 
+  function pickAt(evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+    const best = under(evt);
     if (!best) {
       onSelect(null);
       return;
     }
     onSelect(best.id);
     const entity = entities.find((e) => e.id === best!.id);
+    // A tether is two endpoints and nothing else, so there is nothing to drag.
+    // A bait can be dragged: the drop lands as an offset from its anchor.
     if (editable && entity && !entity.locked && entity.type !== "tether") {
-      best.node.startDrag(evt.evt as never);
+      const node = best.node;
+      node.startDrag(evt.evt as never);
+      // A drag we started by hand is not always ended by Konva: a click with no
+      // movement can leave the node latched to the pointer, so it then follows
+      // the mouse across the whole page — over the sidebar, out of the arena —
+      // until something else happens to end it. The button being up means
+      // nothing is being dragged, full stop.
+      const release = () => {
+        if (node.isDragging()) node.stopDrag();
+      };
+      window.addEventListener("mouseup", release, { once: true });
+      window.addEventListener("touchend", release, { once: true });
     }
   }
 
+  /**
+   * The wheel sizes whatever is under the pointer, without selecting it first —
+   * one gesture, no mode. A bonded shape resizes its whole set, because the set
+   * is the thing you are pointing at.
+   */
+  function wheelAt(evt: Konva.KonvaEventObject<WheelEvent>) {
+    if (!editable || !onResize) return;
+    const hit = under(evt, (e) => !frozen(e) || !!e.bond);
+    if (!hit) return;
+    evt.evt.preventDefault();
+    const step = evt.evt.shiftKey ? 1.02 : 1.08;
+    onResize(hit.id, evt.evt.deltaY < 0 ? step : 1 / step);
+  }
+
   return (
-    <Stage width={size} height={size} onMouseDown={pickAt} onTouchStart={pickAt}>
+    <Stage
+      width={size}
+      height={size}
+      onMouseDown={pickAt}
+      onTouchStart={pickAt}
+      onWheel={wheelAt}
+    >
       <Layer>
         <Group x={size / 2} y={size / 2} scaleX={scale} scaleY={scale}>
           <ArenaFloor plan={plan} />
           {entities.map((e) =>
             e.type === "tether" ? (
-              <Tether key={e.id} entity={e} byId={byId} selected={selected === e.id} />
+              <Tether key={e.id} entity={e} byId={byId} selected={selected === e.id} dim={offLayer(e)} />
             ) : (
               <Group
                 key={e.id}
@@ -136,12 +261,22 @@ export function Scene({ plan, stepId, size, selected, editable, onSelect, onMove
                 rotation={e.rotation}
                 scaleX={e.scale}
                 scaleY={e.scale}
-                opacity={e.opacity}
-                onDragEnd={(ev) => onMove(e.id, Math.round(ev.target.x()), Math.round(ev.target.y()))}
+                opacity={e.opacity * (offLayer(e) ? 0.4 : 1)}
+                onDragMove={(ev) => setDragging({ id: e.id, ...poseOf(e.id, ev.target) })}
+                onDragEnd={(ev) => {
+                  const pose = poseOf(e.id, ev.target);
+                  // Held until the new revision arrives, so the shape does not
+                  // snap back to its old pose for the length of a round trip.
+                  setDragging({ id: e.id, ...pose });
+                  onMove(e.id, Math.round(pose.x), Math.round(pose.y));
+                }}
               >
                 <GrabTarget entity={e} />
                 <EntityShape entity={e} />
-                {selected === e.id && <SelectionRing entity={e} />}
+                {(selected === e.id ||
+                  (!!highlight && (e.bond?.id === highlight || e.mech === highlight))) && (
+                  <SelectionRing entity={e} />
+                )}
               </Group>
             )
           )}
@@ -308,6 +443,18 @@ function hitArea(e: Entity, byId: Map<string, Entity>): number {
   }
 }
 
+/** Is this pointer sitting on one of the tokens a tether connects? */
+function onTetherEnd(
+  tether: Extract<Entity, { type: "tether" }>,
+  at: { x: number; y: number },
+  byId: Map<string, Entity>
+): boolean {
+  return [tether.from, tether.to].some((id) => {
+    const end = byId.get(id);
+    return end ? Math.hypot(end.x - at.x, end.y - at.y) <= radiusHint(end) : false;
+  });
+}
+
 function radiusHint(e: Entity): number {
   switch (e.type) {
     case "player":
@@ -363,6 +510,12 @@ function EntityShape({ entity }: { entity: Entity }) {
               </>
             }
           />
+          {/*
+            The hitbox. A player in FFXIV is a point, so the token art around it
+            is decoration: this pip is the thing an AoE either covers or does
+            not, and without it a beam that clips the art reads as a hit.
+          */}
+          <Circle radius={5} fill="#f7fafc" stroke="#0d1117" strokeWidth={2} listening={false} />
           {/* Role-coloured frame: the job art alone does not read as tank/healer/dps. */}
           <Rect
             x={-r}
@@ -397,6 +550,37 @@ function EntityShape({ entity }: { entity: Entity }) {
     }
 
     case "enemy": {
+      // An anchor is a place, not a creature: no art, no facing, just a reticle
+      // you can see well enough to drop a bait on.
+      if (entity.role === "anchor") {
+        const r = entity.size * 0.55;
+        const color = entity.color ?? "#e0b152";
+        return (
+          <>
+            <Circle radius={r} stroke={color} strokeWidth={5} dash={[10, 8]} />
+            <Circle radius={r * 0.28} fill={color} />
+            <Line points={[-r * 1.5, 0, -r * 0.6, 0]} stroke={color} strokeWidth={5} />
+            <Line points={[r * 0.6, 0, r * 1.5, 0]} stroke={color} strokeWidth={5} />
+            <Line points={[0, -r * 1.5, 0, -r * 0.6]} stroke={color} strokeWidth={5} />
+            <Line points={[0, r * 0.6, 0, r * 1.5]} stroke={color} strokeWidth={5} />
+            {entity.name && (
+              <Text
+                text={entity.name}
+                y={r * 1.7}
+                width={400}
+                offsetX={200}
+                align="center"
+                fontSize={32}
+                listening={false}
+                fill={color}
+                stroke="#0d1117"
+                strokeWidth={5}
+                fillAfterStrokeEnabled
+              />
+            )}
+          </>
+        );
+      }
       const color = entity.color ?? "#c0392b";
       return (
         <>
@@ -486,38 +670,88 @@ function EntityShape({ entity }: { entity: Entity }) {
   }
 }
 
+/**
+ * FFXIV-style telegraph fill: faint at the heart, dense at the rim, so the
+ * border reads as the danger edge instead of a flat tint. Falls back to the
+ * old flat fill when the color is not a plain hex we can make translucent.
+ */
+function telegraphFill(zone: ZoneEntity, radius: number): Partial<Konva.ShapeConfig> {
+  if (zone.hollow) return {};
+  const rgba = (alpha: number) => {
+    const hex = zone.color ?? ZONE_DEFAULT;
+    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex);
+    if (!m) return undefined;
+    const digits = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
+    const n = parseInt(digits, 16);
+    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+  };
+  const core = rgba(0.14);
+  const mid = rgba(0.3);
+  const rim = rgba(0.55);
+  if (!core || !mid || !rim) return { fill: zone.color ?? ZONE_DEFAULT, opacity: 0.45 };
+  // Konva types the stop list as number[] even though it holds colours.
+  const stops = [0, core, 0.7, mid, 1, rim] as unknown as number[];
+  return {
+    fillRadialGradientStartRadius: 0,
+    fillRadialGradientEndRadius: radius,
+    fillRadialGradientColorStops: stops,
+  };
+}
+
 function ZoneShape({ zone }: { zone: ZoneEntity }) {
   const color = zone.color ?? ZONE_DEFAULT;
-  const fill = zone.hollow ? undefined : color;
-  const common = {
-    fill,
-    opacity: zone.hollow ? 1 : 0.45,
-    stroke: color,
-    strokeWidth: 5,
-    hitStrokeWidth: zone.hollow ? 40 : undefined,
-  };
+  const border = { stroke: color, strokeWidth: 5, hitStrokeWidth: zone.hollow ? 40 : undefined };
 
   switch (zone.shape) {
     case "circle":
-      return <Circle radius={zone.radius} {...common} />;
+      return <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />;
 
     case "donut":
-      return <Ring innerRadius={zone.innerRadius} outerRadius={zone.radius} {...common} />;
+      return (
+        <Ring
+          innerRadius={zone.innerRadius}
+          outerRadius={zone.radius}
+          {...telegraphFill(zone, zone.radius)}
+          {...border}
+        />
+      );
 
     case "cone":
       // Konva wedges sweep clockwise from +x; rotate so the cone straddles north.
-      return <Wedge radius={zone.radius} angle={zone.angle} rotation={-90 - zone.angle / 2} {...common} />;
+      return (
+        <Wedge
+          radius={zone.radius}
+          angle={zone.angle}
+          rotation={-90 - zone.angle / 2}
+          {...telegraphFill(zone, zone.radius)}
+          {...border}
+        />
+      );
 
     case "rect":
     case "line":
       return (
-        <Rect x={-zone.width / 2} y={-zone.length / 2} width={zone.width} height={zone.length} {...common} />
+        <Rect
+          x={-zone.width / 2}
+          y={-zone.length / 2}
+          width={zone.width}
+          height={zone.length}
+          {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2)}
+          {...border}
+        />
       );
 
     case "knockback":
       return (
         <>
-          <Rect x={-zone.width / 2} y={-zone.length / 2} width={zone.width} height={zone.length} {...common} />
+          <Rect
+            x={-zone.width / 2}
+            y={-zone.length / 2}
+            width={zone.width}
+            height={zone.length}
+            {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2)}
+            {...border}
+          />
           {[-1, 0, 1].map((i) => (
             <Arrow
               key={i}
@@ -546,7 +780,14 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
       );
 
     case "triangle":
-      return <RegularPolygon sides={3} radius={zone.radius} {...common} />;
+      return (
+        <RegularPolygon
+          sides={3}
+          radius={zone.radius}
+          {...telegraphFill(zone, zone.radius)}
+          {...border}
+        />
+      );
 
     case "exaflare":
       return (
@@ -556,8 +797,9 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
               key={i}
               y={-i * zone.radius * 2.1}
               radius={zone.radius}
-              {...common}
-              opacity={(zone.hollow ? 1 : 0.45) * (1 - i / (zone.count + 1))}
+              {...telegraphFill(zone, zone.radius)}
+              {...border}
+              opacity={1 - i / (zone.count + 1)}
             />
           ))}
           <Arrow
@@ -575,7 +817,7 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
     case "stack":
       return (
         <>
-          <Circle radius={zone.radius} {...common} />
+          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />
           <Circle radius={zone.radius * 0.6} stroke={color} strokeWidth={6} dash={[18, 12]} />
           <Label text={`${zone.soak}`} size={zone.radius * 0.7} color="#0d1117" bold />
         </>
@@ -584,7 +826,12 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
     case "spread":
       return (
         <>
-          <Circle radius={zone.radius} {...common} dash={[24, 16]} />
+          <Circle
+            radius={zone.radius}
+            {...telegraphFill(zone, zone.radius)}
+            {...border}
+            dash={[24, 16]}
+          />
           <Line points={[-zone.radius, 0, zone.radius, 0]} stroke={color} strokeWidth={5} />
           <Line points={[0, -zone.radius, 0, zone.radius]} stroke={color} strokeWidth={5} />
         </>
@@ -593,7 +840,7 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
     case "tower":
       return (
         <>
-          <Circle radius={zone.radius} {...common} />
+          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />
           <Circle radius={zone.radius * 0.7} stroke={color} strokeWidth={8} />
           <Label text={`${zone.soak}`} size={zone.radius * 0.8} color="#0d1117" bold />
         </>
@@ -602,7 +849,12 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
     case "eye":
       return (
         <>
-          <Ellipse radiusX={zone.radius} radiusY={zone.radius * 0.6} {...common} />
+          <Ellipse
+            radiusX={zone.radius}
+            radiusY={zone.radius * 0.6}
+            {...telegraphFill(zone, zone.radius)}
+            {...border}
+          />
           <Circle radius={zone.radius * 0.28} fill="#0d1117" />
         </>
       );
@@ -610,7 +862,7 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
     case "meteor":
       return (
         <>
-          <Circle radius={zone.radius} {...common} />
+          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />
           <Circle radius={zone.radius * 0.45} fill={color} opacity={0.9} />
         </>
       );
@@ -618,14 +870,19 @@ function ZoneShape({ zone }: { zone: ZoneEntity }) {
     case "proximity":
       return (
         <>
-          <Circle radius={zone.radius} {...common} opacity={0.2} />
+          <Circle
+            radius={zone.radius}
+            {...telegraphFill(zone, zone.radius)}
+            {...border}
+            opacity={0.5}
+          />
           <Circle radius={zone.radius * 0.66} fill={color} opacity={0.3} />
           <Circle radius={zone.radius * 0.33} fill={color} opacity={0.5} />
         </>
       );
 
     default:
-      return <Circle radius={zone.radius} {...common} />;
+      return <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius)} {...border} />;
   }
 }
 
@@ -633,10 +890,12 @@ function Tether({
   entity,
   byId,
   selected,
+  dim,
 }: {
   entity: Extract<Entity, { type: "tether" }>;
   byId: Map<string, Entity>;
   selected: boolean;
+  dim?: boolean;
 }) {
   const a = byId.get(entity.from);
   const b = byId.get(entity.to);
@@ -653,7 +912,7 @@ function Tether({
         stroke={color}
         strokeWidth={selected ? entity.width * 1.6 : entity.width}
         dash={dash}
-        opacity={entity.opacity}
+        opacity={entity.opacity * (dim ? 0.4 : 1)}
         lineCap="round"
         hitStrokeWidth={30}
       />

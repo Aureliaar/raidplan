@@ -1,4 +1,4 @@
-import type { Arena, EncounterSetup, Entity, EntityType, Plan, PropBag, Step } from "./schema";
+import type { Arena, EncounterSetup, Entity, EntityType, Mech, Plan, PropBag, Step } from "./schema";
 import * as ops from "./ops";
 
 /**
@@ -20,6 +20,10 @@ export type Op =
   | { op: "update_step"; stepId: string; patch: Partial<Omit<Step, "id">> }
   | { op: "delete_step"; stepId: string }
   | { op: "move_step"; stepId: string; index: number }
+  | { op: "add_mech"; name?: string; snap?: string; boom?: string }
+  | { op: "update_mech"; mechId: string; patch: Partial<Omit<Mech, "id">> }
+  | { op: "delete_mech"; mechId: string; keepEntities?: boolean }
+  | { op: "assign_mech"; ids: string[]; mechId: string | null }
   | { op: "add_waymarks"; distance?: number }
   | { op: "apply_encounter"; setup: EncounterSetup }
   | { op: "add_party"; party?: { job: string; name: string }[]; radiusFraction?: number }
@@ -29,7 +33,7 @@ export type Op =
 export interface OpResult {
   plan: Plan;
   /** Whatever the op created, for the caller to report back. */
-  value?: Entity | Step | string[] | null;
+  value?: Entity | Step | Mech | string[] | null;
 }
 
 export function applyOp(plan: Plan, op: Op): OpResult {
@@ -77,6 +81,16 @@ export function applyOp(plan: Plan, op: Op): OpResult {
       return { plan: ops.deleteStep(plan, op.stepId) };
     case "move_step":
       return { plan: ops.moveStep(plan, op.stepId, op.index) };
+    case "add_mech": {
+      const r = ops.addMech(plan, op);
+      return { plan: r.plan, value: r.mech };
+    }
+    case "update_mech":
+      return { plan: ops.updateMech(plan, op.mechId, op.patch) };
+    case "delete_mech":
+      return { plan: ops.deleteMech(plan, op.mechId, op.keepEntities), value: [op.mechId] };
+    case "assign_mech":
+      return { plan: ops.assignMech(plan, op.ids, op.mechId), value: op.ids };
     case "add_waymarks":
       return { plan: ops.addWaymarks(plan, op.distance) };
     case "apply_encounter":

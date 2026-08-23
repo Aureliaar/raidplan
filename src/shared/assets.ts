@@ -363,6 +363,11 @@ const PARTY_SLOT_ICONS: Record<string, string> = {
   T2: "actor/tank2",
   H1: "actor/healer1",
   H2: "actor/healer2",
+  M1: "actor/dps1",
+  M2: "actor/dps2",
+  R1: "actor/dps3",
+  R2: "actor/dps4",
+  // The older dps names, in the order a party list uses: melees first.
   D1: "actor/dps1",
   D2: "actor/dps2",
   D3: "actor/dps3",

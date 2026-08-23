@@ -3,7 +3,7 @@ import type { AppEnv } from "./env";
 import { registry } from "./registry";
 import { authenticate } from "./auth";
 import { type Op, applyOp } from "../shared/apply";
-import { PlanSchema, type Plan, type PlanRole, type PropBag } from "../shared/schema";
+import { PlanSchema, hydratePlan, type Plan, type PlanRole, type PropBag } from "../shared/schema";
 import { createPlan, describePlan } from "../shared/ops";
 
 const EMPTY: Plan = PlanSchema.parse({ id: "", name: "", steps: [], entities: [] });
@@ -28,7 +28,16 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
   }
 
   async getPlan(): Promise<Plan> {
-    return this.state;
+    return this.plan;
+  }
+
+  /**
+   * The stored document brought up to what this build expects. A plan written
+   * before a field existed is still out there in storage, and everything that
+   * reads one would sooner throw than default it.
+   */
+  private get plan(): Plan {
+    return this.state?.id ? hydratePlan(this.state) : this.state;
   }
 
   async exists(): Promise<boolean> {
@@ -39,7 +48,7 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
   async apply(op: Op | Op[]): Promise<{ plan: Plan; values: (PropBag | null)[] }> {
     if (!this.state?.id) throw new Error("Plan not initialised");
     const list = Array.isArray(op) ? op : [op];
-    let plan = this.state;
+    let plan = this.plan;
     const values: (PropBag | null)[] = [];
     for (const one of list) {
       const res = applyOp(plan, one);
@@ -52,7 +61,7 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
 
   /** Model-readable rendering, used by the MCP `read_plan` tool. */
   async describe(stepId?: string): Promise<string> {
-    return describePlan(this.state, stepId);
+    return describePlan(this.plan, stepId);
   }
 
   async destroy() {

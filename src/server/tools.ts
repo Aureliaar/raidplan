@@ -7,6 +7,8 @@ import {
   ANCHORS,
   type Anchor,
   anchorToPoint,
+  BAIT_KINDS,
+  baitSpec,
   createPlan,
   describePlan,
   encounterSetup,
@@ -15,11 +17,14 @@ import {
 } from "../shared/ops";
 import {
   ARENA_SHAPES,
+  BAIT_RULES,
   ENTITY_TYPES,
   GRID_TYPES,
   MARKER_IDS,
   TETHER_STYLES,
   ZONE_SHAPES,
+  mechLabel,
+  mechSpan,
   type Plan,
 } from "../shared/schema";
 import { JOB_IDS } from "../shared/jobs";
@@ -97,6 +102,19 @@ function stepIdOf(plan: Plan, step?: string): string | undefined {
   if (byName) return byName.id;
   throw new Error(
     `No step "${step}". Steps: ${plan.steps.map((s, i) => `${i + 1}=${s.name} [${s.id}]`).join(", ")}`
+  );
+}
+
+/** Accept a mech id, a 1-based index, or a mech name. */
+function mechIdOf(plan: Plan, mech: string): string {
+  const byId = plan.mechs.find((m) => m.id === mech);
+  if (byId) return byId.id;
+  const n = Number(mech);
+  if (Number.isInteger(n) && n >= 1 && n <= plan.mechs.length) return plan.mechs[n - 1].id;
+  const byName = plan.mechs.find((m) => mechLabel(plan, m).toLowerCase() === mech.toLowerCase());
+  if (byName) return byName.id;
+  throw new Error(
+    `No mech "${mech}". Mechs: ${plan.mechs.map((m, i) => `${i + 1}=${mechLabel(plan, m)} [${m.id}]`).join(", ") || "none yet"}`
   );
 }
 
@@ -331,12 +349,141 @@ export const TOOLS: ToolDef[] = [
   }),
 
   def({
+    name: "move_step",
+    description:
+      "Move a step to another place in the sequence. `to` is the position it should end up at, counting from 1.",
+    schema: {
+      plan_id: z.string(),
+      step: z.string().describe("Step id, name or index"),
+      to: z.number().int().min(1).describe("Where it should sit afterwards, 1 = first"),
+    },
+    async run(ctx, a) {
+      const res = await edit(ctx, a.plan_id, (plan) => ({
+        op: "move_step",
+        stepId: stepIdOf(plan, a.step)!,
+        index: a.to - 1,
+      }));
+      return "Steps are now: " + res.plan.steps.map((s, i) => `${i + 1}. ${s.name}`).join(", ");
+    },
+  }),
+
+  def({
     name: "delete_step",
     description: "Delete a step.",
     schema: { plan_id: z.string(), step: z.string() },
     async run(ctx, a) {
       await edit(ctx, a.plan_id, (plan) => ({ op: "delete_step", stepId: stepIdOf(plan, a.step)! }));
       return "Step deleted.";
+    },
+  }),
+
+  /* ---------------------------------------------------------------- mechs */
+
+  def({
+    name: "list_mechs",
+    description:
+      "List the plan's mechanics: which step each one snapshots in, which step it goes off in, and how many shapes it holds.",
+    schema: { plan_id: z.string() },
+    async run(ctx, a) {
+      const { plan } = await load(ctx, a.plan_id, "view");
+      if (!plan.mechs.length) return "No mechs yet.";
+      const stepName = (id: string) => {
+        const i = plan.steps.findIndex((s) => s.id === id);
+        return i < 0 ? "?" : `${i + 1}. ${plan.steps[i].name}`;
+      };
+      return plan.mechs
+        .map(
+          (m, i) =>
+            `${i + 1}. ${mechLabel(plan, m)} [${m.id}] — snapshots in ${stepName(m.snap)}, ` +
+            `goes off in ${stepName(m.boom)}, ${mechSpan(plan, m).length} steps on the floor, ` +
+            `${plan.entities.filter((e) => e.mech === m.id).length} shapes`
+        )
+        .join("\n");
+    },
+  }),
+
+  def({
+    name: "add_mech",
+    description:
+      "Add a mechanic: one cast, spanning the step it snapshots in to the step it goes off in. Shapes put in it are visible for exactly that span and are aimed at where people stood at the snapshot — put a zone in one with `mech` on add_zone, or move an existing one with assign_mech.",
+    schema: {
+      plan_id: z.string(),
+      name: z.string().optional().describe("Defaults to whatever goes in it first"),
+      snapshot_in: z.string().optional().describe("Step id, index or name. Defaults to the first step"),
+      goes_off_in: z.string().optional().describe("Step id, index or name. Defaults to the snapshot step"),
+    },
+    async run(ctx, a) {
+      const res = await edit(ctx, a.plan_id, (plan) => ({
+        op: "add_mech",
+        name: a.name,
+        snap: stepIdOf(plan, a.snapshot_in) ?? plan.steps[0]?.id,
+        boom: stepIdOf(plan, a.goes_off_in),
+      }));
+      const mech = res.values[0] as { id: string };
+      return `Mech ${mechLabel(res.plan, res.plan.mechs.find((m) => m.id === mech.id)!)} added [${mech.id}].`;
+    },
+  }),
+
+  def({
+    name: "update_mech",
+    description: "Rename a mechanic, or move where it snapshots or goes off.",
+    schema: {
+      plan_id: z.string(),
+      mech: z.string().describe("Mech id, 1-based index or name"),
+      name: z.string().optional(),
+      snapshot_in: z.string().optional().describe("Step id, index or name"),
+      goes_off_in: z.string().optional().describe("Step id, index or name"),
+    },
+    async run(ctx, a) {
+      // Resolved on the way in: after a rename the name it was found by is gone.
+      let mechId = "";
+      const res = await edit(ctx, a.plan_id, (plan) => ({
+        op: "update_mech",
+        mechId: (mechId = mechIdOf(plan, a.mech)),
+        patch: {
+          name: a.name,
+          snap: stepIdOf(plan, a.snapshot_in),
+          boom: stepIdOf(plan, a.goes_off_in),
+        },
+      }));
+      const m = res.plan.mechs.find((x) => x.id === mechId)!;
+      return `${mechLabel(res.plan, m)} is on the floor for ${mechSpan(res.plan, m).length} step(s).`;
+    },
+  }),
+
+  def({
+    name: "assign_mech",
+    description: "Put existing shapes into a mechanic, so they are timed and aimed by it. Pass mech empty to take them out again.",
+    schema: {
+      plan_id: z.string(),
+      ids: z.array(z.string()).describe("Entity ids"),
+      mech: z.string().describe("Mech id, index or name; empty string to unassign"),
+    },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => ({
+        op: "assign_mech",
+        ids: a.ids,
+        mechId: a.mech ? mechIdOf(plan, a.mech) : null,
+      }));
+      return a.mech ? `${a.ids.length} shape(s) moved into the mech.` : `${a.ids.length} shape(s) taken out of their mech.`;
+    },
+  }),
+
+  def({
+    name: "delete_mech",
+    description: "Delete a mechanic. Its shapes go with it unless you keep them, in which case they become plan-wide.",
+    schema: {
+      plan_id: z.string(),
+      mech: z.string().describe("Mech id, 1-based index or name"),
+      keep_shapes: z.boolean().optional(),
+    },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => ({
+        op: "delete_mech",
+        mechId: mechIdOf(plan, a.mech),
+        keepEntities: a.keep_shapes,
+      }));
+      return a.keep_shapes ? "Mech deleted, its shapes kept." : "Mech deleted with everything in it.";
     },
   }),
 
@@ -347,7 +494,7 @@ export const TOOLS: ToolDef[] = [
     description: "Add a party member token.",
     schema: {
       plan_id: z.string(),
-      job: z.string().describe(`Job (${JOB_IDS.join(", ")}), role (tank/healer/melee/ranged/caster) or slot (MT, H1, D3)`),
+      job: z.string().describe(`Job (${JOB_IDS.join(", ")}), role (tank/healer/melee/ranged/caster) or slot (MT, H1, M2)`),
       name: z.string().optional().describe("Label, e.g. MT or a player name"),
       icon: z.string().optional().describe("Override the art, e.g. actor/tank1 (see list_assets)"),
       rotation: z.number().optional().describe("Facing in degrees, 0 = north"),
@@ -373,13 +520,16 @@ export const TOOLS: ToolDef[] = [
 
   def({
     name: "add_enemy",
-    description: "Add a boss/enemy token.",
+    description:
+      "Add a boss, an add, or any object a mechanic comes out of — an orb, a portal, a crystal. " +
+      "Small ones (size ~60, ring off) are what you point a bait's `from` at when the source is not the boss.",
     schema: {
       plan_id: z.string(),
       name: z.string().optional(),
       size: z.number().positive().optional().describe("Hitbox radius in arena units"),
       icon: z.string().optional().describe("Override the art, e.g. actor/enemy2 (see list_assets)"),
       rotation: z.number().optional().describe("Facing in degrees, 0 = north"),
+      ring: z.boolean().optional().describe("Draw the hitbox ring — off suits small objects"),
       color: z.string().optional(),
       ...posArgs,
     },
@@ -392,6 +542,7 @@ export const TOOLS: ToolDef[] = [
           size: a.size,
           icon: a.icon,
           rotation: a.rotation,
+          ring: a.ring,
           color: a.color,
           ...positionOf(plan, a),
         },
@@ -430,7 +581,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "arrange_party",
     description:
-      "Move the players already in the plan onto the PF clock — clockwise from north: MT, R2, H2, M2, OT, R1, H1, M1. Names like D1-D4 map to the melee/ranged slots.",
+      "Move the players already in the plan onto the PF clock, just inside the waymark ring — clockwise from north: MT, R2, H2, M2, OT, M1, H1, R1. Names like D1-D4 map to the melee/ranged slots.",
     schema: {
       plan_id: z.string(),
       distance: z
@@ -454,7 +605,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "add_party",
     description:
-      "Add a standard 8-player party (MT/OT/H1/H2/D1-D4) in a ring near the centre. New plans already have one — use arrange_party to reposition it instead.",
+      "Add a standard 8-player party (MT/OT/H1/H2/M1/M2/R1/R2) in a ring near the centre. New plans already have one — use arrange_party to reposition it instead.",
     schema: {
       plan_id: z.string(),
       jobs: z
@@ -486,6 +637,12 @@ export const TOOLS: ToolDef[] = [
       soak: z.number().int().min(1).max(8).optional().describe("Players a stack or tower wants"),
       color: z.string().optional().describe("CSS colour, e.g. #ff8040"),
       hollow: z.boolean().optional(),
+      mech: z
+        .string()
+        .optional()
+        .describe(
+          "Put it in a mech (id, index or name): the mech decides which steps it is on the floor for, and aims it at its snapshot"
+        ),
       ...stepArg,
       ...posArgs,
     },
@@ -508,6 +665,7 @@ export const TOOLS: ToolDef[] = [
             soak: a.soak,
             color: a.color,
             hollow: a.hollow,
+            mech: a.mech ? mechIdOf(plan, a.mech) : undefined,
             steps: stepId ? [stepId] : "all",
             ...positionOf(plan, a),
           },
@@ -574,6 +732,119 @@ export const TOOLS: ToolDef[] = [
         };
       });
       return `Added tether ${idOf(res.values[0])}`;
+    },
+  }),
+
+  def({
+    name: "add_bait",
+    description:
+      "A mechanic that belongs to whoever it targets, not to a spot on the floor. The shape is " +
+      "re-solved every time the plan is drawn, so it stays true as the party moves — in every " +
+      "step, with no overrides to maintain. Give it either `on` (named players: one bait each) " +
+      "or `pick` (closest/farthest, with `count` baits covering the closest N), which is what a " +
+      "proximity-baited mechanic actually does: rearrange the party and the AoE re-targets. " +
+      "kinds: beam and cone fire from `from` through the target (out to the wall by default); " +
+      "donut, spread, puddle, stack, tower, proximity sit on the target; tether links the two.",
+    schema: {
+      plan_id: z.string(),
+      kind: z.enum(BAIT_KINDS),
+      on: z
+        .string()
+        .optional()
+        .describe("Named targets: an id, name, job or slot — comma-separated for several"),
+      pick: z
+        .enum(BAIT_RULES)
+        .optional()
+        .describe("Instead of `on`: bait whoever is closest to (or farthest from) `from`"),
+      count: z
+        .number()
+        .int()
+        .min(1)
+        .max(8)
+        .optional()
+        .describe("With `pick`: how many, so `closest` + 2 covers the two nearest players"),
+      of: z.enum(["player", "enemy", "any"]).optional().describe("With `pick`: what counts as a target"),
+      from: z
+        .string()
+        .optional()
+        .describe("What the beam/cone/tether comes out of: the boss, an add, an orb, any entity"),
+      name: z.string().optional().describe("Mechanic name; each bait gets the target appended"),
+      radius: z.number().positive().optional(),
+      inner_radius: z.number().min(0).optional(),
+      width: z.number().positive().optional().describe("Beam width"),
+      length: z.number().positive().optional().describe("Beam length, if not extending to the wall"),
+      angle: z.number().min(1).max(360).optional().describe("Cone width in degrees"),
+      soak: z.number().int().min(1).max(8).optional(),
+      style: z.enum(TETHER_STYLES).optional(),
+      color: z.string().optional(),
+      extend: z
+        .boolean()
+        .optional()
+        .describe("Aimed kinds: reach the arena wall (default true) instead of using length/radius"),
+      ...stepArg,
+    },
+    async run(ctx, a) {
+      const named = (a.on ?? "")
+        .split(",")
+        .map((t) => t.trim())
+        .filter(Boolean);
+      if (!named.length && !a.pick) throw new Error("Give `on` (named targets) or `pick` (closest/farthest)");
+      if (named.length && a.pick) throw new Error("Give either `on` or `pick`, not both");
+
+      const props = {
+        radius: a.radius,
+        innerRadius: a.inner_radius,
+        width: a.width,
+        length: a.length,
+        angle: a.angle,
+        soak: a.soak,
+        style: a.style,
+        color: a.color,
+        extend: a.extend,
+      };
+
+      let labels: string[] = [];
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        const stepId = stepIdOf(plan, a.step);
+        const source = a.from ? resolveRef(plan, a.from).id : undefined;
+        const steps = stepId ? [stepId] : "all";
+        labels = [];
+
+        if (a.pick) {
+          const count = a.count ?? 1;
+          return Array.from({ length: count }, (_, i) => {
+            const rank = i + 1;
+            labels.push(count > 1 ? `${a.pick} #${rank}` : (a.pick as string));
+            return {
+              op: "add_entity",
+              spec: baitSpec(a.kind, { pick: a.pick!, rank, of: a.of }, source, {
+                ...props,
+                name: a.name ? (count > 1 ? `${a.name} ${rank}` : a.name) : undefined,
+                steps,
+              }),
+            } satisfies Op;
+          });
+        }
+
+        return named.map((ref) => {
+          const target = resolveRef(plan, ref);
+          labels.push(target.name ?? target.id);
+          return {
+            op: "add_entity",
+            spec: baitSpec(a.kind, target.id, source, {
+              ...props,
+              name: a.name ? `${a.name} ${target.name ?? ref}` : undefined,
+              steps,
+            }),
+          } satisfies Op;
+        });
+      });
+
+      const ids = res.values.map((v: unknown) => idOf(v));
+      const what = labels.map((l, i) => `${l} [${ids[i]}]`).join(", ");
+      return a.pick
+        ? `Added ${ids.length} ${a.kind} bait${ids.length > 1 ? "s" : ""} on the ${a.pick} ${a.of ?? "player"}${ids.length > 1 ? "s" : ""}: ${what}. They re-target themselves whenever the party moves.`
+        : `Added ${ids.length} ${a.kind} bait${ids.length > 1 ? "s" : ""}: ${what}. They follow their targets — no need to reposition them per step.`;
     },
   }),
 
@@ -814,4 +1085,5 @@ Coordinates are arena units with the origin at the arena centre: +x is east (rig
 A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degrees, 0 = north, increasing clockwise (90 = east).
 Entities live in a plan and may appear in one step or all steps; per-step position overrides are how movement is expressed.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
+A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest" (plus "count"), which re-targets itself as the party moves. Either way it holds in every step with no overrides to redo.
 Real FFXIV art is bundled: job/role tokens, waymarks A-D and 1-4, field markers (attack1-8, bind, ignore, limit cut, tankbuster) and arena backdrops. Call list_assets to browse it.`;

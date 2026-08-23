@@ -48,7 +48,24 @@ export const JOBS: JobInfo[] = [
 export const JOB_IDS = JOBS.map((j) => j.id);
 
 /** Anything acceptable in `player.job`: a job id, a bare role, or a party slot. */
-export const PARTY_SLOTS = ["MT", "OT", "T1", "T2", "H1", "H2", "D1", "D2", "D3", "D4"] as const;
+export const PARTY_SLOTS = [
+  "MT",
+  "OT",
+  "T1",
+  "T2",
+  "H1",
+  "H2",
+  "M1",
+  "M2",
+  "R1",
+  "R2",
+  // The older way of naming the four dps, still accepted: D1/D2 are the melees,
+  // D3/D4 the ranged, which is the order a party list puts them in.
+  "D1",
+  "D2",
+  "D3",
+  "D4",
+] as const;
 
 export const ROLE_COLORS: Record<Role, string> = {
   tank: "#3f6ac4",
@@ -71,6 +88,8 @@ export function roleOf(job: string): Role {
   if ((ROLES as readonly string[]).includes(lower)) return lower as Role;
   if (key.startsWith("MT") || key.startsWith("OT") || /^T\d$/.test(key)) return "tank";
   if (/^H\d$/.test(key)) return "healer";
+  if (/^M\d$/.test(key)) return "melee";
+  if (/^R\d$/.test(key)) return "ranged";
   if (/^D\d$/.test(key)) return "dps";
   return "any";
 }
@@ -90,8 +109,8 @@ export const DEFAULT_PARTY: { job: string; name: string }[] = [
   { job: "WAR", name: "OT" },
   { job: "WHM", name: "H1" },
   { job: "SCH", name: "H2" },
-  { job: "SAM", name: "D1" },
-  { job: "DRG", name: "D2" },
-  { job: "BRD", name: "D3" },
-  { job: "BLM", name: "D4" },
+  { job: "SAM", name: "M1" },
+  { job: "DRG", name: "M2" },
+  { job: "BRD", name: "R1" },
+  { job: "BLM", name: "R2" },
 ];

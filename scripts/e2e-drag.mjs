@@ -14,9 +14,10 @@ import { chromium } from "playwright";
 const base = (process.argv[2] ?? "http://localhost:5173").replace(/\/$/, "");
 const DRAG_PX = { x: 60, y: -45 };
 
+// No waymark here on purpose: a waymark is frozen on the step layer and only
+// moves on its own one, which is what scripts/e2e-markers.mjs checks.
 const SPECS = [
   ["player", { type: "player", job: "WHM", name: "H1", x: -350, y: -350 }],
-  ["marker", { type: "marker", marker: "A", x: 0, y: -350 }],
   ["enemy", { type: "enemy", name: "boss", size: 120, x: 350, y: -350 }],
   ["icon", { type: "icon", src: "marker/attack1", size: 90, x: -350, y: 0 }],
   ["zone circle", { type: "zone", shape: "circle", radius: 90, x: 0, y: 0 }],

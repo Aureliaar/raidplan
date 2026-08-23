@@ -1,14 +1,272 @@
+import { useState } from "react";
 import type { Op } from "../shared/apply";
 import {
   MARKER_IDS,
   TETHER_STYLES,
+  anchorTarget,
+  anchoredPose,
+  entitiesForStep,
+  mechLabel,
+  BAIT_RULES,
+  type BaitRule,
   ZONE_SHAPES,
   resolveEntity,
   type Entity,
   type Plan,
 } from "../shared/schema";
+import { BAIT_KINDS, baitNeedsSource, baitSpec, type BaitKind } from "../shared/ops";
+import { playersHit } from "../shared/hits";
 import { JOBS, ROLES } from "../shared/jobs";
 import { ACTOR_KEYS, ARENA_BACKGROUNDS, MARKER_KEYS } from "../shared/assets";
+
+
+
+
+/**
+ * Who this zone catches. Players are points in FFXIV, so a token whose art
+ * overlaps the edge is not necessarily in it — the one call you cannot make by
+ * looking at the picture.
+ */
+function Hits({ plan, stepId, zoneId }: { plan: Plan; stepId: string; zoneId: string }) {
+  const hit = playersHit(plan, stepId, zoneId);
+  return (
+    <p className="mb-3 rounded bg-ink-800 px-2 py-1 text-xs text-ink-400">
+      hits{" "}
+      <b className="text-ink-200">
+        {hit.length ? hit.map((h) => h.name ?? h.id).join(", ") : "nobody"}
+      </b>{" "}
+      in this step
+    </p>
+  );
+}
+
+/**
+ * The target editor for a bait. "closest" is the interesting setting: the bait
+ * is not attached to a player at all, it re-picks whoever is nearest each time
+ * the plan is drawn, so the plan keeps describing the mechanic rather than one
+ * particular pull of it. The line at the bottom says who that is right now.
+ */
+function BaitTarget({
+  plan,
+  entity,
+  anchor,
+  stepId,
+  scope,
+  editable,
+  run,
+}: {
+  plan: Plan;
+  entity: Entity;
+  anchor: NonNullable<Entity["anchor"]>;
+  stepId: string;
+  scope: "step" | "all";
+  editable: boolean;
+  run(ops: Op | Op[]): Promise<unknown>;
+}) {
+  // Anchors are structure, not pose: they belong to the entity in every step.
+  const setAnchor = (props: Partial<NonNullable<Entity["anchor"]>>) =>
+    run({ op: "update_entity", id: entity.id, patch: { anchor: { ...anchor, ...props } } });
+
+  const resolved = entitiesForStep(plan, stepId);
+  const now = anchorTarget({ ...entity, anchor } as Entity, new Map(resolved.map((e) => [e.id, e])));
+  const candidates = plan.entities.filter((e) => !e.anchor && e.type !== "tether" && e.id !== entity.id);
+  const nudged = resolveEntity(entity, stepId);
+
+  return (
+    <div className="mb-3 rounded bg-ink-800 p-2 text-xs">
+      <div className="label mb-1">bait target</div>
+      <div className="flex flex-wrap gap-1">
+        <select
+          className="field flex-1"
+          disabled={!editable}
+          value={anchor.pick ?? "fixed"}
+          onChange={(e) =>
+            e.target.value === "fixed"
+              ? setAnchor({ pick: undefined, to: now?.id ?? candidates[0]?.id ?? "" })
+              : setAnchor({ pick: e.target.value as BaitRule })
+          }
+        >
+          {BAIT_RULES.map((r) => (
+            <option key={r} value={r}>
+              {r} {anchor.of === "any" ? "entity" : anchor.of}
+            </option>
+          ))}
+          <option value="fixed">a named entity</option>
+        </select>
+        {anchor.pick ? (
+          <input
+            className="field w-16"
+            type="number"
+            min={1}
+            max={8}
+            title="1 = the closest, 2 = the second closest"
+            disabled={!editable}
+            value={anchor.rank}
+            onChange={(e) => setAnchor({ rank: Math.max(1, Math.min(8, Number(e.target.value))) })}
+          />
+        ) : (
+          <select
+            className="field flex-1"
+            disabled={!editable}
+            value={anchor.to}
+            onChange={(e) => setAnchor({ to: e.target.value })}
+          >
+            {candidates.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name ?? e.id}
+              </option>
+            ))}
+          </select>
+        )}
+      </div>
+
+      {anchor.from && (
+        <div className="mt-1 flex items-center gap-1">
+          <span className="text-ink-400">from</span>
+          <select
+            className="field flex-1"
+            disabled={!editable}
+            value={anchor.from}
+            onChange={(e) => setAnchor({ from: e.target.value })}
+          >
+            {candidates.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name ?? e.id}
+              </option>
+            ))}
+          </select>
+          <label className="flex items-center gap-1 text-ink-400">
+            <input
+              type="checkbox"
+              disabled={!editable}
+              checked={anchor.extend}
+              onChange={(e) => setAnchor({ extend: e.target.checked })}
+            />
+            to wall
+          </label>
+        </div>
+      )}
+
+      <p className="mt-1 text-ink-400">
+        right now: <b className="text-ink-200">{now ? (now.name ?? now.id) : "nobody in this step"}</b>. Drag
+        it to sit off to one side — x/y is an offset from wherever the bait lands, so it keeps following.{" "}
+        {editable && (nudged.x !== 0 || nudged.y !== 0) && (
+          <button
+            className="underline"
+            onClick={() =>
+              run({
+                op: "update_entity",
+                id: entity.id,
+                patch: { x: 0, y: 0 },
+                stepId: scope === "step" ? stepId : undefined,
+              })
+            }
+          >
+            recentre
+          </button>
+        )}{" "}
+        {editable && (
+          <button
+            className="underline"
+            onClick={() =>
+              run({
+                op: "update_entity",
+                id: entity.id,
+                patch: { anchor: null, ...freeze(plan, stepId, entity) },
+              })
+            }
+          >
+            unbind
+          </button>
+        )}
+      </p>
+    </div>
+  );
+}
+
+/**
+ * Hang a baited mechanic off the selected entity. Everything it needs is already
+ * on screen — who it lands on is whatever you have selected — so this is one
+ * dropdown and a button rather than a placement mode.
+ */
+function BaitPanel({
+  plan,
+  target,
+  stepId,
+  scope,
+  editable,
+  run,
+}: {
+  plan: Plan;
+  target: Entity;
+  stepId: string;
+  scope: "step" | "all";
+  editable: boolean;
+  run(ops: Op | Op[]): Promise<unknown>;
+}) {
+  const sources = plan.entities.filter((e) => e.id !== target.id && e.type !== "tether" && !e.anchor);
+  const [kind, setKind] = useState<BaitKind>("beam");
+  const [from, setFrom] = useState(
+    () => sources.find((e) => e.type === "enemy")?.id ?? sources[0]?.id ?? ""
+  );
+  const needsSource = baitNeedsSource(kind);
+
+  return (
+    <div className="mb-3 rounded bg-ink-800 p-2">
+      <div className="label mb-1">bait this {target.type}</div>
+      <div className="flex gap-1">
+        <select
+          className="field flex-1"
+          disabled={!editable}
+          value={kind}
+          onChange={(e) => setKind(e.target.value as BaitKind)}
+        >
+          {BAIT_KINDS.map((k) => (
+            <option key={k}>{k}</option>
+          ))}
+        </select>
+        {needsSource && (
+          <select
+            className="field flex-1"
+            disabled={!editable}
+            value={from}
+            onChange={(e) => setFrom(e.target.value)}
+          >
+            {sources.map((e) => (
+              <option key={e.id} value={e.id}>
+                {e.name ?? e.id}
+              </option>
+            ))}
+          </select>
+        )}
+        <button
+          className="btn"
+          disabled={!editable || (needsSource && !from)}
+          onClick={() =>
+            run({
+              op: "add_entity",
+              spec: baitSpec(kind, target.id, from || undefined, {
+                name: `${kind} ${target.name ?? ""}`.trim(),
+                steps: scope === "step" ? [stepId] : "all",
+              }) as never,
+            })
+          }
+        >
+          add
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/** Unbinding keeps the bait where it currently is, rather than snapping it home. */
+function freeze(plan: Plan, stepId: string, entity: Entity) {
+  const byId = new Map(entitiesForStep(plan, stepId).map((e) => [e.id, e]));
+  return anchoredPose(entity, byId, plan.arena) ?? {};
+}
+
+const nameOf = (plan: Plan, id: string) =>
+  plan.entities.find((e) => e.id === id)?.name ?? id;
 
 /**
  * Property editor for the selected entity. Writes go through the same op API as
@@ -70,6 +328,31 @@ export function Inspector({
         </button>
       </div>
 
+      {entity.type === "marker" && (
+        <p className="mb-2 text-xs text-ink-400">
+          Waymarks belong to the whole plan: they sit in every step, and they only move on the
+          waymark layer.
+        </p>
+      )}
+
+      {entity.type === "zone" && entity.shape !== "arrow" && <Hits plan={plan} stepId={stepId} zoneId={entity.id} />}
+
+      {!entity.anchor && entity.type !== "tether" && (
+        <BaitPanel plan={plan} target={entity} stepId={stepId} scope={scope} editable={editable} run={run} />
+      )}
+
+      {shown.anchor && (
+        <BaitTarget
+          plan={plan}
+          entity={entity}
+          anchor={shown.anchor}
+          stepId={stepId}
+          scope={scope}
+          editable={editable}
+          run={run}
+        />
+      )}
+
       <div className="grid grid-cols-2 gap-2">
         <Field label="name" span>
           <input
@@ -79,8 +362,8 @@ export function Inspector({
             onChange={(e) => patch({ name: e.target.value })}
           />
         </Field>
-        {num("x", "x")}
-        {num("y", "y")}
+        {num("x", shown.anchor ? "offset x" : "x")}
+        {num("y", shown.anchor ? "offset y" : "y")}
         {num("rotation", "rotation°", 15)}
         {num("scale", "scale", 0.1)}
 
@@ -257,27 +540,60 @@ export function Inspector({
         >
           Back
         </button>
-        <button
-          className="btn"
-          disabled={!editable || !overridden}
-          onClick={() => run({ op: "clear_override", id: entity.id, stepId })}
-          title="Revert this entity to its base pose in this step"
-        >
-          Clear override
-        </button>
-        <button
-          className="btn"
-          disabled={!editable}
-          onClick={() =>
-            run({
-              op: "update_entity",
-              id: entity.id,
-              patch: { steps: entity.steps === "all" ? [stepId] : "all" },
-            })
-          }
-        >
-          {entity.steps === "all" ? "Only this step" : "All steps"}
-        </button>
+        {/* A waymark is the same in every step by definition, so neither the
+            per-step pose nor step membership means anything for one. */}
+        {entity.type !== "marker" && (
+          <>
+            <button
+              className="btn"
+              disabled={!editable || !overridden}
+              onClick={() => run({ op: "clear_override", id: entity.id, stepId })}
+              title="Revert this entity to its base pose in this step"
+            >
+              Clear override
+            </button>
+            <button
+              className="btn"
+              disabled={!editable || !!entity.mech}
+              title={
+                entity.mech
+                  ? "This belongs to a mech, which decides when it is on the floor"
+                  : undefined
+              }
+              onClick={() =>
+                run({
+                  op: "update_entity",
+                  id: entity.id,
+                  patch: { steps: entity.steps === "all" ? [stepId] : "all" },
+                })
+              }
+            >
+              {entity.steps === "all" ? "Only this step" : "All steps"}
+            </button>
+            {/* Which cast this shape is part of: a mech times it and aims it,
+                so moving it between slots is a real edit, not a label. */}
+            <select
+              className="field w-auto"
+              disabled={!editable}
+              title="The mech this shape belongs to"
+              value={entity.mech ?? ""}
+              onChange={(e) =>
+                run({
+                  op: "assign_mech",
+                  ids: [entity.id],
+                  mechId: e.target.value || null,
+                })
+              }
+            >
+              <option value="">no mech</option>
+              {plan.mechs.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {mechLabel(plan, m)}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
         <button
           className="btn text-red-300"
           disabled={!editable}

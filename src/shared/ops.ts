@@ -1,8 +1,10 @@
 import { nanoid } from "nanoid";
 import {
   type Arena,
+  type BaitRule,
   type Entity,
   type EntityType,
+  type Mech,
   type Plan,
   type Step,
   type PropBag,
@@ -14,9 +16,12 @@ import {
   EntitySchema,
   PlanSchema,
   entitiesForStep,
+  mechLabel,
+  mechSpan,
   resolveEntity,
 } from "./schema";
 import { DEFAULT_PARTY, jobLabel } from "./jobs";
+import { zoneCovers } from "./hits";
 
 /**
  * Every mutation of a plan lives here so the canvas, the HTTP API and the MCP
@@ -183,7 +188,12 @@ export function deleteEntities(plan: Plan, ids: string[]): Plan {
   const entities = plan.entities
     .filter((e) => !gone.has(e.id))
     // Tethers pointing at a deleted entity go with it.
-    .filter((e) => !(e.type === "tether" && (gone.has(e.from) || gone.has(e.to))));
+    .filter((e) => !(e.type === "tether" && (gone.has(e.from) || gone.has(e.to))))
+    // So does a bait bound to it: without its target it has no pose at all.
+    .filter(
+      (e) =>
+        !(e.anchor && ((e.anchor.to && gone.has(e.anchor.to)) || (e.anchor.from && gone.has(e.anchor.from))))
+    );
   return touch({ ...plan, entities });
 }
 
@@ -327,6 +337,17 @@ export function updateStep(plan: Plan, stepId: string, patch: Partial<Omit<Step,
 export function deleteStep(plan: Plan, stepId: string): Plan {
   if (plan.steps.length <= 1) throw new Error("A plan needs at least one step");
   const steps = plan.steps.filter((s) => s.id !== stepId);
+  // A mech that loses one end collapses onto the other; one that loses both was
+  // entirely inside the step that just went away, and goes with it.
+  const mechs = plan.mechs
+    .map((m) => ({
+      ...m,
+      snap: m.snap === stepId ? "" : m.snap,
+      boom: m.boom === stepId ? "" : m.boom,
+    }))
+    .filter((m) => m.snap || m.boom)
+    .map((m) => ({ ...m, snap: m.snap || m.boom, boom: m.boom || m.snap }));
+  const gone = new Set(plan.mechs.filter((m) => !mechs.some((k) => k.id === m.id)).map((m) => m.id));
   const entities = plan.entities
     .map((e) => {
       const overrides = { ...e.overrides };
@@ -334,9 +355,11 @@ export function deleteStep(plan: Plan, stepId: string): Plan {
       const steps2 = Array.isArray(e.steps) ? e.steps.filter((s) => s !== stepId) : e.steps;
       return { ...e, overrides, steps: steps2 } as Entity;
     })
-    // An entity that only existed in the deleted step goes away with it.
-    .filter((e) => e.steps === "all" || (e.steps as string[]).length > 0);
-  return touch({ ...plan, steps, entities });
+    // An entity that only existed in the deleted step goes away with it — and
+    // so does one whose mech did.
+    .filter((e) => !(e.mech && gone.has(e.mech)))
+    .filter((e) => e.mech || e.steps === "all" || (e.steps as string[]).length > 0);
+  return touch({ ...plan, steps, mechs, entities });
 }
 
 export function moveStep(plan: Plan, stepId: string, index: number): Plan {
@@ -346,6 +369,54 @@ export function moveStep(plan: Plan, stepId: string, index: number): Plan {
   const [s] = steps.splice(from, 1);
   steps.splice(Math.max(0, Math.min(steps.length, index)), 0, s);
   return touch({ ...plan, steps });
+}
+
+/* -------------------------------------------------------------------- mechs */
+
+/**
+ * A new mech slot. It snapshots and explodes in the same step until told
+ * otherwise — an instant cast, and the shortest thing that is still coherent.
+ */
+export function addMech(
+  plan: Plan,
+  opts: { name?: string; snap?: string; boom?: string } = {},
+): { plan: Plan; mech: Mech } {
+  const here = opts.snap ?? plan.steps[0]?.id ?? "";
+  const mech: Mech = {
+    id: newId("mech"),
+    name: opts.name ?? "",
+    snap: here,
+    boom: opts.boom ?? here,
+  };
+  return { plan: touch({ ...plan, mechs: [...plan.mechs, mech] }), mech };
+}
+
+export function updateMech(plan: Plan, mechId: string, patch: Partial<Omit<Mech, "id">>): Plan {
+  if (!plan.mechs.some((m) => m.id === mechId)) throw new Error(`No mech ${mechId}`);
+  const mechs = plan.mechs.map((m) => (m.id === mechId ? { ...m, ...defined(patch) } : m));
+  return touch({ ...plan, mechs });
+}
+
+/**
+ * Delete a mech. Its shapes are the mech — they go with it, unless you are
+ * pulling them out to keep, in which case they fall back to being plan-wide.
+ */
+export function deleteMech(plan: Plan, mechId: string, keepEntities = false): Plan {
+  const mechs = plan.mechs.filter((m) => m.id !== mechId);
+  const entities = keepEntities
+    ? plan.entities.map((e) => (e.mech === mechId ? ({ ...e, mech: undefined } as Entity) : e))
+    : plan.entities.filter((e) => e.mech !== mechId);
+  return touch({ ...plan, mechs, entities });
+}
+
+/** Move existing shapes into a mech, or (with `null`) out of whatever holds them. */
+export function assignMech(plan: Plan, ids: string[], mechId: string | null): Plan {
+  if (mechId && !plan.mechs.some((m) => m.id === mechId)) throw new Error(`No mech ${mechId}`);
+  const want = new Set(ids);
+  const entities = plan.entities.map((e) =>
+    want.has(e.id) ? ({ ...e, mech: mechId ?? undefined } as Entity) : e,
+  );
+  return touch({ ...plan, entities });
 }
 
 /* -------------------------------------------------------------- convenience */
@@ -366,10 +437,24 @@ export function setArena(plan: Plan, patch: Partial<Arena>): Plan {
 export const STANDARD_WAYMARKS = ["A", "2", "B", "3", "C", "4", "D", "1"] as const;
 
 /**
+ * How far out the standard waymarks go, as a fraction of the arena's half-width.
+ * The PF clock uses it too: a party in PF positions stands on the marks, which
+ * is the whole point of calling them positions.
+ */
+export const WAYMARK_SPREAD = 0.8;
+
+/**
+ * Where the PF clock puts people: the same ring, a little inside it. Standing
+ * exactly on a mark hides the mark under the token, and the mark is the thing
+ * the plan is talking about.
+ */
+export const PF_SPREAD = WAYMARK_SPREAD - 0.1;
+
+/**
  * Place the 8 standard waymarks. Markers the plan already has are *moved* into
  * position rather than skipped, so this doubles as a "reset to standard" button.
  */
-export function addWaymarks(plan: Plan, distance = 0.8): Plan {
+export function addWaymarks(plan: Plan, distance = WAYMARK_SPREAD): Plan {
   return placeMarkers(
     plan,
     STANDARD_WAYMARKS.map((marker, i) => {
@@ -458,9 +543,11 @@ export const PF_SLOTS: { slot: string; names: string[] }[] = [
   { slot: "H2", names: ["H2"] },
   { slot: "M2", names: ["M2", "D2"] },
   { slot: "OT", names: ["OT", "T2"] },
-  { slot: "R1", names: ["R1", "D3"] },
-  { slot: "H1", names: ["H1"] },
+  // The melees take the two southern diagonals, behind the boss where they have
+  // to stand anyway; the ranged take the northern pair.
   { slot: "M1", names: ["M1", "D1"] },
+  { slot: "H1", names: ["H1"] },
+  { slot: "R1", names: ["R1", "D3"] },
 ];
 
 /**
@@ -469,7 +556,7 @@ export const PF_SLOTS: { slot: string; names: string[] }[] = [
  */
 export function arrangeParty(
   plan: Plan,
-  radiusFraction = 0.25,
+  radiusFraction = PF_SPREAD,
   stepId?: string
 ): { plan: Plan; ids: string[] } {
   const players = findEntities(plan, { type: "player" });
@@ -502,41 +589,243 @@ export function arrangeParty(
   return { plan: next, ids };
 }
 
+/* -------------------------------------------------------------------- baits */
+
+/**
+ * Baited mechanics: the shapes that belong to whoever got targeted, rather than
+ * to a spot on the floor. Each one is an ordinary entity carrying an `anchor`,
+ * so it re-solves itself against the party in every step — move the bait and
+ * the beam swings with it, no per-step overrides to keep in sync.
+ */
+export const BAIT_KINDS = [
+  "beam",
+  "cone",
+  "donut",
+  "spread",
+  "puddle",
+  "stack",
+  "tower",
+  "proximity",
+  "tether",
+] as const;
+export type BaitKind = (typeof BAIT_KINDS)[number];
+
+/** Kinds that fire *from* something — they need a source to aim from. */
+const AIMED: BaitKind[] = ["beam", "cone", "tether"];
+
+/** Does this kind need a source? The editor asks before offering the picker. */
+export const baitNeedsSource = (kind: BaitKind) => AIMED.includes(kind);
+
+const BAIT_DEFAULTS: Record<BaitKind, PropBag & { type: EntityType }> = {
+  beam: { type: "zone", shape: "rect", width: 160, extend: true },
+  cone: { type: "zone", shape: "cone", angle: 60, radius: 500, extend: true },
+  donut: { type: "zone", shape: "donut", innerRadius: 150, radius: 450 },
+  spread: { type: "zone", shape: "spread", radius: 120 },
+  puddle: { type: "zone", shape: "circle", radius: 200 },
+  stack: { type: "zone", shape: "stack", radius: 200, soak: 4 },
+  tower: { type: "zone", shape: "tower", radius: 140, soak: 1 },
+  proximity: { type: "zone", shape: "proximity", radius: 250 },
+  tether: { type: "tether", style: "line" },
+};
+
+/**
+ * The entity spec for one baited primitive.
+ *
+ * `target` is either an entity id — this player, always — or a rule, in which
+ * case the bait picks its own victim every time the plan is drawn. A tether is
+ * the one kind that cannot float: it is two endpoints by definition, so a rule
+ * is resolved once, at authoring time, by the caller.
+ */
+export function baitSpec(
+  kind: BaitKind,
+  target: string | { pick: BaitRule; rank?: number; of?: "player" | "enemy" | "any" },
+  sourceId: string | undefined,
+  props: PropBag = {}
+): PropBag & { type: EntityType } {
+  if (AIMED.includes(kind) && !sourceId)
+    throw new Error(`A ${kind} bait needs "from": the enemy or object it comes out of`);
+  const { extend, ...base } = BAIT_DEFAULTS[kind];
+  const spec = { ...base, ...definedProps(props) } as PropBag & { type: EntityType };
+  if (kind === "tether") {
+    if (typeof target !== "string")
+      throw new Error("A tether needs a named target — tether both ends, or use another kind");
+    return { ...spec, from: sourceId, to: target };
+  }
+  spec.anchor = {
+    ...(typeof target === "string"
+      ? { to: target }
+      : { pick: target.pick, rank: target.rank ?? 1, of: target.of ?? "player" }),
+    // Aimed kinds fire *from* the source; the rest merely rank their targets by
+    // distance to it, which is what "baited off that orb" means for a puddle.
+    ...(AIMED.includes(kind) ? { from: sourceId } : sourceId ? { near: sourceId } : {}),
+    extend: (props.extend as boolean | undefined) ?? extend ?? false,
+  };
+  return spec;
+}
+
+/* ----------------------------------------------------------------- palette */
+
+/**
+ * The things you drag onto the arena. Deliberately short: these are the
+ * mechanics a plan is actually made of, and each one means something different
+ * depending on what you drop it on — a player group, a bait anchor, bare floor.
+ */
+export const PALETTE = ["circle", "donut", "protean", "beam", "anchor"] as const;
+export type PaletteKind = (typeof PALETTE)[number];
+
+export const PALETTE_LABEL: Record<PaletteKind, string> = {
+  circle: "Circle",
+  donut: "Donut",
+  protean: "Protean",
+  beam: "Beam",
+  anchor: "Bait anchor",
+};
+
+export const PALETTE_HINT: Record<PaletteKind, string> = {
+  circle: "A desolation: a circle AoE. Drop it on a group to give each of them one.",
+  donut: "A donut AoE: everything but the hole. Drop it on somebody to have it centred on them.",
+  protean: "A narrow cone per player, thrown from the boss.",
+  beam: "A line AoE from the boss through whoever it is aimed at.",
+  anchor: "A point mechanics come out of that is not the boss — an add, an orb, a portal.",
+};
+
+/** Which bait preset each palette kind becomes once it is bound to somebody. */
+const PALETTE_BAIT: Record<Exclude<PaletteKind, "anchor">, { kind: BaitKind; props: PropBag }> = {
+  circle: { kind: "puddle", props: { radius: 200 } },
+  donut: { kind: "donut", props: { radius: 450, innerRadius: 150 } },
+  protean: { kind: "cone", props: { angle: 30 } },
+  beam: { kind: "beam", props: { width: 160 } },
+};
+
+/** The same four, dropped on bare floor: a shape you place and move yourself. */
+const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
+  circle: { type: "zone", shape: "circle", radius: 200 },
+  donut: { type: "zone", shape: "donut", radius: 300, innerRadius: 120 },
+  protean: { type: "zone", shape: "cone", angle: 30, radius: 500 },
+  beam: { type: "zone", shape: "rect", width: 160, length: 600 },
+  anchor: { type: "enemy", role: "anchor", size: 60, ring: false, showFacing: false },
+};
+
+export const paletteNeedsSource = (kind: PaletteKind) =>
+  kind !== "anchor" && baitNeedsSource(PALETTE_BAIT[kind].kind);
+
+/** A free-standing shape at a point on the floor. */
+export function paletteSpec(kind: PaletteKind, props: PropBag = {}): PropBag & { type: EntityType } {
+  return { ...PALETTE_FREE[kind], ...defined(props) };
+}
+
+/** The same palette item, bound: on a named target, or on whoever is nearest. */
+export function paletteBait(
+  kind: Exclude<PaletteKind, "anchor">,
+  target: string | { pick: BaitRule; rank?: number; of?: "player" | "enemy" | "any" },
+  sourceId: string | undefined,
+  props: PropBag = {}
+): PropBag & { type: EntityType } {
+  const preset = PALETTE_BAIT[kind];
+  return baitSpec(preset.kind, target, sourceId, { ...preset.props, ...props });
+}
+
+/* ------------------------------------------------------------------ resize */
+
+/** Rect-ish shapes are sized by their footprint, everything else by radius. */
+const BOXY = ["rect", "line", "arrow", "knockback"];
+
+/**
+ * What "make this bigger" multiplies, per entity. It is the real dimensions
+ * rather than `scale`, so the numbers in the plan keep saying what they mean —
+ * a 20-yalm donut stays a donut with a radius you can read.
+ */
+function sizeFields(entity: Entity): string[] {
+  switch (entity.type) {
+    case "zone":
+      return BOXY.includes(entity.shape) ? ["width", "length"] : ["radius", "innerRadius"];
+    case "tether":
+    case "path":
+      return ["width"];
+    default:
+      return ["size"];
+  }
+}
+
+/** Nothing may be scrolled out of existence, or off the edge of the world. */
+const clampSize = (v: number, min: number) => Math.max(min, Math.min(4000, Math.round(v)));
+
+/** The patch that resizes an entity by a factor — 1.1 is ten percent bigger. */
+export function resizeSpec(entity: Entity, factor: number): PropBag {
+  const props = entity as unknown as Record<string, number | undefined>;
+  const patch: PropBag = {};
+  for (const key of sizeFields(entity)) {
+    const value = props[key];
+    if (typeof value !== "number") continue;
+    // A donut hole of zero is a circle, which is a legitimate thing to shrink to.
+    patch[key] = clampSize(value * factor, key === "innerRadius" ? 0 : 4);
+  }
+  return patch;
+}
+
+function definedProps(props: PropBag): PropBag {
+  const { extend: _drop, ...rest } = props;
+  return defined(rest);
+}
+
 /* ------------------------------------------------------------- descriptions */
+
+const ordinal = (n: number) => ["", "", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"][n] ?? `${n}th`;
 
 function describeEntity(plan: Plan, e: Entity): string {
   const label = e.name ? `"${e.name}"` : "";
-  const at = `(${Math.round(e.x)}, ${Math.round(e.y)}) ${pointToCompass(e.x, e.y)}`;
+  const who = (id: string) => getEntity(plan, id)?.name ?? id;
+  // An anchored entity has no pose of its own — reporting coordinates for it
+  // would be reporting whatever it was authored with, not where it will land.
+  const whom = (a: NonNullable<Entity["anchor"]>) =>
+    a.pick
+      ? `the ${a.rank > 1 ? `${ordinal(a.rank)} ` : ""}${a.pick} ${a.of === "any" ? "entity" : a.of}` +
+        (a.from ? ` to ${who(a.from)}` : "")
+      : who(a.to);
+  const at = e.anchor
+    ? e.anchor.from
+      ? `aimed from ${who(e.anchor.from)} at ${whom(e.anchor)}${e.anchor.extend ? ", to the wall" : ""}`
+      : `on ${whom(e.anchor)}`
+    : `at (${Math.round(e.x)}, ${Math.round(e.y)}) ${pointToCompass(e.x, e.y)}`;
   switch (e.type) {
     case "marker":
-      return `waymark ${e.marker} at ${at}`;
+      return `waymark ${e.marker} ${at}`;
     case "player":
-      return `player ${jobLabel(e.job)} ${label} at ${at}${e.showFacing ? `, facing ${Math.round(e.rotation)}°` : ""}`;
+      return `player ${jobLabel(e.job)} ${label} ${at}${e.showFacing ? `, facing ${Math.round(e.rotation)}°` : ""}`;
     case "enemy":
-      return `enemy ${label} r=${Math.round(e.size)} at ${at}, facing ${Math.round(e.rotation)}°`;
+      return `enemy ${label} r=${Math.round(e.size)} ${at}, facing ${Math.round(e.rotation)}°`;
     case "zone": {
       const geo =
         e.shape === "cone"
-          ? `${Math.round(e.angle)}° cone r=${Math.round(e.radius)} facing ${Math.round(e.rotation)}°`
+          ? `${Math.round(e.angle)}° cone r=${Math.round(e.radius)}`
           : e.shape === "donut"
             ? `donut ${Math.round(e.innerRadius)}–${Math.round(e.radius)}`
             : e.shape === "rect" || e.shape === "line" || e.shape === "knockback" || e.shape === "arrow"
-              ? `${e.shape} ${Math.round(e.width)}x${Math.round(e.length)} facing ${Math.round(e.rotation)}°`
+              ? `${e.shape} ${Math.round(e.width)}x${Math.round(e.length)}`
               : `${e.shape} r=${Math.round(e.radius)}`;
-      return `zone ${geo} ${label} at ${at}`;
+      const facing = e.anchor ? "" : `, facing ${Math.round(e.rotation)}°`;
+      return `zone ${geo} ${label} ${at}${facing}`;
     }
-    case "tether": {
-      const a = getEntity(plan, e.from);
-      const b = getEntity(plan, e.to);
-      return `tether ${e.style} ${a?.name ?? e.from} → ${b?.name ?? e.to}`;
-    }
+    case "tether":
+      return `tether ${e.style} ${who(e.from)} → ${who(e.to)}`;
     case "text":
-      return `text "${e.text}" at ${at}`;
+      return `text "${e.text}" ${at}`;
     case "path":
       return `path ${e.points.length / 2} points from ${at}`;
     case "icon":
-      return `icon ${label} at ${at}`;
+      return `icon ${label} ${at}`;
   }
+}
+
+/**
+ * Who a zone catches, appended to its line. A player's hitbox is a point, so
+ * this is the answer to "is that clipping D2?" — which the coordinates alone
+ * make you compute in your head, and the picture makes you guess at.
+ */
+function describeHits(e: Entity, items: Entity[]): string {
+  if (e.type !== "zone" || e.shape === "arrow") return "";
+  const hit = items.filter((o) => o.type === "player" && zoneCovers(e, o.x, o.y));
+  return hit.length ? ` — hits ${hit.map((h) => h.name ?? h.id).join(", ")}` : " — hits nobody";
 }
 
 /** Compact, model-readable rendering of a plan — what `read_plan` returns. */
@@ -553,12 +842,26 @@ export function describePlan(plan: Plan, stepId?: string): string {
     lines.push("");
     lines.push(`## Step ${plan.steps.indexOf(step) + 1}: ${step.name} [${step.id}]`);
     if (step.notes) lines.push(`Notes: ${step.notes}`);
+    // Which casts are in the air here, and whether this is the step one lands in.
+    const live = plan.mechs.filter((m) => mechSpan(plan, m).includes(step.id));
+    if (live.length)
+      lines.push(
+        "Mechs: " +
+          live
+            .map(
+              (m) =>
+                `${mechLabel(plan, m)} [${m.id}] ${
+                  m.boom === step.id ? (m.snap === step.id ? "snapshots and goes off here" : "goes off here") : m.snap === step.id ? "snapshots here" : "in the air"
+                }`
+            )
+            .join("; ")
+      );
     const items = entitiesForStep(plan, step.id);
     if (!items.length) lines.push("(empty)");
     for (const e of items) {
       const base = plan.entities.find((b) => b.id === e.id)!;
       const moved = base.overrides?.[step.id] ? " *" : "";
-      lines.push(`- [${e.id}]${moved} ${describeEntity(plan, e)}`);
+      lines.push(`- [${e.id}]${moved} ${describeEntity(plan, e)}${describeHits(e, items)}`);
     }
   }
   if (!stepId && plan.steps.length > 1) lines.push("", "(* = entity has a pose override in that step)");
