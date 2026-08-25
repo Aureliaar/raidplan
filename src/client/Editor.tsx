@@ -7,7 +7,7 @@ import type { EditLayer } from "./canvas/Scene";
 import { Scene } from "./canvas/Scene";
 import { Inspector } from "./Inspector";
 import { ChatPanel } from "./ChatPanel";
-import type { Op } from "../shared/apply";
+import { applyOp, type Op } from "../shared/apply";
 import type { PlanHistory, PlanRevision } from "../shared/history";
 import type {
   Entity,
@@ -38,12 +38,14 @@ import {
   PALETTE_HINT,
   PALETTE_LABEL,
   isPaletteSource,
+  isPaletteTether,
   paletteBait,
   paletteNeedsSource,
   paletteSpec,
   resizeSpec,
 } from "../shared/ops";
 import { jobLabel, roleOf } from "../shared/jobs";
+import { assetUrl } from "../shared/assets";
 import {
   makeSymmetricAdds,
   symmetricUpdates,
@@ -61,7 +63,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [plan, setPlan] = useState<Plan | null>(null);
   const [role, setRole] = useState<PlanRole>("viewer");
   const [stepIndex, setStepIndex] = useState(0);
-  const [selected, setSelected] = useState<string | null>(null);
+  const [selection, setSelection] = useState<string[]>([]);
+  const selected = selection.at(-1) ?? null;
+  const setSelected = (id: string | null) => setSelection(id ? [id] : []);
   const [scope, setScope] = useState<"step" | "all">("step");
   const [symmetryCount, setSymmetryCount] = useState<SymmetryCount>(1);
   const [symmetryKind, setSymmetryKind] = useState<SymmetryKind>("mirror");
@@ -94,6 +98,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [historyBusy, setHistoryBusy] = useState(false);
   /** What is in the hand mid-drag, purely so the drop targets can light up. */
   const [carrying, setCarrying] = useState<PaletteKind | null>(null);
+  /** First endpoint of a player tether, waiting for the second player click. */
+  const [pendingTether, setPendingTether] = useState<{
+    kind: Extract<PaletteKind, "together" | "apart">;
+    from: string;
+  } | null>(null);
   const [hover, setHover] = useState<GroupId | null>(null);
   /**
    * A whole group picked up by its card, on its way to somewhere on the floor.
@@ -116,6 +125,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   /** The freshest plan, for handlers that fire faster than React re-renders. */
   const planRef = useRef<Plan | null>(null);
   planRef.current = plan;
+  /** The last server-confirmed document, beneath any in-flight local edits. */
+  const serverPlanRef = useRef<Plan | null>(null);
+  const pendingEntityEdits = useRef<{ token: symbol; ops: Op[] }[]>([]);
+  /** Preserve the order gestures were made in, even if fetches would race. */
+  const mutationTail = useRef<Promise<void>>(Promise.resolve());
   /** Wheel notches land far faster than a round trip, so they are pooled. */
   const pendingResize = useRef<{ ids: string[]; factor: number; what: "size" | "opacity" } | null>(null);
   const resizeTimer = useRef<number | null>(null);
@@ -128,12 +142,42 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     sessionStorage.setItem(key, editSession.current);
   }
 
+  const showServerPlan = useCallback((state: Plan) => {
+    const incoming = hydratePlan(state);
+    // Fetch responses and socket broadcasts can cross in flight.
+    if (!serverPlanRef.current || incoming.rev >= serverPlanRef.current.rev)
+      serverPlanRef.current = incoming;
+    let visible = serverPlanRef.current;
+    // Optimistic operations contain no server-generated IDs, so they are safe
+    // to replay over broadcasts until their own request is acknowledged.
+    for (const pending of pendingEntityEdits.current) {
+      for (const op of pending.ops) {
+        try {
+          // The operation's own socket broadcast can beat its HTTP response.
+          // A client-ID add is already in that broadcast, so replay only the
+          // still-missing optimistic copy instead of duplicating the entity.
+          if (
+            op.op === "add_entity" &&
+            typeof op.spec.id === "string" &&
+            visible.entities.some((entity) => entity.id === op.spec.id)
+          ) continue;
+          visible = applyOp(visible, op).plan;
+        } catch {
+          // A collaborator may have removed the target first. The request's
+          // eventual response remains authoritative.
+        }
+      }
+    }
+    planRef.current = visible;
+    setPlan(visible);
+  }, []);
+
   useAgent({
     agent: "plan-agent",
     name: planId,
     onStateUpdate: (state: Plan) => {
       if (state?.id) {
-        setPlan(hydratePlan(state));
+        showServerPlan(state);
         // The broadcast can arrive just before its revision metadata is stored.
         if (historyRefreshTimer.current !== null) window.clearTimeout(historyRefreshTimer.current);
         historyRefreshTimer.current = window.setTimeout(() => {
@@ -149,13 +193,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     api
       .getPlan(planId)
       .then((res) => {
-        setPlan(hydratePlan(res.plan));
+        showServerPlan(res.plan);
         setRole(res.role);
         return api.history(planId);
       })
       .then(setHistory)
       .catch((e) => setError(e.message));
-  }, [planId]);
+  }, [planId, showServerPlan]);
 
   useEffect(
     () => () => {
@@ -168,13 +212,15 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const step = plan?.steps[Math.min(stepIndex, (plan?.steps.length ?? 1) - 1)];
 
   const run = useCallback(
-    async (ops: Op | Op[]) => {
+    async (ops: Op | Op[], expandSymmetry = true) => {
+      let optimisticToken: symbol | null = null;
       try {
         const current = planRef.current;
         const symmetricCount = symmetryCount === 2 ? 2 : 4;
         const expanded = (Array.isArray(ops) ? ops : [ops]).flatMap((op): Op[] => {
           if (
             op.op === "add_entity" &&
+            expandSymmetry &&
             symmetryCount > 1 &&
             typeof op.spec.x === "number" &&
             typeof op.spec.y === "number" &&
@@ -183,7 +229,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             op.spec.type !== "tether"
           )
             return makeSymmetricAdds(op.spec, symmetryKind, symmetricCount);
-          if (op.op === "update_entity" && current && symmetryCount > 1)
+          if (op.op === "update_entity" && current && expandSymmetry && symmetryCount > 1)
             return symmetricUpdates(
               current,
               op,
@@ -191,22 +237,53 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               symmetricCount,
               entitiesForStep(current, step?.id, undefined, shown)
             );
-          if (op.op === "delete_entities" && current && symmetryCount > 1)
+          if (op.op === "delete_entities" && current && expandSymmetry && symmetryCount > 1)
             return [{ ...op, ids: symmetryIds(current, op.ids) }];
-          if (op.op === "assign_mech" && current && symmetryCount > 1)
+          if (op.op === "assign_mech" && current && expandSymmetry && symmetryCount > 1)
             return [{ ...op, ids: symmetryIds(current, op.ids) }];
           return [op];
         });
-        const res = await api.ops(planId, expanded, editSession.current);
-        setPlan(hydratePlan(res.plan));
+        const optimistic = expanded.every(
+          (op) =>
+            op.op === "update_entity" ||
+            op.op === "delete_entities" ||
+            (op.op === "add_entity" && typeof op.spec.id === "string")
+        );
+        if (optimistic && current) {
+          optimisticToken = Symbol("entity edit");
+          pendingEntityEdits.current.push({ token: optimisticToken, ops: expanded });
+          let visible = current;
+          for (const op of expanded) visible = applyOp(visible, op).plan;
+          planRef.current = visible;
+          setPlan(visible);
+        }
+        const request = mutationTail.current.then(() =>
+          api.ops(planId, expanded, editSession.current)
+        );
+        mutationTail.current = request.then(
+          () => undefined,
+          () => undefined
+        );
+        const res = await request;
+        if (optimisticToken)
+          pendingEntityEdits.current = pendingEntityEdits.current.filter(
+            (edit) => edit.token !== optimisticToken
+          );
+        showServerPlan(res.plan);
         setHistory(res.history);
         return res;
       } catch (e) {
+        if (optimisticToken) {
+          pendingEntityEdits.current = pendingEntityEdits.current.filter(
+            (edit) => edit.token !== optimisticToken
+          );
+          if (serverPlanRef.current) showServerPlan(serverPlanRef.current);
+        }
         setError((e as Error).message);
         throw e;
       }
     },
-    [planId, symmetryCount, symmetryKind, shown, step?.id]
+    [planId, symmetryCount, symmetryKind, shown, step?.id, showServerPlan]
   );
 
   const travelHistory = useCallback(
@@ -220,7 +297,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             : direction === "redo"
               ? await api.redo(planId)
               : await api.revert(planId, revisionId!, editSession.current);
-        setPlan(hydratePlan(res.plan));
+        showServerPlan(res.plan);
         setHistory(res.history);
         setSelected(null);
         setNote(
@@ -236,7 +313,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         setHistoryBusy(false);
       }
     },
-    [historyBusy, planId]
+    [historyBusy, planId, showServerPlan]
   );
 
   /** Canvas authoring modes: 1/2/3 choose the coverage; Q changes the transform. */
@@ -277,10 +354,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         return;
       }
       if (!mod && (ev.key === "Delete" || ev.key === "Backspace")) {
-        if (!selected) return;
+        if (!selection.length) return;
         ev.preventDefault();
         setSelected(null);
-        void run({ op: "delete_entities", ids: [selected] });
+        void run({ op: "delete_entities", ids: selection });
         return;
       }
       if (mod && ev.key.toLowerCase() === "c") {
@@ -311,7 +388,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editable, selected, plan, run, travelHistory]);
+  }, [editable, selected, selection, plan, run, travelHistory]);
 
   /**
    * Walking the fight from the keyboard, on the rail's own two axes: W and S
@@ -426,7 +503,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   }
 
   /**
-   * Scrolling over something resizes it. The wheel outruns the server, so the
+   * Scrolling over something resizes it (or changes a tether's range). The wheel outruns the server, so the
    * notches are multiplied together and sent as one edit a moment later — and
    * it is the real dimensions that change, not `scale`, so the plan keeps
    * saying how big the thing is.
@@ -459,8 +536,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const edits = job.ids.flatMap((id) => {
       const e = current.entities.find((x) => x.id === id);
       if (!e) return [];
-      // Opacity is one number on everything; size is whatever dimensions the
-      // shape has. Either way the wheel says "by this much", never "to this".
+      // Opacity is one number on everything; size is whatever meaningful
+      // dimension the entity has (the required range for a tether). Either way
+      // the wheel says "by this much", never "to this".
       const patch =
         job.what === "opacity"
           ? { opacity: Math.min(1, Math.max(0.05, Math.round(e.opacity * job.factor * 100) / 100)) }
@@ -516,6 +594,15 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     return boss ? boss.id : await placeSource("anchor", 0, 0);
   }
 
+  /** A player token under a palette drop, used to start a two-click tether. */
+  function playerAt(pt: { x: number; y: number }): string | undefined {
+    return entitiesForStep(plan!, step!.id, undefined, shown).find(
+      (e) =>
+        e.type === "player" &&
+        Math.hypot(e.x - pt.x, e.y - pt.y) <= e.size * 0.9 * e.scale
+    )?.id;
+  }
+
   /** Zone shape each mechanic tile lands as — used to count what a source has. */
   const SHAPE_OF: Record<PaletteMechanicKind, string> = {
     circle: "circle",
@@ -527,7 +614,20 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     stack2: "stack",
     linestack: "linestack",
     flare: "flare",
+    together: "tether",
+    apart: "tether",
   };
+
+  /**
+   * Pair supports with damagers in party-list order. With the standard slots
+   * this is MT-M1, OT-M2, H1-R1, H2-R2; custom parties still get a stable,
+   * editable one-to-one assignment rather than a geometry-dependent one.
+   */
+  function crossRolePairs(): [PlayerEntity, PlayerEntity][] {
+    const supports = membersOf("supports");
+    const damagers = membersOf("damagers");
+    return supports.slice(0, Math.min(supports.length, damagers.length)).map((support, i) => [support, damagers[i]]);
+  }
 
   /**
    * A palette item let go over the arena. What it becomes is decided entirely by
@@ -541,6 +641,36 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       return;
     }
     if (target.at === "group") {
+      if (isPaletteTether(kind)) {
+        if (target.group !== "supports" && target.group !== "damagers")
+          return setError("Drop player tethers on Supports or Damagers");
+        const pairs = crossRolePairs();
+        if (!pairs.length) return setError("This step needs both supports and damagers to make tethers");
+        const bond = {
+          id: "bond_" + Math.random().toString(36).slice(2, 10),
+          // Show the same set on both complementary group cards.
+          group: target.group,
+          label: PALETTE_LABEL[kind],
+        };
+        await run(
+          pairs.map(([support, damager]) => ({
+            op: "add_entity" as const,
+            spec: {
+              type: "tether" as const,
+              from: support.id,
+              to: damager.id,
+              style: kind === "together" ? "close" as const : "far" as const,
+              range: 200,
+              width: 8,
+              name: `${PALETTE_LABEL[kind]}: ${support.name || jobLabel(support.job)} ↔ ${damager.name || jobLabel(damager.job)}`,
+              bond,
+              ...stamp(),
+            },
+          }))
+        );
+        setSelected(null);
+        return;
+      }
       const people = membersOf(target.group);
       if (!people.length) return setError(`No ${target.group} in this step to bind to`);
       const from = paletteNeedsSource(kind) ? await sourceForAimed() : undefined;
@@ -563,7 +693,15 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       setSelected(null);
       return;
     }
+    if (target.at === "player") {
+      if (!isPaletteTether(kind)) return;
+      setPendingTether({ kind, from: target.id });
+      setSelected(target.id);
+      setError("");
+      return;
+    }
     if (target.at === "source") {
+      if (isPaletteTether(kind)) return setError("Drop this tether on its first player");
       const taken = plan!.entities.filter(
         (e) =>
           e.type === "zone" &&
@@ -583,12 +721,50 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       if (created) setSelected(created.id);
       return;
     }
+    if (isPaletteTether(kind)) return setError("Drop this tether on its first player");
     const res = await run({
       op: "add_entity",
       spec: paletteSpec(kind, { x: pt.x, y: pt.y, ...stamp() }) as never,
     });
     const created = res.values[0] as { id: string } | null;
     if (created) setSelected(created.id);
+  }
+
+  /** Finish the tether whose first endpoint was chosen by the palette drop. */
+  async function finishTether(to: string) {
+    const pending = pendingTether;
+    if (!pending) return;
+    const fromPlayer = plan!.entities.find(
+      (e): e is PlayerEntity => e.id === pending.from && e.type === "player"
+    );
+    const toPlayer = plan!.entities.find(
+      (e): e is PlayerEntity => e.id === to && e.type === "player"
+    );
+    if (!fromPlayer || !toPlayer) return setError("Choose a player for the other end of the tether");
+    if (fromPlayer.id === toPlayer.id) return setError("Choose a different player for the other end");
+    setPendingTether(null);
+    setError("");
+    // The server accepts caller-provided entity IDs. Carrying one random ID in
+    // both the optimistic and authoritative operation avoids remapping and
+    // makes the tether visible without waiting for the network round trip.
+    const id = `tether_${crypto.randomUUID()}`;
+    setSelected(id);
+    const res = await run({
+      op: "add_entity",
+      spec: {
+        id,
+        type: "tether",
+        from: fromPlayer.id,
+        to: toPlayer.id,
+        style: pending.kind === "together" ? "close" : "far",
+        range: 200,
+        width: 8,
+        name: `${PALETTE_LABEL[pending.kind]}: ${fromPlayer.name || jobLabel(fromPlayer.job)} ↔ ${toPlayer.name || jobLabel(toPlayer.job)}`,
+        ...stamp(),
+      },
+    });
+    const created = res.values[0] as { id: string } | null;
+    if (created && created.id !== id) setSelected(created.id);
   }
 
   /** What every drop carries: the step that declared it, and the slot it joins. */
@@ -707,21 +883,54 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                     <span>{count === 1 ? "Off" : `${count}×`}</span>
                   </button>
                 ))}
-                <button
-                  type="button"
-                  className={`ml-0.5 flex min-w-[88px] items-center justify-center gap-1.5 whitespace-nowrap border-l border-ink-600 px-2 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-violet-300 ${
-                    symmetryCount > 1
-                      ? "bg-violet-500/20 font-medium text-violet-100 hover:bg-violet-500/30"
-                      : "text-ink-400 hover:bg-ink-700 hover:text-ink-200"
-                  }`}
-                  title="Toggle mirror / rotational symmetry (Q)"
-                  aria-label={`Q: ${symmetryKind}`}
-                  onClick={() => setSymmetryKind((kind) => (kind === "mirror" ? "rotate" : "mirror"))}
+                <span
+                  className="ml-0.5 flex items-center border-l border-ink-600 pl-1.5 pr-1 text-[10px] text-ink-400"
+                  aria-hidden="true"
                 >
-                  <kbd className="text-[10px] font-normal text-ink-400">Q</kbd>
-                  <span aria-hidden="true">{symmetryKind === "mirror" ? "↔" : "↻"}</span>
-                  <span>{symmetryKind === "mirror" ? "Mirror" : "Rotate"}</span>
-                </button>
+                  <kbd>Q</kbd>
+                </span>
+                {(
+                  [
+                    {
+                      kind: "mirror" as const,
+                      glyph: "↔",
+                      label: symmetryCount > 1 ? "Mirror" : "Translate",
+                      title:
+                        symmetryCount > 1
+                          ? "Mirrored symmetry — multi-select drags slide together (Q)"
+                          : "Multi-select drags slide the whole selection (Q)",
+                      on: "bg-sky-500/30 font-semibold text-sky-100 shadow-sm ring-1 ring-inset ring-sky-400/70",
+                      focus: "focus-visible:outline-sky-300",
+                    },
+                    {
+                      kind: "rotate" as const,
+                      glyph: "↻",
+                      label: "Rotate",
+                      title:
+                        symmetryCount > 1
+                          ? "Rotational symmetry — multi-select drags orbit the arena centre (Q)"
+                          : "Multi-select drags orbit the arena centre (Q)",
+                      on: "bg-amber-500/30 font-semibold text-amber-100 shadow-sm ring-1 ring-inset ring-amber-400/70",
+                      focus: "focus-visible:outline-amber-300",
+                    },
+                  ]
+                ).map((mode) => (
+                  <button
+                    key={mode.kind}
+                    type="button"
+                    className={`flex min-w-[76px] items-center justify-center gap-1 whitespace-nowrap rounded px-1.5 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] ${mode.focus} ${
+                      symmetryKind === mode.kind
+                        ? mode.on
+                        : "text-ink-400 hover:bg-ink-700 hover:text-ink-200"
+                    }`}
+                    title={mode.title}
+                    aria-pressed={symmetryKind === mode.kind}
+                    onClick={() => setSymmetryKind(mode.kind)}
+                  >
+                    <span aria-hidden="true">{mode.glyph}</span>
+                    <span>{mode.label}</span>
+                  </button>
+                ))}
               </div>
               <span className="label">Drag moves</span>
               <select
@@ -792,8 +1001,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 const kind = kindOf(ev);
                 if (!kind) return;
                 ev.preventDefault();
+                const player = isPaletteTether(kind) ? playerAt(pt) : undefined;
                 const on = sourceAt(pt);
-                void drop(kind, pt, on ? { at: "source", id: on } : { at: "free" });
+                void drop(
+                  kind,
+                  pt,
+                  player ? { at: "player", id: player } : on ? { at: "source", id: on } : { at: "free" }
+                );
                 setCarrying(null);
                 setHover(null);
               }}
@@ -806,12 +1020,18 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                   Filling “{mechLabel(plan, openMech)}” — what you drop goes in it
                 </div>
               )}
+              {pendingTether && (
+                <div className="absolute inset-x-2 bottom-2 z-20 flex items-center justify-center gap-2 rounded bg-blue-950/95 px-3 py-2 text-xs text-blue-100 shadow-lg">
+                  Click the player for the other end of {PALETTE_LABEL[pendingTether.kind].toLowerCase()}.
+                  <button className="underline" onClick={() => setPendingTether(null)}>Cancel</button>
+                </div>
+              )}
               <Scene
                 plan={plan}
                 stepId={step.id}
                 shown={shown}
                 size={size}
-                selected={selected}
+                selected={selection}
                 editable={editable}
                 symmetryCount={symmetryCount}
                 symmetryKind={symmetryKind}
@@ -819,19 +1039,29 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 highlight={highlight}
                 glide={glide}
                 onward={onward}
-                onSelect={setSelected}
+                onPick={(id) => {
+                  if (!pendingTether) return false;
+                  const target = plan.entities.find((e) => e.id === id);
+                  if (target?.type === "player") void finishTether(target.id);
+                  else setError("Choose a player for the other end of the tether");
+                  return true;
+                }}
+                onSelect={setSelection}
                 onResize={resize}
-                onMove={(id, x, y) =>
-                  run({
-                    op: "update_entity",
-                    id,
-                    patch: { x, y },
-                    stepId: scope === "step" ? step.id : undefined,
-                    // In a mechanic that goes two ways, a move belongs to the
-                    // reading you are playing. Nothing has to be said about it:
-                    // you moved somebody while looking at this reading.
-                    variant: scope === "step" ? playing : undefined,
-                  })
+                onMove={(moves) =>
+                  run(
+                    moves.map(({ id, x, y }) => ({
+                      op: "update_entity" as const,
+                      id,
+                      patch: { x, y },
+                      stepId: scope === "step" ? step.id : undefined,
+                      // In a mechanic that goes two ways, a move belongs to the
+                      // reading you are playing. Nothing has to be said about it:
+                      // you moved somebody while looking at this reading.
+                      variant: scope === "step" ? playing : undefined,
+                    })),
+                    false
+                  )
                 }
               />
             </div>
@@ -940,8 +1170,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           <h2 className="label mb-2">Add</h2>
           <p className="mb-2 text-xs text-ink-400">
             Drag onto the floor to place one, onto a group to give everybody one, or onto a boss,
-            add, or bait anchor to have it thrown at whoever stands nearest. Scroll over anything on the
-            arena to size it — shift for fine steps.
+            add, or bait anchor to have it thrown at whoever stands nearest. Drop a tether on one player,
+            then click the other. Scroll over anything on the arena to size it — shift for fine steps.
           </p>
           <div className="mb-4 grid grid-cols-2 gap-1">
             {PALETTE.map((k) => (
@@ -1062,7 +1292,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               title="Put the saved waymarks and arena back"
               onClick={async () => {
                 const r = await api.applyEncounter(planId).catch((e: Error) => setError(e.message));
-                if (r) setPlan(hydratePlan(r.plan));
+                if (r) showServerPlan(r.plan);
               }}
             >
               use saved
@@ -2358,7 +2588,11 @@ const GROUP_LABEL: Record<GroupId, string> = {
 };
 
 /** Where a palette item was let go, which is the whole of what it means. */
-type DropTarget = { at: "free" } | { at: "group"; group: GroupId } | { at: "source"; id: string };
+type DropTarget =
+  | { at: "free" }
+  | { at: "group"; group: GroupId }
+  | { at: "source"; id: string }
+  | { at: "player"; id: string };
 
 /** A glyph, so the palette reads as shapes rather than as four words. */
 function PaletteGlyph({ kind }: { kind: PaletteKind }) {
@@ -2366,17 +2600,14 @@ function PaletteGlyph({ kind }: { kind: PaletteKind }) {
   return (
     <svg data-palette-glyph width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
       {(kind === "boss" || kind === "add") && (
-        <g>
-          <circle
-            cx="15"
-            cy="15"
-            r={kind === "boss" ? "12" : "9"}
-            fill={kind === "boss" ? "#8f3029" : "#a64b42"}
-            stroke="#e8edf5"
-            strokeWidth="2"
-          />
-          <path d="M10 12 l2 -5 l3 4 l3 -4 l2 5" fill="none" stroke="#e0b152" strokeWidth="1.8" />
-        </g>
+        <image
+          href={assetUrl(kind === "boss" ? "actor/boss" : "actor/enemy")}
+          x="1"
+          y="1"
+          width="28"
+          height="28"
+          preserveAspectRatio="xMidYMid meet"
+        />
       )}
       {kind === "circle" && (
         <circle cx="15" cy="15" r="9" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
@@ -2415,6 +2646,20 @@ function PaletteGlyph({ kind }: { kind: PaletteKind }) {
           <circle cx="15" cy="15" r="11" fill="rgba(255,112,67,0.35)" />
           <circle cx="15" cy="15" r="3" fill="#e8edf5" stroke="none" />
           <path d="M15 4v5 M15 21v5 M4 15h5 M21 15h5 M7.2 7.2l3.5 3.5 M19.3 19.3l3.5 3.5 M22.8 7.2l-3.5 3.5 M10.7 19.3l-3.5 3.5" />
+        </g>
+      )}
+      {(kind === "together" || kind === "apart") && (
+        <g fill="none" stroke={stroke} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M3 15 H27" />
+          {kind === "together" ? (
+            <>
+              <path d="M7 10 l5 5 l-5 5 M23 10 l-5 5 l5 5" />
+            </>
+          ) : (
+            <>
+              <path d="M12 10 l-5 5 l5 5 M18 10 l5 5 l-5 5" />
+            </>
+          )}
         </g>
       )}
       {kind === "anchor" && (

@@ -11,6 +11,7 @@ import type { Op } from "../shared/apply";
 import { guardVariants } from "./variants";
 import type { PlanRole, User } from "../shared/schema";
 import type { HistoryActor } from "../shared/history";
+import { BackgroundUploadError, serveBackground, uploadBackground } from "./backgrounds";
 
 export { PlanAgent } from "./plan-agent";
 export { Registry } from "./registry";
@@ -58,6 +59,18 @@ app.route("/api/chat", chatRoutes);
 app.get("/api/me", (c) => {
   const user = c.get("user");
   return c.json({ user, devAuth: isDevAuth(c.env), discordAuth: isDiscordAuth(c.env) });
+});
+
+/* ---------------------------------------------------------- backgrounds */
+
+app.post("/api/backgrounds", async (c) => {
+  const user = requireUser(c);
+  try {
+    return c.json(await uploadBackground(c.req.raw, c.env, user.id), 201);
+  } catch (error) {
+    if (error instanceof BackgroundUploadError) throw new HttpError(error.status, error.message);
+    throw error;
+  }
 });
 
 /* ----------------------------------------------------------------- tokens */
@@ -312,6 +325,10 @@ app.all("/api/*", (c) => c.json({ error: "Not found" }, 404));
 export default {
   async fetch(request: Request, env: AppEnv, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (request.method === "GET" && url.pathname.startsWith("/backgrounds/")) {
+      return serveBackground(request, env, ctx);
+    }
 
     // Remote MCP server. Authenticated with an `rp_` API token; the resulting
     // user identity is handed to the McpAgent as props.

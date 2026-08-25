@@ -1,6 +1,7 @@
 import type { Op } from "../shared/apply";
 import type { Plan, PlanRole, PlanSummary, User } from "../shared/schema";
 import type { HistoryResult, PlanHistory } from "../shared/history";
+import { prepareBackground } from "./background-image";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -14,6 +15,21 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   me: () => req<{ user: User | null; devAuth: boolean }>("/api/me"),
+
+  uploadBackground: async (file: File) => {
+    const prepared = await prepareBackground(file);
+    const uploaded = await req<{ url: string; width: number; height: number }>("/api/backgrounds", {
+      method: "POST",
+      headers: { "content-type": prepared.file.type || "application/octet-stream" },
+      body: prepared.file,
+    });
+    return {
+      ...uploaded,
+      resized: prepared.resized,
+      originalWidth: prepared.originalWidth,
+      originalHeight: prepared.originalHeight,
+    };
+  },
 
   listPlans: () => req<PlanSummary[]>("/api/plans"),
   createPlan: (body: { name: string; encounter?: string; withParty?: boolean }) =>

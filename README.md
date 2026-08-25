@@ -108,6 +108,16 @@ player. Drag the source and its beams swing with it. `npm run e2e:source` covers
 | the big **Party** / **Supports** / **Damagers** / **Tanks** / **Healers** panels beside the arena | one each, bound to those players — proteans, beams and line stacks thrown from the boss |
 | a **bait anchor** | a mechanic on whoever stands nearest it; a second of the same kind takes the second-nearest, and so on |
 
+**Together tether** and **Go-far tether** are player-to-player mechanics. Drop either on a
+player, then click a second player to draw a link between them. Dropping one on **Supports**
+or **Damagers** still creates the four standard cross-role pairs (MT–M1, OT–M2, H1–R1,
+H2–R2). Slim, sharp inward/outward chevrons communicate the required movement, with more chevrons on
+longer links and a break in the guide line around them; the links turn green when their
+configured arena-unit range is satisfied and red when it is not. Selecting
+one link edits the range for the whole four-tether set. Its **from player** and **to player**
+selectors can retarget that individual link to any two party members; in step scope, that
+pairing changes only for the current step.
+
 They are **Circle** (a desolation), **Donut**, **Protean**, **Beam**, **Stack ×8 / ×4 / ×2**
 (the number is how many it wants, and is drawn on it), **Line stack** (a beam from the boss
 that people line up in), **Flare** (a big circle its carrier takes away from everyone) and
@@ -124,10 +134,11 @@ bait anchor puts down green, and everything the boss throws a shade of red-orang
 shade to a cast so two of the same shape are still two. `npm run e2e:palette` drags each of
 them onto each kind of target.
 
-**Scroll over anything on the arena to size it** — 8% a notch, 2% with shift held. It changes
-the real dimensions rather than a display scale, so a donut still reports the radius and hole
-it actually has, and a scroll over a shape a group owns resizes the whole set. Notches are
-multiplied together and land as one edit. **Ctrl+scroll** does the same to its opacity.
+**Scroll over anything on the arena to size it** — 8% a notch, 2% with shift held. On a
+tether, scrolling changes its required range instead of its visual scale or stroke width.
+Otherwise it changes the real dimensions rather than a display scale, so a donut still reports
+the radius and hole it actually has, and a scroll over a shape a group owns resizes the whole
+set. Notches are multiplied together and land as one edit. **Ctrl+scroll** does the same to its opacity.
 `npm run e2e:size` covers both.
 
 What a group takes is one object with several faces, not several objects. The eight

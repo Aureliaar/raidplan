@@ -65,7 +65,7 @@ await page.keyboard.press("2");
 await page.keyboard.press("q");
 await page.locator("header select").selectOption("all");
 const from = at(-220, -120);
-const to = at(-160, -90);
+const to = at(120, -220);
 await page.mouse.move(from.x, from.y);
 await page.mouse.down();
 await page.mouse.move(to.x, to.y, { steps: 12 });
@@ -82,7 +82,7 @@ const live = await page.evaluate(
   },
   [ot.id]
 );
-if (!live.other || Math.hypot(live.other.x - 160, live.other.y - 90) > 12)
+if (!live.other || Math.hypot(live.other.x + 120, live.other.y - 220) > 12)
   fail(`counterpart waited for drop instead of moving live: ${JSON.stringify(live.other)}`);
 else console.log("mid-drag: rotational counterpart is already moving");
 if (!live.selected.includes(mt.id) || !live.selected.includes(ot.id))
@@ -95,8 +95,8 @@ await page.waitForTimeout(700);
 plan = await read();
 mt = plan.entities.find((e) => e.name === "MT");
 ot = plan.entities.find((e) => e.name === "OT");
-if (Math.hypot(mt.x + 160, mt.y + 90) > 8) fail(`MT moved to ${mt.x},${mt.y}`);
-if (Math.hypot(ot.x - 160, ot.y - 90) > 8)
+if (Math.hypot(mt.x - 120, mt.y + 220) > 8) fail(`MT orbited to ${mt.x},${mt.y}`);
+if (Math.hypot(ot.x + 120, ot.y - 220) > 8)
   fail(`same-role rotational counterpart moved to ${ot.x},${ot.y}`);
 else console.log("loose same-role player counterpart follows a rotational move");
 

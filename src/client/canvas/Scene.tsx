@@ -18,6 +18,7 @@ import {
   Rect,
   RegularPolygon,
   Ring,
+  Shape,
   Stage,
   Text,
   Wedge,
@@ -91,7 +92,7 @@ export interface SceneProps {
   /** Which reading of each mechanic is being played, by mechanic id. */
   shown?: Record<string, string>;
   size: number;
-  selected: string | null;
+  selected: string[];
   editable: boolean;
   symmetryCount?: SymmetryCount;
   symmetryKind?: SymmetryKind;
@@ -110,9 +111,11 @@ export interface SceneProps {
    * should not land it again.
    */
   onward?: boolean;
-  onSelect(id: string | null): void;
-  onMove(id: string, x: number, y: number): void;
-  /** Wheel over something: resize it by that factor. Absent, the wheel does nothing. */
+  /** Intercept a click before normal selection/dragging, for two-click authoring tools. */
+  onPick?(id: string): boolean;
+  onSelect(ids: string[]): void;
+  onMove(moves: { id: string; x: number; y: number }[]): void;
+  /** Wheel over something: resize it (or a tether's range) by that factor. */
   onResize?(id: string, factor: number, what: "size" | "opacity"): void;
 }
 
@@ -235,6 +238,7 @@ export function Scene({
   highlight,
   glide = 0,
   onward = true,
+  onPick,
   onSelect,
   onMove,
   onResize,
@@ -248,8 +252,25 @@ export function Scene({
    * is solved from this, so the plan you are looking at while you drag is the
    * plan you will get when you let go.
    */
-  const [dragging, setDragging] = useState<{ id: string; x: number; y: number } | null>(null);
-  useEffect(() => setDragging(null), [plan.rev]);
+  const [dragging, setDragging] = useState<Map<string, { x: number; y: number }> | null>(null);
+  const dragStart = useRef<{
+    source: string;
+    sourceAt: { x: number; y: number };
+    pivot: { x: number; y: number };
+    snapSymmetry: boolean;
+    moved: boolean;
+    members: Map<string, { x: number; y: number; shownX: number; shownY: number }>;
+  } | null>(null);
+  const [marquee, setMarquee] = useState<{
+    from: { x: number; y: number };
+    to: { x: number; y: number };
+    additive: boolean;
+  } | null>(null);
+  useEffect(() => {
+    // A response to an earlier edit can arrive during a new drag. Preserve the
+    // gesture already in the hand; its drop will be serialized after that edit.
+    if (!dragStart.current) setDragging(null);
+  }, [plan.rev]);
 
   /**
    * Off-layer things are there for reference only: no clicks, no drags. A bonded
@@ -258,42 +279,25 @@ export function Scene({
    */
   /** The other layer's things: still drawn, but faded to say "not now". */
   const offLayer = (e: Entity) => (layer === "markers" ? e.type !== "marker" : e.type === "marker");
-  const frozen = (e: Entity) => offLayer(e) || !!e.bond || going.has(e.id);
+  // Bonded shapes are faces of a group-owned set and cannot be selected alone.
+  // A tether is already immovable, though, and selecting one is how its shared
+  // style/range becomes editable in the inspector.
+  const frozen = (e: Entity) => offLayer(e) || (!!e.bond && e.type !== "tether") || going.has(e.id);
 
   const committed = useMemo(() => entitiesForStep(plan, stepId, undefined, shown), [plan, stepId, shown]);
   const selectedIds = useMemo(
     () =>
       new Set(
-        selected && symmetryCount > 1
-          ? symmetryMemberIds(plan, selected, symmetryKind, symmetryCount as 2 | 4, committed)
-          : selected
-            ? [selected]
-            : []
+        selected.flatMap((id) =>
+          symmetryCount > 1
+            ? symmetryMemberIds(plan, id, symmetryKind, symmetryCount as 2 | 4, committed)
+            : [id]
+        )
       ),
     [plan, selected, symmetryCount, symmetryKind, committed]
   );
   const settled = useMemo(() => {
-    const updates =
-      dragging && symmetryCount > 1
-        ? symmetricUpdates(
-            plan,
-            { op: "update_entity", id: dragging.id, patch: { x: dragging.x, y: dragging.y } },
-            symmetryKind,
-            symmetryCount as 2 | 4,
-            committed
-          )
-        : dragging
-          ? [{ op: "update_entity" as const, id: dragging.id, patch: { x: dragging.x, y: dragging.y } }]
-          : [];
-    const live = updates.length
-      ? new Map(
-          updates.map((update) => [
-            update.id,
-            { x: Number(update.patch.x), y: Number(update.patch.y) },
-          ])
-        )
-      : undefined;
-    const sorted = sortForDrawing(live ? entitiesForStep(plan, stepId, live, shown) : committed);
+    const sorted = sortForDrawing(dragging ? entitiesForStep(plan, stepId, dragging, shown) : committed);
     // On the waymark layer the marks come to the top: they normally lie on the
     // floor under the party, which is right for reading a plan and useless for
     // dropping an A on the exact tile you mean.
@@ -333,6 +337,106 @@ export function Scene({
     const base = anchorBase.get(id);
     return { x: node.x() - (base?.x ?? 0), y: node.y() - (base?.y ?? 0) };
   };
+
+  // Every authored symmetry transform is centred on the arena. Keeping the
+  // pivot fixed makes a selection's rotation predictable before, during, and
+  // after entities cross one another.
+  const selectionPivot = { x: 0, y: 0 };
+
+  function beginGroupDrag(id: string, picked: Set<string> = selectedIds) {
+    const source = committed.find((e) => e.id === id);
+    if (!source) return;
+    const members = new Map<string, { x: number; y: number; shownX: number; shownY: number }>();
+    for (const e of committed) {
+      if (!picked.has(e.id) || frozen(e) || e.locked || e.type === "tether") continue;
+      const base = anchorBase.get(e.id);
+      members.set(e.id, {
+        x: e.x - (base?.x ?? 0),
+        y: e.y - (base?.y ?? 0),
+        shownX: e.x,
+        shownY: e.y,
+      });
+    }
+    const sourceBase = members.get(id);
+    if (!sourceBase) return;
+    dragStart.current = {
+      source: id,
+      sourceAt: { x: sourceBase.x, y: sourceBase.y },
+      pivot: selectionPivot,
+      snapSymmetry: symmetryCount > 1 && (selected.length === 1 || !selectedIds.has(id)),
+      moved: false,
+      members,
+    };
+  }
+
+  function moveGroup(id: string, at: { x: number; y: number }) {
+    const start = dragStart.current;
+    if (!start || start.source !== id) return null;
+    const dx = at.x - start.sourceAt.x;
+    const dy = at.y - start.sourceAt.y;
+    if (Math.hypot(dx, dy) > 0.5) start.moved = true;
+    if (start.members.size > 1 && symmetryKind === "rotate") {
+      const source = start.members.get(id)!;
+      const sourceBase = { x: source.shownX - source.x, y: source.shownY - source.y };
+      const targetShown = { x: at.x + sourceBase.x, y: at.y + sourceBase.y };
+      const fromAngle = Math.atan2(source.shownY - start.pivot.y, source.shownX - start.pivot.x);
+      const toAngle = Math.atan2(targetShown.y - start.pivot.y, targetShown.x - start.pivot.x);
+      const angle = toAngle - fromAngle;
+      const fromRadius = Math.hypot(source.shownX - start.pivot.x, source.shownY - start.pivot.y);
+      const toRadius = Math.hypot(targetShown.x - start.pivot.x, targetShown.y - start.pivot.y);
+      const radialScale = fromRadius > 0.001 ? toRadius / fromRadius : 1;
+      const cos = Math.cos(angle);
+      const sin = Math.sin(angle);
+      const live = new Map<string, { x: number; y: number }>();
+      for (const [memberId, member] of start.members) {
+        const relX = member.shownX - start.pivot.x;
+        const relY = member.shownY - start.pivot.y;
+        const shownX = start.pivot.x + (relX * cos - relY * sin) * radialScale;
+        const shownY = start.pivot.y + (relX * sin + relY * cos) * radialScale;
+        // Anchored entities store an offset rather than their resolved position.
+        live.set(memberId, {
+          x: member.x + shownX - member.shownX,
+          y: member.y + shownY - member.shownY,
+        });
+      }
+      setDragging(live);
+      return live;
+    }
+    if (start.snapSymmetry) {
+      const updates = symmetricUpdates(
+        plan,
+        { op: "update_entity", id, patch: { x: at.x, y: at.y } },
+        symmetryKind,
+        symmetryCount as 2 | 4,
+        committed
+      );
+      const live = new Map(
+        updates.map((update) => [
+          update.id,
+          { x: Number(update.patch.x), y: Number(update.patch.y) },
+        ])
+      );
+      setDragging(live);
+      return live;
+    }
+    const source = start.members.get(id)!;
+    const live = new Map<string, { x: number; y: number }>();
+    for (const [memberId, member] of start.members) {
+      let mx = dx;
+      let my = dy;
+      if (symmetryCount > 1 && symmetryKind === "mirror") {
+        const sx = source.shownX < start.pivot.x ? -1 : 1;
+        const sy = source.shownY < start.pivot.y ? -1 : 1;
+        const tx = member.shownX < start.pivot.x ? -1 : 1;
+        const ty = member.shownY < start.pivot.y ? -1 : 1;
+        mx *= sx * tx;
+        if (symmetryCount === 4) my *= sy * ty;
+      }
+      live.set(memberId, { x: member.x + mx, y: member.y + my });
+    }
+    setDragging(live);
+    return live;
+  }
 
   /**
    * Konva would hand us the topmost shape, which means a big AoE drawn over the
@@ -375,16 +479,37 @@ export function Scene({
 
   function pickAt(evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
     const best = under(evt);
+    const additive = "shiftKey" in evt.evt && evt.evt.shiftKey;
     if (!best) {
-      onSelect(null);
+      const point = evt.target.getStage()?.getPointerPosition();
+      if (editable && point && evt.evt instanceof MouseEvent && evt.evt.button === 0) {
+        setMarquee({ from: point, to: point, additive });
+      } else if (!additive) {
+        onSelect([]);
+      }
       return;
     }
-    onSelect(best.id);
+    if (onPick?.(best.id)) return;
+    if (additive) {
+      onSelect(selected.includes(best.id) ? selected.filter((id) => id !== best.id) : [...selected, best.id]);
+      return;
+    }
+    if (!selectedIds.has(best.id)) onSelect([best.id]);
     const entity = entities.find((e) => e.id === best!.id);
     // A tether is two endpoints and nothing else, so there is nothing to drag.
     // A bait can be dragged: the drop lands as an offset from its anchor.
     if (editable && entity && !entity.locked && entity.type !== "tether") {
       const node = best.node;
+      // React has not rendered a newly clicked selection yet, so resolve its
+      // symmetry partners now instead of waiting for a second gesture.
+      const picked = selectedIds.has(best.id)
+        ? selectedIds
+        : new Set(
+            symmetryCount > 1
+              ? symmetryMemberIds(plan, best.id, symmetryKind, symmetryCount as 2 | 4, committed)
+              : [best.id]
+          );
+      beginGroupDrag(best.id, picked);
       node.startDrag(evt.evt as never);
       // A drag we started by hand is not always ended by Konva: a click with no
       // movement can leave the node latched to the pointer, so it then follows
@@ -399,10 +524,36 @@ export function Scene({
     }
   }
 
+  function dragSelection(evt: Konva.KonvaEventObject<MouseEvent>) {
+    if (!marquee) return;
+    const point = evt.target.getStage()?.getPointerPosition();
+    if (point) setMarquee({ ...marquee, to: point });
+  }
+
+  function finishSelection(evt: Konva.KonvaEventObject<MouseEvent>) {
+    if (!marquee) return;
+    const point = evt.target.getStage()?.getPointerPosition() ?? marquee.to;
+    const left = Math.min(marquee.from.x, point.x);
+    const top = Math.min(marquee.from.y, point.y);
+    const box = { x: left, y: top, width: Math.abs(point.x - marquee.from.x), height: Math.abs(point.y - marquee.from.y) };
+    const hits = entities
+      .filter((e) => !frozen(e))
+      .filter((e) => {
+        const node = evt.target.getStage()?.findOne(`#${e.id}`);
+        if (!node) return false;
+        const r = node.getClientRect();
+        return r.x <= box.x + box.width && r.x + r.width >= box.x && r.y <= box.y + box.height && r.y + r.height >= box.y;
+      })
+      .map((e) => e.id);
+    onSelect(marquee.additive ? [...new Set([...selected, ...hits])] : hits);
+    setMarquee(null);
+  }
+
   /**
    * The wheel sizes whatever is under the pointer, without selecting it first —
-   * one gesture, no mode. A bonded shape resizes its whole set, because the set
-   * is the thing you are pointing at.
+   * one gesture, no mode. For a tether that means its required range, not its
+   * visual stroke. A bonded shape updates its whole set, because the set is the
+   * thing you are pointing at.
    */
   function wheelAt(evt: Konva.KonvaEventObject<WheelEvent>) {
     if (!editable || !onResize) return;
@@ -420,6 +571,8 @@ export function Scene({
       height={size}
       onMouseDown={pickAt}
       onTouchStart={pickAt}
+      onMouseMove={dragSelection}
+      onMouseUp={finishSelection}
       onWheel={wheelAt}
     >
       <Layer>
@@ -439,13 +592,24 @@ export function Scene({
                 scaleX={e.scale}
                 scaleY={e.scale}
                 opacity={e.opacity * (offLayer(e) ? 0.4 : 1)}
-                onDragMove={(ev) => setDragging({ id: e.id, ...poseOf(e.id, ev.target) })}
+                onDragMove={(ev) => moveGroup(e.id, poseOf(e.id, ev.target))}
                 onDragEnd={(ev) => {
                   const pose = poseOf(e.id, ev.target);
+                  if (!dragStart.current?.moved) {
+                    dragStart.current = null;
+                    setDragging(null);
+                    return;
+                  }
                   // Held until the new revision arrives, so the shape does not
                   // snap back to its old pose for the length of a round trip.
-                  setDragging({ id: e.id, ...pose });
-                  onMove(e.id, Math.round(pose.x), Math.round(pose.y));
+                  const final = moveGroup(e.id, pose) ?? new Map([[e.id, pose]]);
+                  const moves = [...final].map(([id, p]) => ({
+                    id,
+                    x: Math.round(p.x),
+                    y: Math.round(p.y),
+                  }));
+                  onMove(moves);
+                  dragStart.current = null;
                 }}
               >
                 <GrabTarget entity={e} />
@@ -480,9 +644,162 @@ export function Scene({
                   <EntityShape entity={e} />
                 </Group>
               ))}
+          {/* Transform geometry is guidance, so it stays legible over tokens,
+              telegraphs, labels, and the waymark ghost pass. */}
+          {selectedIds.size > 1 && (
+            <TransformAxis
+              kind={symmetryKind}
+              count={symmetryCount}
+              pivot={selectionPivot}
+              entities={entities.filter((e) => selectedIds.has(e.id))}
+            />
+          )}
         </Group>
       </Layer>
+      {marquee && (
+        <Layer listening={false}>
+          <Rect
+            x={Math.min(marquee.from.x, marquee.to.x)}
+            y={Math.min(marquee.from.y, marquee.to.y)}
+            width={Math.abs(marquee.to.x - marquee.from.x)}
+            height={Math.abs(marquee.to.y - marquee.from.y)}
+            fill="rgba(122, 162, 247, 0.14)"
+            stroke="#7aa2f7"
+            strokeWidth={1.5}
+            dash={[6, 4]}
+          />
+        </Layer>
+      )}
     </Stage>
+  );
+}
+
+function TransformAxis({
+  kind,
+  count,
+  pivot,
+  entities,
+}: {
+  kind: SymmetryKind;
+  count: SymmetryCount;
+  pivot: { x: number; y: number };
+  entities: Entity[];
+}) {
+  const reach = Math.max(55, ...entities.map((e) => Math.hypot(e.x - pivot.x, e.y - pivot.y) + radiusHint(e) + 18));
+  // Rotate is amber, slide/mirror is sky — the same pair as the toolbar toggle,
+  // so a glance at either tells you what a multi-select drag is about to do.
+  const color = kind === "rotate" ? "rgba(252, 211, 77, 0.95)" : "rgba(125, 211, 252, 0.95)";
+  const fill = kind === "rotate" ? "rgba(217, 119, 6, 0.78)" : "rgba(2, 132, 199, 0.78)";
+  const under = "rgba(23, 26, 35, 0.68)";
+  const label = kind === "rotate" ? "ROTATE" : count > 1 ? "MIRROR" : "TRANSLATE";
+
+  const caption = (x: number, y: number) => (
+    <Text
+      x={x - 60}
+      y={y}
+      width={120}
+      align="center"
+      text={label}
+      fontSize={15}
+      fontStyle="bold"
+      fill={color}
+      stroke={under}
+      strokeWidth={4}
+      fillAfterStrokeEnabled
+      letterSpacing={2}
+    />
+  );
+
+  if (kind === "mirror" && count === 1) {
+    // Symmetry is off, so a drag slides the whole selection; there is no axis
+    // to show. Mark the selection centroid with a move cross instead.
+    const cx = entities.reduce((sum, e) => sum + e.x, 0) / entities.length;
+    const cy = entities.reduce((sum, e) => sum + e.y, 0) / entities.length;
+    return (
+      <Group name="transform-axis" x={cx} y={cy} listening={false} opacity={0.9}>
+        {[0, 90, 180, 270].map((deg) => (
+          <Arrow
+            key={deg}
+            points={[0, 0, 26, 0]}
+            rotation={deg}
+            stroke={under}
+            fill={under}
+            strokeWidth={7}
+            pointerLength={9}
+            pointerWidth={9}
+          />
+        ))}
+        {[0, 90, 180, 270].map((deg) => (
+          <Arrow
+            key={`c${deg}`}
+            points={[0, 0, 26, 0]}
+            rotation={deg}
+            stroke={color}
+            fill={color}
+            strokeWidth={3}
+            pointerLength={9}
+            pointerWidth={9}
+          />
+        ))}
+        <Circle radius={10} fill={fill} stroke={under} strokeWidth={5} />
+        <Circle radius={10} stroke={color} strokeWidth={3} />
+        <Circle radius={3.5} fill="#ffffff" />
+        {caption(0, 22)}
+      </Group>
+    );
+  }
+
+  if (kind === "mirror") {
+    return (
+      <Group name="transform-axis" listening={false} opacity={0.9}>
+        <Line points={[pivot.x, pivot.y - reach, pivot.x, pivot.y + reach]} stroke={under} strokeWidth={7} dash={[10, 8]} />
+        <Line points={[pivot.x, pivot.y - reach, pivot.x, pivot.y + reach]} stroke={color} strokeWidth={3} dash={[10, 8]} />
+        {count === 4 && (
+          <>
+            <Line points={[pivot.x - reach, pivot.y, pivot.x + reach, pivot.y]} stroke={under} strokeWidth={7} dash={[10, 8]} />
+            <Line points={[pivot.x - reach, pivot.y, pivot.x + reach, pivot.y]} stroke={color} strokeWidth={3} dash={[10, 8]} />
+          </>
+        )}
+        <Circle x={pivot.x} y={pivot.y} radius={12} fill={fill} stroke={under} strokeWidth={7} />
+        <Circle x={pivot.x} y={pivot.y} radius={12} stroke={color} strokeWidth={3} />
+        <Circle x={pivot.x} y={pivot.y} radius={3.5} fill="#ffffff" />
+        {caption(pivot.x, pivot.y + 22)}
+      </Group>
+    );
+  }
+  const guide = Math.max(40, ...entities.map((e) => Math.hypot(e.x - pivot.x, e.y - pivot.y)));
+  return (
+    <Group name="transform-axis" x={pivot.x} y={pivot.y} listening={false} opacity={0.9}>
+      <Circle radius={guide} stroke={under} strokeWidth={7} dash={[12, 9]} />
+      <Circle radius={guide} stroke={color} strokeWidth={3} dash={[12, 9]} />
+      {/* Arrowhead on the guide ring, pointing along the direction of travel. */}
+      <Arrow
+        x={guide}
+        y={0}
+        points={[0, -14, 0, 14]}
+        stroke={under}
+        fill={under}
+        strokeWidth={7}
+        pointerLength={10}
+        pointerWidth={10}
+      />
+      <Arrow
+        x={guide}
+        y={0}
+        points={[0, -14, 0, 14]}
+        stroke={color}
+        fill={color}
+        strokeWidth={3}
+        pointerLength={10}
+        pointerWidth={10}
+      />
+      <Circle radius={14} fill={fill} stroke={under} strokeWidth={7} />
+      <Circle radius={14} stroke={color} strokeWidth={3} />
+      <Line points={[-18, 0, 18, 0]} stroke={color} strokeWidth={3} />
+      <Line points={[0, -18, 0, 18]} stroke={color} strokeWidth={3} />
+      <Circle radius={4} fill="#ffffff" />
+      {caption(0, 24)}
+    </Group>
   );
 }
 
@@ -1261,32 +1578,113 @@ function Tether({
   const a = byId.get(entity.from);
   const b = byId.get(entity.to);
   if (!a || !b) return null;
-  const color = entity.color ?? (entity.style === "far" ? "#e05252" : entity.style === "close" ? "#5aa8e0" : "#e0c452");
+  const distance = Math.hypot(b.x - a.x, b.y - a.y);
+  const satisfied = entity.range === undefined
+    ? undefined
+    : entity.style === "close"
+      ? distance <= entity.range
+      : entity.style === "far"
+        ? distance >= entity.range
+        : undefined;
+  // Direction says what to do; colour says whether the current positions do it.
+  const color = satisfied === true
+    ? "#54d68b"
+    : satisfied === false
+      ? "#f05b67"
+      : entity.color ?? (entity.style === "far" ? "#e05252" : entity.style === "close" ? "#5aa8e0" : "#e0c452");
   const dash =
     entity.style === "minus" ? [26, 18] : entity.style === "chain" ? [8, 10] : undefined;
+  const angle = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;
+  const arrow = Math.max(8, Math.min(16, distance / 14));
+  const inward = entity.style === "close";
+  const directional = inward || entity.style === "far";
+  const showChevrons = directional && distance > arrow * 5;
+  // Add a pair at a time as the link grows, keeping the field symmetrical so
+  // the movement direction remains unambiguous at any length.
+  const chevronCount = showChevrons
+    ? Math.max(4, Math.min(12, Math.ceil(distance / 180) * 2))
+    : 0;
+  const chevronSpacing = arrow * 2.15;
+  const chevronLength = arrow * 1.12;
+  const chevronHeight = arrow * 0.46;
+  const chevrons = Array.from({ length: chevronCount }, (_, i) => {
+    const x = distance / 2 + (i - (chevronCount - 1) / 2) * chevronSpacing;
+    const left = x < distance / 2;
+    return { x, dir: inward ? (left ? 1 : -1) : (left ? -1 : 1) };
+  });
+  // Directional tethers are read by their chevrons. Cut the quiet guide out
+  // around the entire chevron field instead of drawing through the marks.
+  const lineWidth = directional ? Math.max(1.5, entity.width * 0.3) : entity.width;
+  const chevronWidth = Math.max(2.5, entity.width * 0.4);
+  const guideSegments = showChevrons
+    ? [
+        [0, Math.max(0, chevrons[0].x - arrow * 1.35)],
+        [Math.min(distance, chevrons.at(-1)!.x + arrow * 1.35), distance],
+      ]
+    : [[0, distance]];
   return (
-    <Fragment>
-      <Line
-        id={entity.id}
-        name="entity"
-        points={[a.x, a.y, b.x, b.y]}
-        stroke={color}
-        strokeWidth={selected ? entity.width * 1.6 : entity.width}
-        dash={dash}
-        opacity={entity.opacity * (dim ? 0.4 : 1)}
-        lineCap="round"
-        hitStrokeWidth={30}
+    <Group
+      id={entity.id}
+      name="entity"
+      x={a.x}
+      y={a.y}
+      rotation={angle}
+      opacity={entity.opacity * (dim ? 0.4 : 1)}
+    >
+      {/* The visual guide has a deliberate central gap, but the full tether
+          remains one continuous target for selecting and wheel gestures. */}
+      <Shape
+        name="tether-hit"
+        fill="#000"
+        sceneFunc={() => undefined}
+        hitFunc={(context, shape) => {
+          context.beginPath();
+          context.rect(0, -15, distance, 30);
+          context.closePath();
+          context.fillShape(shape);
+        }}
       />
+      {guideSegments.map(([from, to], i) => (
+        <Line
+          key={`guide-${i}`}
+          name="tether-guide"
+          points={[from, 0, to, 0]}
+          stroke={color}
+          strokeWidth={selected ? lineWidth * 1.6 : lineWidth}
+          dash={dash}
+          lineCap="round"
+          listening={false}
+        />
+      ))}
+      {showChevrons && (
+        <Group listening={false}>
+          {chevrons.map((mark, i) => (
+            <Line
+              key={i}
+              name="tether-chevron"
+              points={[
+                mark.x - mark.dir * chevronLength, -chevronHeight,
+                mark.x, 0,
+                mark.x - mark.dir * chevronLength, chevronHeight,
+              ]}
+              stroke={color}
+              strokeWidth={chevronWidth}
+              lineCap="square"
+              lineJoin="miter"
+            />
+          ))}
+        </Group>
+      )}
       {(entity.style === "plus" || entity.style === "minus") && (
         <Label
-          x={(a.x + b.x) / 2}
-          y={(a.y + b.y) / 2}
+          x={distance / 2}
+          y={0}
           text={entity.style === "plus" ? "+" : "−"}
           size={70}
           color={color}
         />
       )}
-    </Fragment>
+    </Group>
   );
 }
 

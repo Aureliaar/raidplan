@@ -39,5 +39,8 @@ Board object sprite sheet distributed by
 source snapshot used was commit `aa170abe46a586c614a1476d418e4da64fda07f6`. The images are
 FINAL FANTASY XIV game assets © SQUARE ENIX CO., LTD.
 
+The default enemy and boss icons (`public/assets/actor/enemy.png` and `boss.svg`) were
+downloaded from RaidPlan's public FFXIV asset CDN (`large-enemy.png` and `ff-boss.svg`).
+
 If you deploy this publicly and would rather not host that art, delete `public/assets` and
 run `npm run assets:manifest` — every renderer falls back to the vector tokens it ships with.

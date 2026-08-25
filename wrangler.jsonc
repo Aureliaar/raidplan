@@ -10,8 +10,12 @@
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
     // Everything else falls through to the SPA shell.
-    "run_worker_first": ["/api/*", "/auth/*", "/mcp", "/mcp/*", "/sse", "/sse/*", "/agents/*"]
+    "run_worker_first": ["/api/*", "/auth/*", "/backgrounds/*", "/mcp", "/mcp/*", "/sse", "/sse/*", "/agents/*"]
   },
+
+  "kv_namespaces": [
+    { "binding": "BACKGROUNDS", "id": "88d3b3462c5944c29c91ac46c81b8ca5" }
+  ],
 
   "durable_objects": {
     "bindings": [

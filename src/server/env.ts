@@ -12,7 +12,7 @@ export interface AppEnv extends Env {
   /** HMAC key for session cookies. Required in production. */
   SESSION_SECRET?: string;
   /** "true" enables the passwordless local sign-in. Never set this in production. */
-  DEV_AUTH?: string;
+  DEV_AUTH: string;
   /** Shared secret for POST /auth/bootstrap, which mints an API token with no session. */
   BOOTSTRAP_SECRET?: string;
 

@@ -251,6 +251,8 @@ export const TetherEntitySchema = z.object({
   to: z.string(),
   style: z.enum(TETHER_STYLES).default("line"),
   width: z.number().positive().default(8),
+  /** Distance at which a close/far tether changes from failing to satisfied. */
+  range: z.number().positive().optional(),
 });
 
 export const TextEntitySchema = z.object({

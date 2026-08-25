@@ -225,6 +225,202 @@ const left = doc.entities.filter((e) => e.bond && e.bond.group === "supports");
 if (left.length) fail("removing the set from the Supports row left " + left.length + " behind");
 else console.log("the Supports row removed all four at once");
 
+/* --- a tether dropped on one player is finished by clicking another ------ */
+
+const [m2Point, h1Point] = await page.evaluate(
+  (playerIds) => playerIds.map((id) => window.Konva.stages[0].findOne("#" + id).getAbsolutePosition()),
+  [ids.M2, ids.H1]
+);
+await page.locator("div", { hasText: /^Together tether$/ }).last().dragTo(canvas, { targetPosition: m2Point });
+await page.getByText(/Click the player for the other end/).waitFor();
+const tetherCanvasBox = await canvas.boundingBox();
+// Hold the mutation response long enough to prove the line does not depend on
+// the Worker round trip. It should be painted from the client-ID operation.
+await page.route("**/api/plans/*/ops", async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, 1200));
+  await route.continue();
+}, { times: 1 });
+const tetherSaved = page.waitForResponse(
+  (response) => response.url().includes("/ops") && response.request().method() === "POST"
+);
+await page.mouse.click(tetherCanvasBox.x + h1Point.x, tetherCanvasBox.y + h1Point.y);
+await page.waitForFunction(
+  () => window.Konva.stages[0].find(".entity").some((node) => node.id().startsWith("tether_")),
+  undefined,
+  { timeout: 400 }
+).catch(() => fail("the tether waited for its delayed mutation response before appearing"));
+await tetherSaved;
+await page.waitForTimeout(200);
+doc = await load();
+const directTether = doc.entities.find(
+  (e) => e.type === "tether" && !e.bond && e.from === ids.M2 && e.to === ids.H1 && e.style === "close"
+);
+if (!directTether) fail("dropping a tether on M2 then clicking H1 did not create M2-H1");
+else console.log("a tether dropped on M2 binds to H1 on the next click");
+
+// Keep the later four-link set assertions independent of this one-off link.
+if (directTether) {
+  await api("/api/plans/" + planId + "/ops", {
+    method: "POST",
+    body: JSON.stringify({ ops: [{ op: "delete_entities", ids: [directTether.id] }] }),
+  });
+  await page.waitForTimeout(400);
+}
+
+/* --- player tethers pair supports to damagers and report their range ------ */
+
+await page.locator("div", { hasText: /^Together tether$/ }).last().dragTo(chip("Supports"));
+await page.waitForTimeout(700);
+doc = await load();
+let tethers = doc.entities.filter((e) => e.type === "tether" && e.style === "close");
+const tetherPairs = tethers.map((t) => {
+  const from = doc.entities.find((e) => e.id === t.from)?.name;
+  const to = doc.entities.find((e) => e.id === t.to)?.name;
+  return `${from}-${to}`;
+}).sort();
+if (tethers.length !== 4) fail("Together tether should have made four links, got " + tethers.length);
+else if (tetherPairs.join() !== "H1-R1,H2-R2,MT-M1,OT-M2")
+  fail("Together tether made unexpected pairs: " + tetherPairs.join());
+else if (!tethers.every((t) => t.range === 200 && t.bond?.id === tethers[0].bond?.id))
+  fail("Together tethers did not share a 200-unit range and bond");
+else console.log("Together tether paired supports to damagers: " + tetherPairs.join(", "));
+
+// Put one pair inside and then outside its threshold. The persisted positions
+// arrive through the live socket and the line itself should change status.
+const mtTether = tethers.find((t) => doc.entities.find((e) => e.id === t.from)?.name === "MT");
+const mt = doc.entities.find((e) => e.name === "MT");
+const m1 = doc.entities.find((e) => e.name === "M1");
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({ ops: [
+    { op: "update_entity", id: mt.id, patch: { x: 0, y: 0 }, stepId: doc.steps[0].id },
+    { op: "update_entity", id: m1.id, patch: { x: 100, y: 0 }, stepId: doc.steps[0].id },
+  ] }),
+});
+await page.waitForFunction(
+  (id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke() === "#54d68b",
+  mtTether.id,
+  { timeout: 3000 }
+).catch(() => {});
+let tetherStroke = await page.evaluate((id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke(), mtTether.id);
+if (tetherStroke !== "#54d68b") {
+  const live = await load();
+  const liveMt = live.entities.find((e) => e.id === mt.id);
+  const liveM1 = live.entities.find((e) => e.id === m1.id);
+  fail("satisfied Together tether was " + tetherStroke + " instead of green at " + JSON.stringify([liveMt, liveM1]));
+}
+else console.log("Together tether turns green inside its configured range");
+
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({ ops: [{ op: "update_entity", id: m1.id, patch: { x: 300, y: 0 }, stepId: doc.steps[0].id }] }),
+});
+await page.waitForTimeout(600);
+tetherStroke = await page.evaluate((id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke(), mtTether.id);
+if (tetherStroke !== "#f05b67") fail("failed Together tether was " + tetherStroke + " instead of red");
+else console.log("Together tether turns red outside its configured range");
+
+const chevrons = await page.evaluate(() => window.Konva.stages[0].find(".tether-chevron").length);
+if (chevrons < 4) fail("directional tether chevrons were not drawn");
+else console.log("directional tether chevrons are drawn on the links");
+const tetherWeights = await page.evaluate((id) => ({
+  line: window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.strokeWidth(),
+  chevron: window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-chevron")?.strokeWidth(),
+}), mtTether.id);
+if (!(tetherWeights.line < tetherWeights.chevron))
+  fail("the tether guide should be quieter than its chevrons: " + JSON.stringify(tetherWeights));
+else if (tetherWeights.chevron > mtTether.width / 2)
+  fail("the tether chevrons should stay slim: " + JSON.stringify(tetherWeights));
+else console.log("the thin tether guide leaves the chevrons visually dominant");
+
+const shortChevrons = await page.evaluate(
+  (id) => window.Konva.stages[0].findOne("#" + id)?.find(".tether-chevron").length ?? 0,
+  mtTether.id
+);
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({ ops: [{ op: "update_entity", id: m1.id, patch: { x: 450, y: 0 }, stepId: doc.steps[0].id }] }),
+});
+await page.waitForTimeout(600);
+const longTether = await page.evaluate((id) => {
+  const tether = window.Konva.stages[0].findOne("#" + id);
+  return {
+    chevrons: tether?.find(".tether-chevron").length ?? 0,
+    guides: tether?.find(".tether-guide").map((line) => line.points()) ?? [],
+  };
+}, mtTether.id);
+if (longTether.chevrons <= shortChevrons)
+  fail("a longer tether did not gain chevrons: " + shortChevrons + " -> " + longTether.chevrons);
+else if (longTether.guides.length !== 2 || !(longTether.guides[0][2] < longTether.guides[1][0]))
+  fail("the guide was not cut away around the chevrons: " + JSON.stringify(longTether.guides));
+else console.log("long tethers gain chevrons and the guide clears their field");
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({ ops: [{ op: "update_entity", id: m1.id, patch: { x: 300, y: 0 }, stepId: doc.steps[0].id }] }),
+});
+await page.waitForTimeout(600);
+
+// The wheel changes the mechanic's required range, not the line's visual
+// weight. Because these four links are bonded, one link updates all four.
+const tetherProbe = onScreen(50, 0);
+await page.mouse.move(tetherProbe.x, tetherProbe.y);
+await page.mouse.wheel(0, -120);
+await page.waitForTimeout(700);
+doc = await load();
+const wheelSet = doc.entities.filter((e) => e.type === "tether" && e.bond?.id === mtTether.bond?.id);
+if (wheelSet.length !== 4 || !wheelSet.every((t) => t.range === 216))
+  fail("scrolling a tether did not update the set's required range: " + wheelSet.map((t) => t.range).join());
+else if (!wheelSet.every((t) => t.width === 8))
+  fail("scrolling a tether changed its visual width: " + wheelSet.map((t) => t.width).join());
+else console.log("scrolling a tether changes required range, not visual width");
+
+// A bonded tether stays selectable (it cannot be dragged), and editing its
+// threshold updates the whole four-link set.
+const rangeSelect = page.locator("div.label", { hasText: /^required range$/ }).locator("xpath=..").locator("select");
+for (const x of [50, 75, 100, 125, 175, 200, 225, 250]) {
+  const point = onScreen(x, 0);
+  await page.mouse.click(point.x, point.y);
+  await page.waitForTimeout(100);
+  if (await rangeSelect.count()) break;
+}
+if (!(await rangeSelect.count())) fail("selecting a bonded tether did not expose its range dropdown");
+else {
+  await rangeSelect.selectOption("250");
+  await page.waitForTimeout(700);
+  doc = await load();
+  const closeSet = doc.entities.filter((e) => e.type === "tether" && e.bond?.id === mtTether.bond?.id);
+  if (closeSet.length !== 4 || !closeSet.every((t) => t.range === 250))
+    fail("range dropdown did not update the whole tether set");
+  else console.log("the range dropdown updates all four links in the tether set");
+
+  // An individual link can use arbitrary players, and the ordinary step/all
+  // scope controls whether that pairing is temporary or structural.
+  const nameInput = page.locator("div.label", { hasText: /^name$/ }).locator("xpath=..").locator("input");
+  const selectedName = await nameInput.inputValue();
+  const selectedLink = doc.entities.find((e) => e.type === "tether" && e.name === selectedName);
+  const fromSelect = page.locator("div.label", { hasText: /^from player$/ }).locator("xpath=..").locator("select");
+  const toSelect = page.locator("div.label", { hasText: /^to player$/ }).locator("xpath=..").locator("select");
+  await fromSelect.selectOption(ids.M2);
+  await toSelect.selectOption(ids.H1);
+  await page.waitForTimeout(700);
+  doc = await load();
+  const retargeted = doc.entities.find((e) => e.id === selectedLink?.id);
+  const stepPair = retargeted?.overrides?.[doc.steps[0].id];
+  if (!retargeted || retargeted.from === ids.M2 || retargeted.to === ids.H1)
+    fail("step-scoped tether retarget changed the base pairing");
+  else if (stepPair?.from !== ids.M2 || stepPair?.to !== ids.H1)
+    fail("tether did not retarget to arbitrary players in this step: " + JSON.stringify(stepPair));
+  else console.log("an individual tether retargets to arbitrary players in the current step");
+}
+
+await page.locator("div", { hasText: /^Go-far tether$/ }).last().dragTo(chip("Damagers"));
+await page.waitForTimeout(700);
+doc = await load();
+tethers = doc.entities.filter((e) => e.type === "tether" && e.style === "far");
+if (tethers.length !== 4 || !tethers.every((t) => t.range === 200))
+  fail("Go-far tether on Damagers did not make four ranged links");
+else console.log("Go-far tether works from the Damagers card too");
+
 /* --- bare floor makes a shape of your own --------------------------------- */
 
 await dropOnFloor("Circle", -300, 300);
@@ -242,9 +438,9 @@ await dropOnFloor("Add", 300, 300);
 doc = await load();
 const boss = doc.entities.find((e) => e.name === "boss 1");
 const add = doc.entities.find((e) => e.name === "add 1");
-if (!boss || boss.type !== "enemy" || boss.role === "anchor" || boss.icon !== "actor/enemy_large")
+if (!boss || boss.type !== "enemy" || boss.role === "anchor" || boss.icon !== "actor/boss")
   fail("Boss did not create a large, ordinary enemy: " + JSON.stringify(boss));
-if (!add || add.type !== "enemy" || add.role === "anchor" || add.icon !== "actor/enemy_medium")
+if (!add || add.type !== "enemy" || add.role === "anchor" || add.icon !== "actor/enemy")
   fail("Add did not create a medium, ordinary enemy: " + JSON.stringify(add));
 
 await dropOnFloor("Beam", -300, -300);

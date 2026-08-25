@@ -1037,6 +1037,8 @@ export const PALETTE = [
   "stack2",
   "linestack",
   "flare",
+  "together",
+  "apart",
   "anchor",
 ] as const;
 export type PaletteKind = (typeof PALETTE)[number];
@@ -1045,6 +1047,9 @@ export type PaletteMechanicKind = Exclude<PaletteKind, PaletteSourceKind>;
 
 export const isPaletteSource = (kind: PaletteKind): kind is PaletteSourceKind =>
   kind === "boss" || kind === "add" || kind === "anchor";
+
+export const isPaletteTether = (kind: PaletteKind): kind is Extract<PaletteKind, "together" | "apart"> =>
+  kind === "together" || kind === "apart";
 
 export const PALETTE_LABEL: Record<PaletteKind, string> = {
   boss: "Boss",
@@ -1058,6 +1063,8 @@ export const PALETTE_LABEL: Record<PaletteKind, string> = {
   stack2: "Stack ×2",
   linestack: "Line stack",
   flare: "Flare",
+  together: "Together tether",
+  apart: "Go-far tether",
   anchor: "Bait anchor",
 };
 
@@ -1073,6 +1080,8 @@ export const PALETTE_HINT: Record<PaletteKind, string> = {
   stack2: "A pair stack: two people share it.",
   linestack: "A line stack: a beam from the boss that several people line up in.",
   flare: "A flare: a big circle on somebody, who carries it away from the others.",
+  together: "A player tether whose inward chevrons turn green when the pair is close enough. Drop it on one player, then click the other.",
+  apart: "A player tether whose outward chevrons turn green when the pair is far enough apart. Drop it on one player, then click the other.",
   anchor: "A point mechanics come out of that is not the boss — an add, an orb, a portal.",
 };
 
@@ -1087,12 +1096,14 @@ const PALETTE_BAIT: Record<PaletteMechanicKind, { kind: BaitKind; props: PropBag
   stack2: { kind: "stack", props: { radius: 140, soak: 2 } },
   linestack: { kind: "linestack", props: { width: 120, soak: 4 } },
   flare: { kind: "flare", props: { radius: 320 } },
+  together: { kind: "tether", props: { style: "close", range: 200 } },
+  apart: { kind: "tether", props: { style: "far", range: 200 } },
 };
 
 /** A palette item dropped on bare floor: an enemy or a shape you place and move yourself. */
 const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
-  boss: { type: "enemy", role: "enemy", icon: "actor/enemy_large", size: 140 },
-  add: { type: "enemy", role: "enemy", icon: "actor/enemy_medium", size: 90 },
+  boss: { type: "enemy", role: "enemy", icon: "actor/boss", size: 140 },
+  add: { type: "enemy", role: "enemy", icon: "actor/enemy", size: 90 },
   circle: { type: "zone", shape: "circle", radius: 200 },
   donut: { type: "zone", shape: "donut", radius: 300, innerRadius: 120 },
   protean: { type: "zone", shape: "cone", angle: 30, radius: 500 },
@@ -1102,6 +1113,11 @@ const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
   stack2: { type: "zone", shape: "stack", radius: 140, soak: 2 },
   linestack: { type: "zone", shape: "linestack", width: 120, length: 600, soak: 4 },
   flare: { type: "zone", shape: "flare", radius: 320 },
+  // Player tethers are authored by dropping on Supports or Damagers. These
+  // placeholders only make the palette's free-spec table exhaustive; the
+  // editor rejects a floor/source drop before it reaches this table.
+  together: { type: "tether", from: "", to: "", style: "close", range: 200 },
+  apart: { type: "tether", from: "", to: "", style: "far", range: 200 },
   anchor: { type: "enemy", role: "anchor", size: 60, ring: false, showFacing: false },
 };
 
@@ -1139,6 +1155,9 @@ function sizeFields(entity: Entity): string[] {
     case "zone":
       return BOXY.includes(entity.shape) ? ["width", "length"] : ["radius", "innerRadius"];
     case "tether":
+      // A tether's meaningful size is the distance its mechanic requires. Its
+      // stroke is presentation, so the wheel must not make the rope fatter.
+      return ["range"];
     case "path":
       return ["width"];
     default:

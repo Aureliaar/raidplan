@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Op } from "../shared/apply";
 import {
   MARKER_IDS,
@@ -19,6 +19,7 @@ import { BAIT_KINDS, baitNeedsSource, baitSpec, type BaitKind } from "../shared/
 import { playersHit } from "../shared/hits";
 import { JOBS, ROLES } from "../shared/jobs";
 import { ACTOR_KEYS, ARENA_BACKGROUNDS, MARKER_KEYS } from "../shared/assets";
+import { api } from "./api";
 
 
 
@@ -281,6 +282,50 @@ function freeze(plan: Plan, stepId: string, entity: Entity, shown?: Record<strin
 const nameOf = (plan: Plan, id: string) =>
   plan.entities.find((e) => e.id === id)?.name ?? id;
 
+/** Preserve useful intermediate text such as `0.` while a number is typed. */
+function NumberInput({
+  value,
+  step,
+  disabled,
+  onCommit,
+}: {
+  value: number;
+  step: number;
+  disabled: boolean;
+  onCommit(value: number): void;
+}) {
+  const [draft, setDraft] = useState(String(value));
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const commit = () => {
+    const next = Number(draft);
+    if (draft.trim() && Number.isFinite(next)) {
+      if (next !== value) onCommit(next);
+    } else {
+      setDraft(String(value));
+    }
+  };
+
+  return (
+    <input
+      className="field"
+      type="number"
+      step={step}
+      disabled={disabled}
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") e.currentTarget.blur();
+        if (e.key === "Escape") {
+          setDraft(String(value));
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
 /**
  * Property editor for the selected entity. Writes go through the same op API as
  * everything else; with scope "step" they land as per-step overrides.
@@ -320,6 +365,12 @@ export function Inspector({
 
   const mechOf = entity.mech ? plan.mechs.find((m) => m.id === entity.mech) : undefined;
   const shown = resolveEntity(entity, stepId, variant);
+  const players = plan.entities.filter((candidate) => candidate.type === "player");
+  const tetherSet = entity.type === "tether" && entity.bond
+    ? plan.entities.filter((e) => e.type === "tether" && e.bond?.id === entity.bond?.id)
+    : entity.type === "tether" ? [entity] : [];
+  const patchTetherSet = (props: Record<string, unknown>) =>
+    run(tetherSet.map((tether) => ({ op: "update_entity" as const, id: tether.id, patch: props })));
   const overridden =
     !!entity.overrides?.[stepId] || (!!variant && !!entity.overrides?.[`${stepId}@${variant}`]);
   const patch = (props: Record<string, unknown>) =>
@@ -333,13 +384,11 @@ export function Inspector({
 
   const num = (key: string, label: string, step = 1) => (
     <Field label={label} key={key}>
-      <input
-        className="field"
-        type="number"
+      <NumberInput
+        value={Math.round(((shown as unknown as Record<string, number>)[key] ?? 0) * 100) / 100}
         step={step}
         disabled={!editable}
-        value={Math.round(((shown as unknown as Record<string, number>)[key] ?? 0) * 100) / 100}
-        onChange={(e) => patch({ [key]: Number(e.target.value) })}
+        onCommit={(value) => patch({ [key]: value })}
       />
     </Field>
   );
@@ -518,18 +567,80 @@ export function Inspector({
         {entity.type === "text" && num("fontSize", "font size")}
 
         {entity.type === "tether" && (
-          <Field label="style" span>
-            <select
-              className="field"
-              disabled={!editable}
-              value={(shown as { style: string }).style}
-              onChange={(e) => patch({ style: e.target.value })}
-            >
-              {TETHER_STYLES.map((s) => (
-                <option key={s}>{s}</option>
-              ))}
-            </select>
-          </Field>
+          <>
+            <Field label="from player">
+              <select
+                className="field"
+                disabled={!editable}
+                value={(shown as Extract<Entity, { type: "tether" }>).from}
+                onChange={(e) => patch({ from: e.target.value })}
+              >
+                {players.map((player) => (
+                  <option key={player.id} value={player.id}>
+                    {player.name ?? player.job}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="to player">
+              <select
+                className="field"
+                disabled={!editable}
+                value={(shown as Extract<Entity, { type: "tether" }>).to}
+                onChange={(e) => patch({ to: e.target.value })}
+              >
+                {players.map((player) => (
+                  <option key={player.id} value={player.id}>
+                    {player.name ?? player.job}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="style" span>
+              <select
+                className="field"
+                disabled={!editable}
+                value={(shown as { style: string }).style}
+                onChange={(e) => patchTetherSet({ style: e.target.value })}
+              >
+                <option value="close">together</option>
+                <option value="far">go far</option>
+                {TETHER_STYLES.filter((s) => s !== "close" && s !== "far").map((s) => (
+                  <option key={s}>{s}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="required range" span>
+              <select
+                className="field"
+                disabled={!editable || ((shown as { style: string }).style !== "close" && (shown as { style: string }).style !== "far")}
+                value={(shown as { range?: number }).range ?? ""}
+                onChange={(e) => {
+                  if (e.target.value) void patchTetherSet({ range: Number(e.target.value) });
+                }}
+              >
+                <option value="" disabled>not configured</option>
+                {[50, 100, 150, 200, 250, 300, 350, 400, 500].map((range) => (
+                  <option key={range} value={range}>{range} arena units</option>
+                ))}
+              </select>
+            </Field>
+            {(() => {
+              const tether = shown as Extract<Entity, { type: "tether" }>;
+              const resolved = entitiesForStep(plan, stepId, undefined, playing);
+              const byId = new Map(resolved.map((e) => [e.id, e]));
+              const from = byId.get(tether.from);
+              const to = byId.get(tether.to);
+              if (!from || !to || tether.range === undefined || (tether.style !== "close" && tether.style !== "far")) return null;
+              const distance = Math.hypot(to.x - from.x, to.y - from.y);
+              const ok = tether.style === "close" ? distance <= tether.range : distance >= tether.range;
+              return (
+                <p className={`col-span-2 rounded px-2 py-1 text-xs ${ok ? "bg-emerald-950 text-emerald-300" : "bg-red-950 text-red-300"}`}>
+                  {Math.round(distance * 10) / 10} {tether.style === "close" ? "≤" : "≥"} {tether.range} — {ok ? "satisfied" : "not satisfied"}
+                </p>
+              );
+            })()}
+          </>
         )}
 
         <Field label="colour">
@@ -666,6 +777,10 @@ function ArenaFields({
 }) {
   const set = (patch: Record<string, unknown>) => run({ op: "set_arena", patch: patch as never });
   const radial = plan.arena.grid.type === "radial";
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState("");
+  const [uploadNotice, setUploadNotice] = useState("");
+  const customBackdrop = plan.arena.image && !ARENA_BACKGROUNDS.some((b) => b.key === plan.arena.image);
   return (
     <div className="grid grid-cols-2 gap-2">
       <Field label="shape" span>
@@ -706,12 +821,48 @@ function ArenaFields({
           onChange={(e) => set({ image: e.target.value || null })}
         >
           <option value="">none</option>
+          {customBackdrop && <option value={plan.arena.image}>custom upload</option>}
           {ARENA_BACKGROUNDS.map((b) => (
             <option key={b.key} value={b.key}>
               {b.label}
             </option>
           ))}
         </select>
+      </Field>
+      <Field label="custom backdrop" span>
+        <input
+          className="field"
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          disabled={!editable || uploading}
+          onChange={async (event) => {
+            const input = event.currentTarget;
+            const file = input.files?.[0];
+            if (!file) return;
+            setUploadError("");
+            setUploadNotice("");
+            setUploading(true);
+            try {
+              const uploaded = await api.uploadBackground(file);
+              await set({ image: uploaded.url });
+              if (uploaded.resized) {
+                setUploadNotice(
+                  `Downscaled ${uploaded.originalWidth}×${uploaded.originalHeight} to ${uploaded.width}×${uploaded.height}`
+                );
+              }
+            } catch (error) {
+              setUploadError(error instanceof Error ? error.message : "Upload failed");
+            } finally {
+              setUploading(false);
+              input.value = "";
+            }
+          }}
+        />
+        <p className={`mt-1 text-xs ${uploadError ? "text-red-300" : "text-ink-400"}`}>
+          {uploadError ||
+            uploadNotice ||
+            (uploading ? "Preparing and uploading…" : "PNG, JPEG or WebP · larger images downscale automatically")}
+        </p>
       </Field>
       <Field label="backdrop opacity" span>
         <input
