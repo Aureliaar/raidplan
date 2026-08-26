@@ -354,6 +354,70 @@ function NumberInput({
   );
 }
 
+/** A colour picker with a fast keyboard path for shorthand or full hex. */
+function HexColorInput({
+  value,
+  disabled,
+  onCommit,
+}: {
+  value: string;
+  disabled: boolean;
+  onCommit(value: string): void;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => setDraft(value), [value]);
+
+  const normalized = (input: string): string | null => {
+    const raw = input.trim().replace(/^#/, "");
+    if (/^[0-9a-f]{3}$/i.test(raw))
+      return `#${[...raw].map((digit) => digit + digit).join("")}`.toLowerCase();
+    return /^[0-9a-f]{6}$/i.test(raw) ? `#${raw.toLowerCase()}` : null;
+  };
+  const commit = () => {
+    const color = normalized(draft);
+    if (!color) {
+      setDraft(value);
+      return;
+    }
+    setDraft(color);
+    if (color !== value.toLowerCase()) onCommit(color);
+  };
+
+  return (
+    <div className="flex gap-1">
+      <input
+        className="field h-8 w-10 shrink-0 p-0"
+        type="color"
+        aria-label="Colour picker"
+        disabled={disabled}
+        value={normalized(value) ?? "#ff7043"}
+        onChange={(e) => {
+          setDraft(e.target.value);
+          onCommit(e.target.value);
+        }}
+      />
+      <input
+        className="field min-w-0 font-mono"
+        type="text"
+        aria-label="Hex colour"
+        spellCheck={false}
+        disabled={disabled}
+        value={draft}
+        placeholder="#ff7043"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") e.currentTarget.blur();
+          if (e.key === "Escape") {
+            e.preventDefault();
+            setDraft(value);
+          }
+        }}
+      />
+    </div>
+  );
+}
+
 /**
  * Property editor for the selected entity. Writes go through the same op API as
  * everything else; with scope "step" they land as per-step overrides.
@@ -714,15 +778,13 @@ export function Inspector({
           </>
         )}
 
-        <Field label="colour">
-          <input
-            className="field h-8 p-0"
-            type="color"
-            disabled={!editable}
-            value={shownEntity.color ?? "#ff7043"}
-            onChange={(e) => patch({ color: e.target.value })}
-          />
-        </Field>
+          <Field label="colour">
+            <HexColorInput
+              disabled={!editable}
+              value={shownEntity.color ?? "#ff7043"}
+              onCommit={(color) => patch({ color })}
+            />
+          </Field>
         <Field label="opacity">
           <input
             className="w-full"

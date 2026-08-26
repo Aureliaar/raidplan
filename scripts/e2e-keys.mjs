@@ -1,6 +1,6 @@
 /**
- * Keyboard: delete removes what is selected, copy/paste drops a twin under the
- * cursor. Both must keep their hands off text fields — Backspace in the plan
+ * Keyboard: delete removes what is selected, copy/paste makes an offset twin
+ * with its authored properties. Both must keep their hands off text fields — Backspace in the plan
  * name is a letter, not the boss.
  *
  *   node scripts/e2e-keys.mjs http://localhost:59577
@@ -39,6 +39,19 @@ await api("/api/plans/" + planId + "/ops", {
     ],
   }),
 });
+const seeded = await load();
+const sourceId = seeded.entities.find((e) => e.name === "puddle").id;
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({
+    ops: [{
+      op: "update_entity",
+      id: sourceId,
+      stepId: seeded.steps[0].id,
+      patch: { radius: 150, rotation: 23, scale: 1.25, opacity: 0.7, notes: "retain me" },
+    }],
+  }),
+});
 
 await page.goto(base + "/p/" + planId);
 await page.waitForSelector("canvas");
@@ -53,9 +66,13 @@ const screen = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box
 const src = screen(-250, 0);
 await page.mouse.click(src.x, src.y);
 await page.waitForTimeout(300);
+// Fast hex entry is a step-scoped edit by default: copying the raw base entity
+// would therefore lose it, which is the original regression.
+const hex = page.getByLabel("Hex colour");
+await hex.fill("0af");
+await hex.press("Enter");
+await page.waitForTimeout(600);
 await page.keyboard.press("Control+c");
-const to = screen(300, 300);
-await page.mouse.move(to.x, to.y);
 await page.keyboard.press("Control+v");
 await page.waitForTimeout(700);
 
@@ -64,21 +81,31 @@ const twins = doc.entities.filter((e) => e.name === "puddle");
 if (twins.length !== 2) fail("ctrl+v made " + (twins.length - 1) + " copies");
 else {
   const pasted = twins[1];
-  if (Math.hypot(pasted.x - 300, pasted.y - 300) > 30)
-    fail("the paste landed at " + pasted.x + "," + pasted.y + ", not under the cursor");
-  else console.log("ctrl+c, ctrl+v: a twin at the pointer, " + pasted.x + "," + pasted.y);
+  if (Math.hypot(pasted.x - -190, pasted.y - 60) > 2)
+    fail("the paste landed at " + pasted.x + "," + pasted.y + ", not at the 60-unit offset");
+  else if (pasted.color !== "#00aaff")
+    fail("the paste lost its colour, becoming " + pasted.color);
+  else if (
+    pasted.radius !== 150 ||
+    pasted.shape !== "circle" ||
+    pasted.rotation !== 23 ||
+    pasted.scale !== 1.25 ||
+    pasted.opacity !== 0.7 ||
+    pasted.notes !== "retain me"
+  ) fail("the paste lost authored properties: " + JSON.stringify(pasted));
+  else console.log("ctrl+c, ctrl+v: an offset twin retaining #00aaff and its authored properties");
 }
 
 /* --- delete removes the selection ----------------------------------------- */
 
 const before = (await load()).entities.length;
-await page.mouse.click(to.x, to.y);
-await page.waitForTimeout(300);
+// Paste selects the new twin. Do not click its center again: large overlapping
+// shapes can legitimately route that click to the original beneath it.
 await page.keyboard.press("Delete");
 await page.waitForTimeout(600);
 doc = await load();
 if (doc.entities.length !== before - 1) fail("Delete removed " + (before - doc.entities.length) + " entities");
-else if (doc.entities.some((e) => Math.hypot(e.x - 300, e.y - 300) < 30))
+else if (doc.entities.some((e) => Math.hypot(e.x - -190, e.y - 60) < 30))
   fail("Delete removed the wrong one");
 else console.log("Delete removes what is selected, and only that");
 

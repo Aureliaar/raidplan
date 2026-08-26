@@ -37,6 +37,7 @@ import {
   mechSpan,
   mechanicLabel,
   mechanicSteps,
+  resolveEntity,
   variantColor,
   variantLabel,
   yalmsToArenaUnits,
@@ -151,8 +152,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   /** The debuff mech whose deal is open in the popup, if any. */
   const [debuffFor, setDebuffFor] = useState<string | null>(null);
   const stageBox = useRef<HTMLDivElement>(null);
-  /** Last pointer position over the arena, so a paste lands under the cursor. */
-  const pointer = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const clipboard = useRef<PropBag | null>(null);
   /** The freshest plan, for handlers that fire faster than React re-renders. */
   const planRef = useRef<Plan | null>(null);
@@ -590,8 +589,25 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             ).find((entity) => entity.id === selected)
           : plan?.entities.find((entity) => entity.id === selected);
         if (!e) return;
-        const { id: _id, overrides: _o, ...rest } = e;
-        clipboard.current = rest;
+        // Copy what is authored in the view the user is looking at. Reading the
+        // raw entity here loses step/variant edits (most visibly its colour).
+        // A displayed family/mech colour is materialized too, so moving the
+        // twin into another mechanic does not silently repaint it.
+        const authored = resolveEntity(e, step?.id, playing);
+        const displayed = entitiesForStep(plan!, step?.id, undefined, shown).find(
+          (candidate) => candidate.id === e.id
+        );
+        const {
+          id: _id,
+          overrides: _overrides,
+          symmetry: _symmetry,
+          bond: _bond,
+          ...rest
+        } = authored;
+        clipboard.current = {
+          ...rest,
+          ...(displayed?.color ? { color: displayed.color } : {}),
+        };
         setNote(`Copied ${e.name || e.type}`);
         return;
       }
@@ -600,9 +616,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         if (!spec) return;
         ev.preventDefault();
         void (async () => {
-          // A copy of an anchored thing keeps following its target, so the paste
-          // point would be meaningless: only free shapes land under the cursor.
-          const where = spec.anchor ? {} : { x: pointer.current.x, y: pointer.current.y };
+          // A paste is the same authored object, nudged enough to reveal the
+          // twin. For anchored entities x/y are offsets, so the same nudge is
+          // meaningful there too.
+          const where = {
+            x: (typeof spec.x === "number" ? spec.x : 0) + 60,
+            y: (typeof spec.y === "number" ? spec.y : 0) + 60,
+          };
           // A copy is declared here and now, whatever step the original came from.
           const res = await run({
             op: "add_entity",
@@ -1433,15 +1453,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               ref={stageBox}
               className="relative"
               style={{ width: size, height: size }}
-              onMouseMove={(ev) => {
-                const box = stageBox.current?.getBoundingClientRect();
-                if (!box) return;
-                const s = box.width / Math.max(plan.arena.width, plan.arena.height);
-                pointer.current = {
-                  x: Math.round((ev.clientX - box.left - box.width / 2) / s),
-                  y: Math.round((ev.clientY - box.top - box.height / 2) / s),
-                };
-              }}
               onDragOver={(ev) => {
                 if ((!carrying && !carryGroup) || layer === "markers") return;
                 ev.preventDefault();
