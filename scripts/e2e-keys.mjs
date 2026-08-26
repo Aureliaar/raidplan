@@ -52,7 +52,6 @@ await api("/api/plans/" + planId + "/ops", {
     }],
   }),
 });
-
 await page.goto(base + "/p/" + planId);
 await page.waitForSelector("canvas");
 await page.waitForTimeout(900);
@@ -109,8 +108,91 @@ else if (doc.entities.some((e) => Math.hypot(e.x - -190, e.y - 60) < 30))
   fail("Delete removed the wrong one");
 else console.log("Delete removes what is selected, and only that");
 
+/* --- relationships copy with their owner, but not by themselves ---------- */
+
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({
+    ops: [{
+      op: "add_entity",
+      spec: { type: "enemy", name: "clipboard boss", x: 220, y: -250, size: 70, color: "#cc3355" },
+    }],
+  }),
+});
+const withBoss = await load();
+const bossId = withBoss.entities.find((e) => e.name === "clipboard boss").id;
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({
+    ops: [{
+      op: "add_entity",
+      spec: {
+        type: "zone",
+        shape: "rect",
+        name: "clipboard beam",
+        width: 70,
+        length: 400,
+        color: "#cc3355",
+        anchor: { from: bossId, to: sourceId },
+      },
+    }],
+  }),
+});
+await page.waitForTimeout(650);
+
+const bossPoint = screen(220, -250);
+await page.mouse.click(bossPoint.x, bossPoint.y);
+await page.waitForTimeout(250);
+await page.keyboard.press("Control+c");
+await page.keyboard.press("Control+v");
+await page.waitForTimeout(700);
+doc = await load();
+const bosses = doc.entities.filter((e) => e.name === "clipboard boss");
+const beams = doc.entities.filter((e) => e.name === "clipboard beam");
+const copiedBoss = bosses.find((e) => e.id !== bossId);
+const copiedBeam = beams.find((e) => e.id !== beams[0].id);
+if (bosses.length !== 2 || beams.length !== 2 || !copiedBoss || !copiedBeam)
+  fail("deep copy made " + bosses.length + " bosses and " + beams.length + " assigned baits");
+else if (copiedBoss.x !== 280 || copiedBoss.y !== -190)
+  fail("the deep-copied source did not receive the standard offset");
+else if (copiedBeam.anchor?.from !== copiedBoss.id || copiedBeam.anchor?.to !== sourceId)
+  fail("the copied bait was not remapped to its copied source: " + JSON.stringify(copiedBeam.anchor));
+else console.log("copying a source deep-copies its assigned bait and remaps the source reference");
+
+// Paste selects the new source; removing it also proves its attached bait is a
+// real relationship in the document rather than a disconnected visual clone.
+await page.keyboard.press("Delete");
+await page.waitForTimeout(600);
+
+// The beam body is clear of both endpoints here. Copying it directly clears
+// the clipboard, so the following paste must do nothing.
+const beamPoint = screen(43, -156);
+await page.mouse.click(beamPoint.x, beamPoint.y);
+await page.waitForTimeout(250);
+const beforeBaitCopy = (await load()).entities.length;
+await page.keyboard.press("Control+c");
+await page.keyboard.press("Control+v");
+await page.waitForTimeout(500);
+if ((await load()).entities.length !== beforeBaitCopy)
+  fail("a baited entity entered the clipboard directly");
+else console.log("baited entities are blacklisted as standalone clipboard roots");
+
+await page.getByRole("button", { name: "move waymarks" }).click();
+const markerPoint = screen(250, 0);
+await page.mouse.click(markerPoint.x, markerPoint.y);
+await page.waitForTimeout(250);
+const beforeMarkerCopy = (await load()).entities.length;
+await page.keyboard.press("Control+c");
+await page.keyboard.press("Control+v");
+await page.waitForTimeout(500);
+if ((await load()).entities.length !== beforeMarkerCopy)
+  fail("a floor marker entered the clipboard");
+else console.log("floor markers are blacklisted from copy/paste");
+await page.getByRole("button", { name: "done with waymarks" }).click();
+
 /* --- and it keeps out of the text fields ---------------------------------- */
 
+doc = await load();
 const name = page.locator("input").first();
 await name.click();
 await name.press("Backspace");

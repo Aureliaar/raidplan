@@ -68,6 +68,13 @@ import {
   type SymmetryKind,
 } from "./symmetry";
 
+type ClipboardEntity = PropBag & { type: Entity["type"] };
+type EntityClipboard = {
+  sourceId: string;
+  root: ClipboardEntity;
+  assigned: ClipboardEntity[];
+};
+
 /**
  * The editor. Plan state arrives over the PlanAgent WebSocket — which is also
  * how edits made by a model through MCP land on screen — and every local change
@@ -152,7 +159,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   /** The debuff mech whose deal is open in the popup, if any. */
   const [debuffFor, setDebuffFor] = useState<string | null>(null);
   const stageBox = useRef<HTMLDivElement>(null);
-  const clipboard = useRef<PropBag | null>(null);
+  const clipboard = useRef<EntityClipboard | null>(null);
   /** The freshest plan, for handlers that fire faster than React re-renders. */
   const planRef = useRef<Plan | null>(null);
   planRef.current = plan;
@@ -589,47 +596,111 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             ).find((entity) => entity.id === selected)
           : plan?.entities.find((entity) => entity.id === selected);
         if (!e) return;
+        // Waymarks are encounter setup, while baits/tethers are relationships
+        // owned by the thing they are assigned to. Neither is a sensible
+        // standalone clipboard root.
+        if (e.type === "marker" || e.anchor || e.type === "tether") {
+          clipboard.current = null;
+          setNote(
+            e.type === "marker"
+              ? "Floor markers cannot be copied"
+              : "Copy a bait source or target to include its assigned baits"
+          );
+          return;
+        }
         // Copy what is authored in the view the user is looking at. Reading the
         // raw entity here loses step/variant edits (most visibly its colour).
         // A displayed family/mech colour is materialized too, so moving the
         // twin into another mechanic does not silently repaint it.
-        const authored = resolveEntity(e, step?.id, playing);
-        const displayed = entitiesForStep(plan!, step?.id, undefined, shown).find(
-          (candidate) => candidate.id === e.id
+        const displayed = new Map(
+          entitiesForStep(plan!, step?.id, undefined, shown).map((candidate) => [candidate.id, candidate])
         );
-        const {
-          id: _id,
-          overrides: _overrides,
-          symmetry: _symmetry,
-          bond: _bond,
-          ...rest
-        } = authored;
-        clipboard.current = {
-          ...rest,
-          ...(displayed?.color ? { color: displayed.color } : {}),
+        const snapshot = (candidate: Entity): ClipboardEntity => {
+          const authored = resolveEntity(candidate, step?.id, playing);
+          const {
+            id: _id,
+            overrides: _overrides,
+            symmetry: _symmetry,
+            bond: _bond,
+            ...rest
+          } = authored;
+          return {
+            ...rest,
+            ...(displayed.get(candidate.id)?.color
+              ? { color: displayed.get(candidate.id)!.color }
+              : {}),
+          } as ClipboardEntity;
         };
-        setNote(`Copied ${e.name || e.type}`);
+        const assigned = plan!.entities.filter(
+          (candidate) =>
+            candidate.id !== e.id &&
+            ((candidate.anchor &&
+              (candidate.anchor.to === e.id ||
+                candidate.anchor.from === e.id ||
+                candidate.anchor.near === e.id)) ||
+              (candidate.type === "tether" &&
+                (candidate.from === e.id || candidate.to === e.id)))
+        );
+        clipboard.current = {
+          sourceId: e.id,
+          root: snapshot(e),
+          assigned: assigned.map(snapshot),
+        };
+        setNote(
+          `Copied ${e.name || e.type}${assigned.length ? ` with ${assigned.length} assigned bait${assigned.length === 1 ? "" : "s"}` : ""}`
+        );
         return;
       }
       if (mod && ev.key.toLowerCase() === "v") {
-        const spec = clipboard.current;
-        if (!spec) return;
+        const copied = clipboard.current;
+        if (!copied) return;
         ev.preventDefault();
         void (async () => {
+          const spec = copied.root;
           // A paste is the same authored object, nudged enough to reveal the
-          // twin. For anchored entities x/y are offsets, so the same nudge is
-          // meaningful there too.
+          // twin. Assigned baits keep their own anchor offsets and instead have
+          // every reference to the clipboard root rewritten to the new root.
           const where = {
             x: (typeof spec.x === "number" ? spec.x : 0) + 60,
             y: (typeof spec.y === "number" ? spec.y : 0) + 60,
           };
-          // A copy is declared here and now, whatever step the original came from.
-          const res = await run({
-            op: "add_entity",
-            spec: { ...spec, ...where, declaredIn: step!.id, ...(mech ? { mech } : {}) } as never,
+          const freshId = (kind: string) => `${kind}_${crypto.randomUUID()}`;
+          const rootId = freshId(spec.type);
+          const remap = (child: ClipboardEntity): ClipboardEntity => {
+            if (child.type === "tether")
+              return {
+                ...child,
+                from: child.from === copied.sourceId ? rootId : child.from,
+                to: child.to === copied.sourceId ? rootId : child.to,
+              } as ClipboardEntity;
+            if (!child.anchor) return child;
+            return {
+              ...child,
+              anchor: {
+                ...child.anchor,
+                ...(child.anchor.to === copied.sourceId ? { to: rootId } : {}),
+                ...(child.anchor.from === copied.sourceId ? { from: rootId } : {}),
+                ...(child.anchor.near === copied.sourceId ? { near: rootId } : {}),
+              },
+            } as ClipboardEntity;
+          };
+          const stamp = (entity: ClipboardEntity, id: string) => ({
+            ...entity,
+            id,
+            declaredIn: step!.id,
+            ...(mech ? { mech } : {}),
           });
-          const created = res.values[0] as { id: string } | null;
-          if (created) setSelected(created.id);
+          await run(
+            [
+              { op: "add_entity", spec: stamp({ ...spec, ...where }, rootId) as never },
+              ...copied.assigned.map((child) => ({
+                op: "add_entity" as const,
+                spec: stamp(remap(child), freshId(child.type)) as never,
+              })),
+            ],
+            false
+          );
+          setSelected(rootId);
         })();
       }
     };
