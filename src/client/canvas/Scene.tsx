@@ -1097,7 +1097,10 @@ function EntityShape({
               <Sprite src={dress.debuff.icon} width={entity.size * 0.5} height={entity.size * 0.66} />
             </Group>
           )}
-          {entity.name && (
+          {/* A genericized token (role, S/D, or generic art) has already
+              dropped the identity that a callout name would still claim —
+              the label would say "MT" over a token that no longer means MT. */}
+          {entity.name && !worn && (
             <EntityName
               text={entity.name}
               y={r + 4}
