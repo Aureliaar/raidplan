@@ -12,6 +12,8 @@ import { guardVariants } from "./variants";
 import type { PlanRole, User } from "../shared/schema";
 import type { HistoryActor } from "../shared/history";
 import { BackgroundUploadError, serveBackground, uploadBackground } from "./backgrounds";
+import { dumpFFLogsDebuffs } from "./fflogs";
+import { exchangeFFLogsAuthorizationCode } from "./fflogs-oauth";
 
 export { PlanAgent } from "./plan-agent";
 export { Registry } from "./registry";
@@ -53,6 +55,32 @@ app.onError((err, c) => {
 
 app.route("/auth", authRoutes);
 app.route("/api/chat", chatRoutes);
+
+app.post("/api/fflogs/debuffs", async (c) => {
+  requireUser(c);
+  const { url } = (await c.req.json().catch(() => ({}))) as { url?: string };
+  if (!url) throw new HttpError(400, "Enter an FF Logs report URL");
+  return c.json(await dumpFFLogsDebuffs(url, c.env));
+});
+
+app.get("/api/fflogs/config", (c) => {
+  requireUser(c);
+  if (!c.env.FFLOGS_CLIENT_ID) throw new HttpError(503, "FF Logs integration is not configured on this server");
+  return c.json({
+    clientId: c.env.FFLOGS_CLIENT_ID,
+    redirectUrl: `${appUrl(c.env, c.req.raw)}/fflogs`,
+    authorizeUrl: "https://www.fflogs.com/oauth/authorize",
+    userApiUrl: "https://www.fflogs.com/api/v2/user",
+  });
+});
+
+app.post("/api/fflogs/exchange", async (c) => {
+  requireUser(c);
+  const { code } = (await c.req.json().catch(() => ({}))) as { code?: string };
+  if (!code) throw new HttpError(400, "FF Logs authorization code is missing");
+  const redirectUri = `${appUrl(c.env, c.req.raw)}/fflogs`;
+  return c.json(await exchangeFFLogsAuthorizationCode(code, redirectUri, c.env));
+});
 
 /* ---------------------------------------------------------------- session */
 

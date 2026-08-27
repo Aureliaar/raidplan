@@ -2,6 +2,7 @@ import type { Op } from "../shared/apply";
 import type { Plan, PlanRole, PlanSummary, User } from "../shared/schema";
 import type { HistoryResult, PlanHistory } from "../shared/history";
 import { prepareBackground } from "./background-image";
+import type { FFLogsDebuffDump } from "../shared/fflogs";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -15,6 +16,20 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   me: () => req<{ user: User | null; devAuth: boolean }>("/api/me"),
+
+  fflogsDebuffs: (url: string) =>
+    req<FFLogsDebuffDump>("/api/fflogs/debuffs", { method: "POST", body: JSON.stringify({ url }) }),
+  fflogsConfig: () => req<{
+    clientId: string;
+    redirectUrl: string;
+    authorizeUrl: string;
+    userApiUrl: string;
+  }>("/api/fflogs/config"),
+  fflogsExchange: (code: string) =>
+    req<{ access_token: string; expires_in?: number }>("/api/fflogs/exchange", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    }),
 
   uploadBackground: async (file: File) => {
     const prepared = await prepareBackground(file);

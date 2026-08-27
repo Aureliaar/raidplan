@@ -3,6 +3,7 @@ import { api } from "./api";
 import type { User } from "../shared/schema";
 import { PlanList } from "./PlanList";
 import { Editor } from "./Editor";
+import { FFLogsTool } from "./FFLogsTool";
 
 /** Two screens: the plan list at "/" and an editor at "/p/:id". */
 function usePath() {
@@ -39,6 +40,7 @@ export function App() {
   // and a private one simply reports no access.
   if (planMatch) return <Editor planId={planMatch[1]} user={state.user} />;
   if (!state.user) return <SignIn devAuth={state.devAuth} discordAuth={state.discordAuth !== false} />;
+  if (path === "/fflogs") return <FFLogsTool />;
   return <PlanList user={state.user} />;
 }
 

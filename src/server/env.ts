@@ -20,6 +20,10 @@ export interface AppEnv extends Env {
   GLM_API_KEY?: string;
   GLM_BASE_URL?: string;
   GLM_MODEL?: string;
+
+  /** FF Logs public API client credentials for the debuff import tool. */
+  FFLOGS_CLIENT_ID?: string;
+  FFLOGS_CLIENT_SECRET?: string;
 }
 
 /**

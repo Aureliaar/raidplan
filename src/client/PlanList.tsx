@@ -32,6 +32,9 @@ export function PlanList({ user }: { user: User }) {
           <p className="text-sm text-ink-400">Signed in as {user.name}</p>
         </div>
         <div className="flex gap-2">
+          <button className="btn" onClick={() => navigate("/fflogs")}>
+            FF Logs debuffs
+          </button>
           <button className="btn" onClick={() => setShowTokens((v) => !v)}>
             MCP access
           </button>
