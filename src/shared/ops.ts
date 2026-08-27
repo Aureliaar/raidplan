@@ -766,15 +766,29 @@ export function assignMech(plan: Plan, ids: string[], mechId: string | null): Pl
 /* -------------------------------------------------------------- convenience */
 
 /** `null` is the explicit wire value for removing an optional backdrop. */
-export type ArenaPatch = Omit<Partial<Arena>, "image"> & { image?: string | null };
+export type ArenaPatch = Omit<Partial<Arena>, "image" | "widthYalms"> & {
+  image?: string | null;
+  /** Null clears a manual override and returns to known/default calibration. */
+  widthYalms?: number | null;
+};
 
 export function setArena(plan: Plan, patch: ArenaPatch): Plan {
   const clearImage = patch.image === null;
+  const clearWidthYalms = patch.widthYalms === null;
   const { image: _oldImage, ...arenaWithoutImage } = plan.arena;
+  const { widthYalms: _oldWidthYalms, ...arenaWithoutWidthYalms } = plan.arena;
   const clean = defined(patch);
   if (clearImage) delete clean.image;
+  if (clearWidthYalms) delete clean.widthYalms;
+  const base = clearImage && clearWidthYalms
+    ? (({ image: _image, widthYalms: _width, ...rest }) => rest)(plan.arena)
+    : clearImage
+      ? arenaWithoutImage
+      : clearWidthYalms
+        ? arenaWithoutWidthYalms
+        : plan.arena;
   const arena = ArenaSchema.parse({
-    ...(clearImage ? arenaWithoutImage : plan.arena),
+    ...base,
     ...clean,
     grid: { ...plan.arena.grid, ...defined(patch.grid) },
   });
@@ -1068,6 +1082,9 @@ export const PALETTE_LABEL: Record<PaletteKind, string> = {
   anchor: "Bait anchor",
 };
 
+/** Physical thresholds used whenever a player tether is created from the palette. */
+export const PALETTE_TETHER_RANGE_YALMS = { together: 8, apart: 25 } as const;
+
 export const PALETTE_HINT: Record<PaletteKind, string> = {
   boss: "A large enemy. Drop mechanics on it to use it as their source.",
   add: "A medium enemy. Drop mechanics on it to use it as their source.",
@@ -1080,8 +1097,8 @@ export const PALETTE_HINT: Record<PaletteKind, string> = {
   stack2: "A pair stack: two people share it.",
   linestack: "A line stack: a beam from the boss that several people line up in.",
   flare: "A flare: a big circle on somebody, who carries it away from the others.",
-  together: "A player tether whose inward chevrons turn green when the pair is close enough. Drop it on one player, then click the other.",
-  apart: "A player tether whose outward chevrons turn green when the pair is far enough apart. Drop it on one player, then click the other.",
+  together: `A player tether whose inward chevrons turn green within ${PALETTE_TETHER_RANGE_YALMS.together} yalms. Drop it on one player, then click the other.`,
+  apart: `A player tether whose outward chevrons turn green at ${PALETTE_TETHER_RANGE_YALMS.apart} yalms. Drop it on one player, then click the other.`,
   anchor: "A point mechanics come out of that is not the boss — an add, an orb, a portal.",
 };
 
@@ -1097,7 +1114,7 @@ const PALETTE_BAIT: Record<PaletteMechanicKind, { kind: BaitKind; props: PropBag
   linestack: { kind: "linestack", props: { width: 120, soak: 4 } },
   flare: { kind: "flare", props: { radius: 320 } },
   together: { kind: "tether", props: { style: "close", range: 200 } },
-  apart: { kind: "tether", props: { style: "far", range: 200 } },
+  apart: { kind: "tether", props: { style: "far", range: 625 } },
 };
 
 /** A palette item dropped on bare floor: an enemy or a shape you place and move yourself. */
@@ -1117,7 +1134,7 @@ const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
   // placeholders only make the palette's free-spec table exhaustive; the
   // editor rejects a floor/source drop before it reaches this table.
   together: { type: "tether", from: "", to: "", style: "close", range: 200 },
-  apart: { type: "tether", from: "", to: "", style: "far", range: 200 },
+  apart: { type: "tether", from: "", to: "", style: "far", range: 625 },
   anchor: { type: "enemy", role: "anchor", size: 60, ring: false, showFacing: false },
 };
 

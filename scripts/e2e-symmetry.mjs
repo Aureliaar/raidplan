@@ -177,23 +177,126 @@ else console.log("four-way symmetry moves all four supports");
 
 // Exercise persistent symmetric creation as well: drop one circle.
 const target = { x: box.width / 2 - 190 * scale, y: box.height / 2 - 140 * scale };
-await page.getByText("Circle", { exact: true }).dragTo(canvas, { targetPosition: target });
-await page.waitForTimeout(700);
-
-plan = await read();
-const circles = plan.entities.filter((e) => e.type === "zone" && e.shape === "circle");
-const expected = [
+const circleChip = page.getByText("Circle", { exact: true });
+const chipBox = await circleChip.boundingBox();
+await page.mouse.move(chipBox.x + chipBox.width / 2, chipBox.y + chipBox.height / 2);
+await page.mouse.down();
+await page.mouse.move(box.x + target.x, box.y + target.y, { steps: 12 });
+await page.waitForTimeout(200);
+const readDropPreview = () => page.evaluate(() =>
+  window.Konva.stages[0].find(".drop-preview").map((node) => ({
+    x: Math.round(node.x()),
+    y: Math.round(node.y()),
+  }))
+);
+let dropPreview = await readDropPreview();
+const previewExpected = [
   [-190, -140],
   [190, -140],
   [190, 140],
   [-190, 140],
 ];
+if (
+  previewExpected.some(
+    ([x, y]) => !dropPreview.some((e) => Math.hypot(e.x - x, e.y - y) < 8)
+  )
+)
+  fail(`circle drop had no four-way preview before mouseup: ${JSON.stringify(dropPreview)}`);
+else console.log("before drop: the circle previews all four mirrored copies at full arena size");
+
+// Pointer-driven palette dragging keeps normal keyboard input alive. Switch to
+// two-way, Rotate, and four-way without restarting the drag.
+await page.keyboard.press("2");
+await page.waitForTimeout(100);
+dropPreview = await readDropPreview();
+if (
+  dropPreview.length !== 2 ||
+  !dropPreview.some((e) => Math.hypot(e.x + 190, e.y + 140) < 8) ||
+  !dropPreview.some((e) => Math.hypot(e.x - 190, e.y + 140) < 8)
+)
+  fail(`count did not change to two-way while dragging: ${JSON.stringify(dropPreview)}`);
+else console.log("held drag: count changes update the preview immediately");
+await page.keyboard.press("q");
+await page.waitForTimeout(100);
+dropPreview = await readDropPreview();
+if (!dropPreview.some((e) => Math.hypot(e.x - 190, e.y - 140) < 8))
+  fail(`mode did not change to rotation while dragging: ${JSON.stringify(dropPreview)}`);
+else console.log("held drag: mirror/rotate changes update the preview immediately");
+await page.keyboard.press("3");
+await page.waitForTimeout(100);
+const rotateExpected = [
+  [-190, -140],
+  [140, -190],
+  [190, 140],
+  [-140, 190],
+];
+dropPreview = await readDropPreview();
+if (
+  rotateExpected.some(
+    ([x, y]) => !dropPreview.some((e) => Math.hypot(e.x - x, e.y - y) < 8)
+  )
+)
+  fail(`four-way rotation did not update while dragging: ${JSON.stringify(dropPreview)}`);
+const beforeCreate = await read();
+if (beforeCreate.entities.some((e) => e.type === "zone" && e.shape === "circle"))
+  fail("circle placement committed before mouseup");
+await page.mouse.up();
+await page.waitForTimeout(700);
+
+plan = await read();
+const circles = plan.entities.filter((e) => e.type === "zone" && e.shape === "circle");
 if (circles.length !== 4) fail(`four-way mirror made ${circles.length} circles`);
 else if (
-  expected.some(([x, y]) => !circles.some((e) => Math.hypot(e.x - x, e.y - y) < 8))
+  rotateExpected.some(([x, y]) => !circles.some((e) => Math.hypot(e.x - x, e.y - y) < 8))
 )
-  fail("four-way mirror did not cover all four quadrants");
-else console.log("buttons create four persistent mirrored entities");
+  fail("four-way rotation did not commit the held preview");
+else console.log("buttons create the four persistent entities last previewed");
+
+// Moving any face of a persistent set previews every other face before the
+// mouse comes up. Large, simple zones are the easiest place for this to regress:
+// Konva is also moving the grabbed node directly while React redraws the set.
+const northWest = circles.find((e) => e.x < 0 && e.y < 0);
+const circleFrom = at(northWest.x, northWest.y);
+const circleTo = at(-250, -200);
+await page.mouse.move(circleFrom.x, circleFrom.y);
+await page.mouse.down();
+await page.mouse.move(circleTo.x, circleTo.y, { steps: 12 });
+await page.waitForTimeout(200);
+const circleLive = await page.evaluate(
+  (ids) =>
+    ids.map((circleId) => {
+      const node = window.Konva.stages[0].findOne("#" + circleId);
+      return node ? { id: circleId, x: Math.round(node.x()), y: Math.round(node.y()) } : null;
+    }),
+  circles.map((e) => e.id)
+);
+const liveExpected = [
+  [-250, -200],
+  [200, -250],
+  [250, 200],
+  [-200, 250],
+];
+if (
+  liveExpected.some(
+    ([x, y]) => !circleLive.some((e) => e && Math.hypot(e.x - x, e.y - y) < 8)
+  )
+)
+  fail(`symmetric circles waited for drop instead of previewing: ${JSON.stringify(circleLive)}`);
+else console.log("mid-drag: all four persistent circles preview their symmetric positions");
+const beforeCircleDrop = await read();
+if (beforeCircleDrop.rev !== plan.rev) fail("circle drag committed before mouseup");
+await page.mouse.up();
+await page.waitForTimeout(700);
+
+plan = await read();
+const movedCircles = plan.entities.filter((e) => e.type === "zone" && e.shape === "circle");
+if (
+  liveExpected.some(
+    ([x, y]) => !movedCircles.some((e) => Math.hypot(e.x - x, e.y - y) < 8)
+  )
+)
+  fail("symmetric circle preview and committed positions disagreed");
+else console.log("symmetric circle preview is exactly what commits");
 
 if (process.env.SYMMETRY_SCREENSHOT)
   await page.screenshot({ path: process.env.SYMMETRY_SCREENSHOT, fullPage: false });

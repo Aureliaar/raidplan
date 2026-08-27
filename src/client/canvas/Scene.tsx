@@ -27,6 +27,7 @@ import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
 import { entitiesForStep, resolveEntity } from "../../shared/schema";
 import { jobColor, jobLabel } from "../../shared/jobs";
+import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
 import { assetUrl, enemyIconKey, jobIconKey, waymarkIconKey } from "../../shared/assets";
 import {
   symmetricUpdates,
@@ -88,6 +89,8 @@ export type EditLayer = "step" | "markers";
 
 export interface SceneProps {
   plan: Plan;
+  /** Uncommitted palette shapes at the point where the current drop would land. */
+  preview?: Entity[];
   stepId?: string;
   /** Which reading of each mechanic is being played, by mechanic id. */
   shown?: Record<string, string>;
@@ -99,6 +102,8 @@ export interface SceneProps {
   layer?: EditLayer;
   /** A bond or mech id whose shapes should light up — the row being hovered. */
   highlight?: string | null;
+  /** What the party wears while a debuff mech is on the floor, by player id. */
+  dress?: Map<string, DebuffDress> | null;
   /**
    * Bumped every time the fight is walked from the keyboard. A click puts you
    * in the next step at once, which is what a click is for; a keypress is a
@@ -227,6 +232,7 @@ function useGlide(
 
 export function Scene({
   plan,
+  preview = [],
   stepId,
   shown,
   size,
@@ -236,6 +242,7 @@ export function Scene({
   symmetryKind = "mirror",
   layer = "step",
   highlight,
+  dress,
   glide = 0,
   onward = true,
   onPick,
@@ -613,7 +620,7 @@ export function Scene({
                 }}
               >
                 <GrabTarget entity={e} />
-                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} />
+                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} dress={dress?.get(e.id)} />
                 {(selectedIds.has(e.id) ||
                   (!!highlight && (e.bond?.id === highlight || e.mech === highlight))) && (
                   <SelectionRing entity={e} />
@@ -621,6 +628,23 @@ export function Scene({
               </Group>
             )
           )}
+          {preview.map((e) => (
+            <Group
+              key={e.id}
+              id={e.id}
+              name="drop-preview"
+              x={e.x}
+              y={e.y}
+              rotation={e.rotation}
+              scaleX={e.scale}
+              scaleY={e.scale}
+              opacity={e.opacity * 0.62}
+              listening={false}
+            >
+              <EntityShape entity={e} />
+              <SelectionRing entity={e} />
+            </Group>
+          ))}
           {/*
             The waymarks again, faint, over everything: a telegraph covering an
             A should not make the A disappear, since "A" is how the plan is
@@ -999,7 +1023,16 @@ function radiusHint(e: Entity): number {
   }
 }
 
-function EntityShape({ entity, blast = 0 }: { entity: Entity; blast?: number }) {
+function EntityShape({
+  entity,
+  blast = 0,
+  dress,
+}: {
+  entity: Entity;
+  blast?: number;
+  /** A debuff mech is on the floor: what this token wears instead. */
+  dress?: DebuffDress;
+}) {
   switch (entity.type) {
     case "marker": {
       const color = entity.color ?? MARKER_COLORS[entity.marker];
@@ -1022,7 +1055,10 @@ function EntityShape({ entity, blast = 0 }: { entity: Entity; blast?: number }) 
     case "player": {
       const color = entity.color ?? jobColor(entity.job);
       const r = entity.size / 2;
-      const icon = assetUrl(entity.icon ?? jobIconKey(entity.job, entity.name));
+      // A debuff mech on the floor can re-dress the token: role or generic
+      // art in place of the job's, and the status it carries as a badge.
+      const worn = dress ? dressIconKey(entity, dress.mode) : undefined;
+      const icon = assetUrl(worn ?? entity.icon ?? jobIconKey(entity.job, entity.name));
       return (
         <>
           <Sprite
@@ -1053,19 +1089,22 @@ function EntityShape({ entity, blast = 0 }: { entity: Entity; blast?: number }) 
             cornerRadius={8}
             listening={false}
           />
+          {/* The status this token carries, riding the shoulder. FFXIV status
+              icons are taller than wide; keeping the ratio is what makes the
+              art recognisable at token size. */}
+          {dress?.debuff?.icon && (
+            <Group x={r * 0.78} y={-r * 0.72} listening={false}>
+              <Sprite src={dress.debuff.icon} width={entity.size * 0.5} height={entity.size * 0.66} />
+            </Group>
+          )}
           {entity.name && (
-            <Text
+            <EntityName
               text={entity.name}
               y={r + 4}
+              rotation={entity.rotation}
               width={200}
-              offsetX={100}
-              align="center"
               fontSize={entity.size * 0.36}
-              listening={false}
-              fill="#e6edf3"
-              stroke="#0d1117"
               strokeWidth={4}
-              fillAfterStrokeEnabled
             />
           )}
           {entity.showFacing && (
@@ -1090,18 +1129,14 @@ function EntityShape({ entity, blast = 0 }: { entity: Entity; blast?: number }) 
             <Line points={[0, -r * 1.5, 0, -r * 0.6]} stroke={color} strokeWidth={5} />
             <Line points={[0, r * 0.6, 0, r * 1.5]} stroke={color} strokeWidth={5} />
             {entity.name && (
-              <Text
+              <EntityName
                 text={entity.name}
                 y={r * 1.7}
+                rotation={entity.rotation}
                 width={400}
-                offsetX={200}
-                align="center"
                 fontSize={32}
-                listening={false}
-                fill={color}
-                stroke="#0d1117"
+                color={color}
                 strokeWidth={5}
-                fillAfterStrokeEnabled
               />
             )}
           </>
@@ -1134,18 +1169,13 @@ function EntityShape({ entity, blast = 0 }: { entity: Entity; blast?: number }) 
             />
           )}
           {entity.name && (
-            <Text
+            <EntityName
               text={entity.name}
               y={entity.size * (entity.ring ? 1.05 : 0.62)}
+              rotation={entity.rotation}
               width={400}
-              offsetX={200}
-              align="center"
               fontSize={38}
-              listening={false}
-              fill="#e6edf3"
-              stroke="#0d1117"
               strokeWidth={5}
-              fillAfterStrokeEnabled
             />
           )}
         </>
@@ -1194,6 +1224,42 @@ function EntityShape({ entity, blast = 0 }: { entity: Entity; blast?: number }) 
     default:
       return null;
   }
+}
+
+/** Keep an entity's identifying label upright while its art turns to face. */
+function EntityName({
+  text,
+  y,
+  rotation,
+  width,
+  fontSize,
+  color = "#e6edf3",
+  strokeWidth,
+}: {
+  text: string;
+  y: number;
+  rotation: number;
+  width: number;
+  fontSize: number;
+  color?: string;
+  strokeWidth: number;
+}) {
+  return (
+    <Group name="entity-name" rotation={-rotation} listening={false}>
+      <Text
+        text={text}
+        y={y}
+        width={width}
+        offsetX={width / 2}
+        align="center"
+        fontSize={fontSize}
+        fill={color}
+        stroke="#0d1117"
+        strokeWidth={strokeWidth}
+        fillAfterStrokeEnabled
+      />
+    </Group>
+  );
 }
 
 /**

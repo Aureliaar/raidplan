@@ -111,9 +111,12 @@ player. Drag the source and its beams swing with it. `npm run e2e:source` covers
 **Together tether** and **Go-far tether** are player-to-player mechanics. Drop either on a
 player, then click a second player to draw a link between them. Dropping one on **Supports**
 or **Damagers** still creates the four standard cross-role pairs (MT–M1, OT–M2, H1–R1,
-H2–R2). Slim, sharp inward/outward chevrons communicate the required movement, with more chevrons on
+H2–R2). Together starts at an 8-yalm requirement and Go-far at 25 yalms, converted through
+the arena's effective calibration. Slim, sharp inward/outward chevrons communicate the required movement, with more chevrons on
 longer links and a break in the guide line around them; the links turn green when their
-configured arena-unit range is satisfied and red when it is not. Selecting
+configured range is satisfied and red when it is not. Tether ranges and live distance
+readouts use yalms: a manual arena width wins, supported encounters use known dimensions,
+and everything else starts from a 40-yalm default. Selecting
 one link edits the range for the whole four-tether set. Its **from player** and **to player**
 selectors can retarget that individual link to any two party members; in step scope, that
 pairing changes only for the current step.
@@ -252,6 +255,13 @@ npm run mcp -- call read_plan '{"plan_id":"plan_…"}'
 ```
 
 - Origin is the arena centre, **+x east, +y south**; rotation `0` = north, clockwise.
+- `arena.widthYalms` is an optional manual wall-to-wall override. Without one, known
+  encounter/phase dimensions are used and unknown fights default to 40 yalms across. Physical
+  calibration maps stable authoring coordinates to yalms without moving or resizing a plan.
+  The built-in known catalogue covers M1S–M12S, including phase-specific proportions and
+  M8S's smaller 24-yalm span; the inspector identifies whether a value is known, default, or
+  manually overridden and can apply known arena proportions separately. Bounds are cross-checked
+  against [BossMod's public encounter data](https://github.com/awgil/ffxiv_bossmod).
 - An entity exists in every step by default and holds one base pose; `overrides` is how
   movement between steps is expressed. `add_step --copy_from` carries poses forward, which
   is the normal way to build a sequence.

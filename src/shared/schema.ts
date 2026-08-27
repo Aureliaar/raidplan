@@ -18,6 +18,12 @@ export const ArenaSchema = z.object({
   shape: z.enum(ARENA_SHAPES).default("square"),
   width: z.number().positive().default(1000),
   height: z.number().positive().default(1000),
+  /**
+   * The physical width of the floor in FFXIV yalms. Coordinates stay in the
+   * stable authoring space above; this calibrates those units without moving
+   * or resizing an existing plan.
+   */
+  widthYalms: z.number().positive().optional(),
   color: z.string().default("#252a33"),
   border: z.string().default("#4a525f"),
   /** Backdrop: an asset key ("arena/p12_octagon"), absolute URL or /path. */
@@ -37,6 +43,16 @@ export const ArenaSchema = z.object({
     .prefault({}),
 });
 export type Arena = z.infer<typeof ArenaSchema>;
+
+/** Convert a distance in authoring units using an effective physical width. */
+export function arenaUnitsToYalms(arena: Arena, units: number, widthYalms = arena.widthYalms ?? 40): number {
+  return units * (widthYalms / arena.width);
+}
+
+/** Convert an in-game distance to the authoring units stored in the document. */
+export function yalmsToArenaUnits(arena: Arena, yalms: number, widthYalms = arena.widthYalms ?? 40): number {
+  return yalms * (arena.width / widthYalms);
+}
 
 export const ZONE_SHAPES = [
   "circle",
@@ -368,6 +384,41 @@ export const MechanicSchema = z.object({
 export type Mechanic = z.infer<typeof MechanicSchema>;
 
 /**
+ * One status a debuff mech deals: what the plan needs to draw it, copied out
+ * of the FF Logs dump it was picked from. Denormalized on purpose — a shared
+ * plan renders without ever seeing the log.
+ */
+export const DebuffRefSchema = z.object({
+  /** The game's status id, from the log. */
+  id: z.number(),
+  name: z.string(),
+  /** Absolute icon URL (xivapi PNG). */
+  icon: z.string().optional(),
+});
+export type DebuffRef = z.infer<typeof DebuffRefSchema>;
+
+/** How player tokens are drawn while a debuff mech is active. */
+export const DEBUFF_MODES = ["normal", "thd", "sd", "generic"] as const;
+export type DebuffMode = (typeof DEBUFF_MODES)[number];
+
+/** The groups a debuff pool can be dealt to. A `supports` pool present means
+ * tanks and healers are being played as one interchangeable four. */
+export const DEBUFF_GROUPS = ["tanks", "healers", "damagers", "supports"] as const;
+export type DebuffGroup = (typeof DEBUFF_GROUPS)[number];
+
+/**
+ * The deal of a debuff mech: which statuses each role pool holds, and what
+ * the party's tokens look like while the mech is on the floor. Pools are
+ * role-scoped, never per-player — "the tanks have Burn" is the whole claim,
+ * and which tank is not the plan's business.
+ */
+export const MechDebuffsSchema = z.object({
+  mode: z.enum(DEBUFF_MODES).default("normal"),
+  pools: z.partialRecord(z.enum(DEBUFF_GROUPS), z.array(DebuffRefSchema)).default({}),
+});
+export type MechDebuffs = z.infer<typeof MechDebuffsSchema>;
+
+/**
  * A mechanic, as a slot in the plan's timeline.
  *
  * A cast is three moments — it appears, it snapshots, it goes off — and a plan
@@ -397,6 +448,8 @@ export const MechSchema = z.object({
    * — and, quietly, where the party stands.
    */
   variant: z.string().optional(),
+  /** Set when this cast is a debuff deal: pools of statuses on role groups. */
+  debuffs: MechDebuffsSchema.nullish(),
 });
 export type Mech = z.infer<typeof MechSchema>;
 

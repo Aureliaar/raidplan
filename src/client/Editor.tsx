@@ -21,6 +21,7 @@ import type {
   User,
 } from "../shared/schema";
 import {
+  EntitySchema,
   entitiesForStep,
   hydratePlan,
   mechLabel,
@@ -31,12 +32,14 @@ import {
   mechanicSteps,
   variantColor,
   variantLabel,
+  yalmsToArenaUnits,
 } from "../shared/schema";
 import type { PaletteKind, PaletteMechanicKind, PaletteSourceKind } from "../shared/ops";
 import {
   PALETTE,
   PALETTE_HINT,
   PALETTE_LABEL,
+  PALETTE_TETHER_RANGE_YALMS,
   isPaletteSource,
   isPaletteTether,
   paletteBait,
@@ -45,7 +48,10 @@ import {
   resizeSpec,
 } from "../shared/ops";
 import { jobLabel, roleOf } from "../shared/jobs";
+import { debuffDress } from "../shared/debuffs";
+import { DebuffPanel } from "./DebuffPanel";
 import { assetUrl } from "../shared/assets";
+import { arenaCalibration } from "../shared/arena-calibration";
 import {
   makeSymmetricAdds,
   symmetricUpdates,
@@ -96,8 +102,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [history, setHistory] = useState<PlanHistory | null>(null);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [isPublic, setIsPublic] = useState(false);
   /** What is in the hand mid-drag, purely so the drop targets can light up. */
   const [carrying, setCarrying] = useState<PaletteKind | null>(null);
+  /** Full-size arena preview of a palette item before its drop is committed. */
+  const [palettePreview, setPalettePreview] = useState<{
+    kind: PaletteKind;
+    x: number;
+    y: number;
+  } | null>(null);
+  const paletteMoveRef = useRef<(kind: PaletteKind, clientX: number, clientY: number) => void>(() => {});
+  const paletteDropRef = useRef<(kind: PaletteKind, clientX: number, clientY: number) => void>(() => {});
   /** First endpoint of a player tether, waiting for the second player click. */
   const [pendingTether, setPendingTether] = useState<{
     kind: Extract<PaletteKind, "together" | "apart">;
@@ -118,6 +133,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * which is what makes a mech a thing you author rather than a thing you tag.
    */
   const [mech, setMech] = useState<string | null>(null);
+  /** The debuff mech whose deal is open in the popup, if any. */
+  const [debuffFor, setDebuffFor] = useState<string | null>(null);
   const stageBox = useRef<HTMLDivElement>(null);
   /** Last pointer position over the arena, so a paste lands under the cursor. */
   const pointer = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
@@ -195,6 +212,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       .then((res) => {
         showServerPlan(res.plan);
         setRole(res.role);
+        setIsPublic(res.meta?.isPublic ?? false);
         return api.history(planId);
       })
       .then(setHistory)
@@ -441,6 +459,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const selectedEntity = plan.entities.find((e) => e.id === selected) ?? null;
   /** The mech slot currently open, if the one that was open still exists. */
   const openMech = plan.mechs.find((m) => m.id === mech) ?? null;
+  /** The debuff deal open in the popup, if that mech still exists. */
+  const debuffMech = plan.mechs.find((m) => m.id === debuffFor) ?? null;
+  /** What the party wears in this step, if a debuff mech is on the floor. */
+  const dress = debuffDress(plan, step.id, shown);
 
   /**
    * The reading of this step's mechanic that is being played, if it goes more
@@ -453,16 +475,18 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         .id
     : undefined;
 
-  /** Pointer position, in arena units, from a drag event over the stage. */
-  function arenaPoint(ev: React.DragEvent): { x: number; y: number } {
+  /** Pointer position, in arena units, from a point over the stage. */
+  function arenaPointAt(clientX: number, clientY: number): { x: number; y: number } {
     const box = stageBox.current?.getBoundingClientRect();
     if (!box) return { x: 0, y: 0 };
     const scale = box.width / Math.max(plan!.arena.width, plan!.arena.height);
     return {
-      x: Math.round((ev.clientX - box.left - box.width / 2) / scale),
-      y: Math.round((ev.clientY - box.top - box.height / 2) / scale),
+      x: Math.round((clientX - box.left - box.width / 2) / scale),
+      y: Math.round((clientY - box.top - box.height / 2) / scale),
     };
   }
+
+  const arenaPoint = (ev: React.DragEvent) => arenaPointAt(ev.clientX, ev.clientY);
 
   /** An enemy source under the drop point: boss, add, or bare bait anchor. */
   function sourceAt(pt: { x: number; y: number }): string | undefined {
@@ -660,7 +684,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               from: support.id,
               to: damager.id,
               style: kind === "together" ? "close" as const : "far" as const,
-              range: 200,
+              range: defaultTetherRange(kind),
               width: 8,
               name: `${PALETTE_LABEL[kind]}: ${support.name || jobLabel(support.job)} ↔ ${damager.name || jobLabel(damager.job)}`,
               bond,
@@ -757,7 +781,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         from: fromPlayer.id,
         to: toPlayer.id,
         style: pending.kind === "together" ? "close" : "far",
-        range: 200,
+        range: defaultTetherRange(pending.kind),
         width: 8,
         name: `${PALETTE_LABEL[pending.kind]}: ${fromPlayer.name || jobLabel(fromPlayer.job)} ↔ ${toPlayer.name || jobLabel(toPlayer.job)}`,
         ...stamp(),
@@ -765,6 +789,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     });
     const created = res.values[0] as { id: string } | null;
     if (created && created.id !== id) setSelected(created.id);
+  }
+
+  /** Palette tether thresholds are authored in yalms, whatever coordinates this plan stores. */
+  function defaultTetherRange(kind: Extract<PaletteKind, "together" | "apart">): number {
+    const calibration = arenaCalibration(plan!);
+    return yalmsToArenaUnits(plan!.arena, PALETTE_TETHER_RANGE_YALMS[kind], calibration.widthYalms);
   }
 
   /** What every drop carries: the step that declared it, and the slot it joins. */
@@ -803,6 +833,106 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   function kindOf(ev: React.DragEvent): PaletteKind | null {
     const k = ev.dataTransfer.getData("text/plain") as PaletteKind;
     return (PALETTE as readonly string[]).includes(k) ? k : null;
+  }
+
+  const previewEntities: Entity[] = (() => {
+    if (!palettePreview || isPaletteTether(palettePreview.kind)) return [];
+    const spec = paletteSpec(palettePreview.kind, {
+      x: palettePreview.x,
+      y: palettePreview.y,
+      ...stamp(),
+    });
+    const ops =
+      symmetryCount > 1
+        ? makeSymmetricAdds(
+            spec,
+            symmetryKind,
+            symmetryCount as 2 | 4,
+            "palette-preview"
+          )
+        : [{ op: "add_entity" as const, spec }];
+    return ops.flatMap((op, index) => {
+      if (!("spec" in op)) return [];
+      const parsed = EntitySchema.safeParse({
+        ...op.spec,
+        id: `palette-preview-${index}`,
+      });
+      return parsed.success ? [parsed.data] : [];
+    });
+  })();
+
+  /**
+   * Palette gestures use pointer events instead of native HTML dragging. Native
+   * dragging suppresses keydown in browsers, which made 1/2/3/Q unusable while
+   * the preview was in hand. The refs keep a gesture started before a render
+   * wired to the latest symmetry settings when it is finally released.
+   */
+  paletteMoveRef.current = (kind, clientX, clientY) => {
+    const under = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    const group = under?.closest<HTMLElement>("[data-drop-group]")?.dataset.dropGroup as GroupId | undefined;
+    setHover(group && kind !== "anchor" ? group : null);
+    const box = stageBox.current?.getBoundingClientRect();
+    if (!box || clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) {
+      setPalettePreview(null);
+      return;
+    }
+    const pt = arenaPointAt(clientX, clientY);
+    setPalettePreview(sourceAt(pt) ? null : { kind, x: pt.x, y: pt.y });
+  };
+
+  paletteDropRef.current = (kind, clientX, clientY) => {
+    const under = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+    const group = under?.closest<HTMLElement>("[data-drop-group]")?.dataset.dropGroup as GroupId | undefined;
+    if (group && kind !== "anchor") {
+      void drop(kind, { x: 0, y: 0 }, { at: "group", group });
+      return;
+    }
+    const box = stageBox.current?.getBoundingClientRect();
+    if (!box || clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) return;
+    const pt = arenaPointAt(clientX, clientY);
+    const player = isPaletteTether(kind) ? playerAt(pt) : undefined;
+    const on = sourceAt(pt);
+    void drop(
+      kind,
+      pt,
+      player ? { at: "player", id: player } : on ? { at: "source", id: on } : { at: "free" }
+    );
+  };
+
+  function beginPaletteDrag(kind: PaletteKind, ev: React.PointerEvent<HTMLDivElement>) {
+    if (ev.button !== 0 || layer !== "step") return;
+    ev.preventDefault();
+    const { pointerId, clientX: startX, clientY: startY } = ev;
+    let moved = false;
+    setCarrying(kind);
+    const move = (next: PointerEvent) => {
+      if (next.pointerId !== pointerId) return;
+      if (!moved && Math.hypot(next.clientX - startX, next.clientY - startY) < 4) return;
+      moved = true;
+      paletteMoveRef.current(kind, next.clientX, next.clientY);
+    };
+    const finish = (next: PointerEvent) => {
+      if (next.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      if (moved) paletteDropRef.current(kind, next.clientX, next.clientY);
+      setCarrying(null);
+      setPalettePreview(null);
+      setHover(null);
+    };
+    const cancel = (next: PointerEvent) => {
+      if (next.pointerId !== pointerId) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", cancel);
+      setCarrying(null);
+      setPalettePreview(null);
+      setHover(null);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", cancel);
   }
 
   return (
@@ -943,7 +1073,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               </select>
             </>
           )}
-          <ShareButton planId={planId} canShare={role === "owner"} />
+          <ShareButton
+            planId={planId}
+            canShare={role === "owner"}
+            isPublic={isPublic}
+            setIsPublic={setIsPublic}
+          />
           <span className="text-xs text-ink-400">
             {user ? user.name : <a href="/">sign in</a>}
           </span>
@@ -963,6 +1098,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           run={run}
           setIndex={setStepIndex}
           onOpenMech={setMech}
+          onDebuffs={setDebuffFor}
           onHighlight={setHighlight}
         />
 
@@ -985,8 +1121,23 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 if ((!carrying && !carryGroup) || layer === "markers") return;
                 ev.preventDefault();
                 ev.dataTransfer.dropEffect = carryGroup ? "move" : "copy";
+                if (carrying) {
+                  const pt = arenaPoint(ev);
+                  // A source changes a mechanic into an aimed bait, whose final
+                  // pose is target-dependent. Preview only the free-floor shape
+                  // where the pointer honestly represents the pending drop.
+                  setPalettePreview(
+                    sourceAt(pt) ? null : { kind: carrying, x: pt.x, y: pt.y }
+                  );
+                }
+              }}
+              onDragLeave={(ev) => {
+                const next = ev.relatedTarget;
+                if (!(next instanceof Node) || !ev.currentTarget.contains(next))
+                  setPalettePreview(null);
               }}
               onDrop={(ev) => {
+                setPalettePreview(null);
                 const payload = ev.dataTransfer.getData("text/plain");
                 const pt = arenaPoint(ev);
                 // A group carried onto the floor goes there; a palette shape is
@@ -1028,8 +1179,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               )}
               <Scene
                 plan={plan}
+                preview={previewEntities}
                 stepId={step.id}
                 shown={shown}
+                dress={dress}
                 size={size}
                 selected={selection}
                 editable={editable}
@@ -1084,6 +1237,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               return (
                 <div
                   key={g}
+                  data-drop-group={g}
                   draggable={editable && layer === "step" && people > 0}
                   onDragStart={(ev) => {
                     ev.dataTransfer.setData("text/plain", "group:" + g);
@@ -1177,23 +1331,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             {PALETTE.map((k) => (
               <div
                 key={k}
-                draggable={editable && layer === "step"}
+                draggable={false}
                 title={PALETTE_HINT[k]}
-                onDragStart={(ev) => {
-                  ev.dataTransfer.setData("text/plain", k);
-                  ev.dataTransfer.effectAllowed = "copy";
-                  // Carry the telegraph itself, not a translucent snapshot of
-                  // the rectangular palette card. The drop target can change
-                  // what it binds to, but it is already a circle, donut, etc.
-                  const glyph = ev.currentTarget.querySelector("[data-palette-glyph]");
-                  if (glyph instanceof Element) ev.dataTransfer.setDragImage(glyph, 15, 15);
-                  setCarrying(k);
-                }}
-                onDragEnd={() => {
-                  setCarrying(null);
-                  setHover(null);
-                }}
-                className={`flex cursor-grab select-none flex-col items-center gap-1 rounded border px-2 py-2 text-xs active:cursor-grabbing ${
+                onPointerDown={(ev) => beginPaletteDrag(k, ev)}
+                className={`flex touch-none cursor-grab select-none flex-col items-center gap-1 rounded border px-2 py-2 text-xs active:cursor-grabbing ${
                   carrying === k ? "border-blue-400 bg-ink-700" : "border-ink-600 bg-ink-800"
                 } ${layer === "markers" ? "cursor-not-allowed opacity-40" : ""}`}
               >
@@ -1330,6 +1471,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           onUndo={() => void travelHistory("undo")}
           onRedo={() => void travelHistory("redo")}
           onRevert={(id) => void travelHistory("revert", id)}
+        />
+      )}
+
+      {debuffMech && (
+        <DebuffPanel
+          plan={plan}
+          mech={debuffMech}
+          stepId={step.id}
+          shown={shown}
+          run={run}
+          onClose={() => setDebuffFor(null)}
         />
       )}
 
@@ -1522,6 +1674,7 @@ function StepRail({
   run,
   setIndex,
   onOpenMech,
+  onDebuffs,
   onHighlight,
 }: {
   plan: Plan;
@@ -1536,6 +1689,7 @@ function StepRail({
   run(ops: Op | Op[]): Promise<{ values: unknown[]; plan: Plan }>;
   setIndex(i: number): void;
   onOpenMech(id: string | null): void;
+  onDebuffs(id: string): void;
   onHighlight(id: string | null): void;
 }) {
   // Deleting the last step leaves the parent's index pointing past the end for
@@ -2131,7 +2285,7 @@ function StepRail({
   function controls() {
     return (
       <>
-        <MechBox plan={plan} open={openMech} stepId={current.id} run={run} onOpen={onOpenMech} />
+        <MechBox plan={plan} open={openMech} stepId={current.id} run={run} onOpen={onOpenMech} onDebuffs={onDebuffs} />
         <div className="mt-4">
           <div className="label mb-1">Step notes</div>
           {/* Uncontrolled + keyed: local typing stays smooth, remote edits reset it. */}
@@ -2423,12 +2577,14 @@ function MechBox({
   stepId,
   run,
   onOpen,
+  onDebuffs,
 }: {
   plan: Plan;
   open: Mech | null;
   stepId: string;
   run(ops: Op | Op[]): Promise<{ values: unknown[] }>;
   onOpen(id: string | null): void;
+  onDebuffs(id: string): void;
 }) {
   return (
     <div className="mt-2">
@@ -2442,6 +2598,19 @@ function MechBox({
         }}
       >
         New mech here
+      </button>
+      <button
+        className="btn mt-1 w-full"
+        title="A mech that deals the fight's debuffs onto role pools. While it is on the floor, the party's tokens wear the deal."
+        onClick={async () => {
+          const res = await run({ op: "add_mech", snap: stepId });
+          const made = res.values[0] as { id: string } | null;
+          if (!made) return;
+          onOpen(made.id);
+          onDebuffs(made.id);
+        }}
+      >
+        New debuff mech here
       </button>
       {open && (
         <div
@@ -2479,7 +2648,14 @@ function MechBox({
             Drag the top half of its box beside the steps to move the snapshot, the bottom
             half to move where it goes off. F2 renames it.
           </p>
-          <button className="btn mt-2 h-6 w-full py-0 text-[11px]" onClick={() => onOpen(null)}>
+          <button
+            className="btn mt-2 h-6 w-full py-0 text-[11px]"
+            title="Deal the fight's debuffs onto role pools for this mech"
+            onClick={() => onDebuffs(open.id)}
+          >
+            {open.debuffs ? "edit the debuff deal" : "deal debuffs…"}
+          </button>
+          <button className="btn mt-1 h-6 w-full py-0 text-[11px]" onClick={() => onOpen(null)}>
             done filling
           </button>
         </div>
@@ -2523,25 +2699,77 @@ function Rename({
   );
 }
 
-function ShareButton({ planId, canShare }: { planId: string; canShare: boolean }) {
+function ShareButton({
+  planId,
+  canShare,
+  isPublic,
+  setIsPublic,
+}: {
+  planId: string;
+  canShare: boolean;
+  isPublic: boolean;
+  setIsPublic: (isPublic: boolean) => void;
+}) {
   const [open, setOpen] = useState(false);
   const [userId, setUserId] = useState("");
-  const [isPublic, setIsPublic] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [feedback, setFeedback] = useState("");
   if (!canShare) return null;
+
+  const shareLink = new URL(`/p/${encodeURIComponent(planId)}`, window.location.origin).href;
+
+  async function copyViewOnlyLink() {
+    setBusy(true);
+    setFeedback("");
+    try {
+      if (!isPublic) {
+        await api.setPublic(planId, true);
+        setIsPublic(true);
+      }
+      await navigator.clipboard.writeText(shareLink);
+      setFeedback("View-only link copied");
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "Could not copy the link");
+    } finally {
+      setBusy(false);
+      setOpen(true);
+    }
+  }
+
   return (
-    <div className="relative">
-      <button className="btn" onClick={() => setOpen((v) => !v)}>
-        Share
+    <div className="relative flex">
+      <button className="btn rounded-r-none" disabled={busy} onClick={() => void copyViewOnlyLink()}>
+        {busy ? "Sharing…" : "Share"}
+      </button>
+      <button
+        className="btn rounded-l-none border-l-0 px-2"
+        aria-label="Sharing options"
+        aria-expanded={open}
+        title="Sharing options"
+        onClick={() => {
+          setFeedback("");
+          setOpen((value) => !value);
+        }}
+      >
+        ▾
       </button>
       {open && (
         <div className="panel absolute right-0 z-10 mt-1 w-[280px] rounded p-3">
+          {feedback && <p className="mb-2 text-xs text-ink-400">{feedback}</p>}
           <label className="mb-2 flex items-center gap-2 text-sm">
             <input
               type="checkbox"
               checked={isPublic}
               onChange={async (e) => {
-                setIsPublic(e.target.checked);
-                await api.setPublic(planId, e.target.checked);
+                const next = e.target.checked;
+                setIsPublic(next);
+                setFeedback("");
+                try {
+                  await api.setPublic(planId, next);
+                } catch (error) {
+                  setIsPublic(!next);
+                  setFeedback(error instanceof Error ? error.message : "Could not update sharing");
+                }
               }}
             />
             Anyone with the link can view

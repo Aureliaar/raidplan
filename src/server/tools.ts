@@ -321,12 +321,14 @@ export const TOOLS: ToolDef[] = [
 
   def({
     name: "set_arena",
-    description: "Change the arena shape, size, grid or backdrop image.",
+    description: "Change the arena shape, size, physical yalm calibration, grid or backdrop image.",
     schema: {
       plan_id: z.string(),
       shape: z.enum(ARENA_SHAPES).optional(),
       width: z.number().positive().optional(),
       height: z.number().positive().optional(),
+      width_yalms: z.number().positive().optional().describe("Known in-game wall-to-wall arena width in yalms"),
+      clear_width_yalms: z.boolean().optional().describe("Clear the manual width and return to known/default calibration"),
       color: z.string().optional(),
       image: z
         .string()
@@ -346,6 +348,7 @@ export const TOOLS: ToolDef[] = [
           shape: a.shape,
           width: a.width,
           height: a.height,
+          widthYalms: a.clear_width_yalms ? null : a.width_yalms,
           color: a.color,
           image: a.image,
           imageOpacity: a.image_opacity,
@@ -1376,6 +1379,7 @@ export const TOOLS_BY_NAME = new Map(TOOLS.map((t) => [t.name, t]));
 export const PLAN_PRIMER = `Raid plans are top-down diagrams of an FFXIV arena.
 Coordinates are arena units with the origin at the arena centre: +x is east (right), +y is south (down).
 A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degrees, 0 = north, increasing clockwise (90 = east).
+Arena distances are yalms: a manual arena.widthYalms wins, supported encounters use known dimensions, and unknown fights default to 40 yalms across. Calibration never changes stored coordinates.
 Entities live in a plan and may appear in one step or all steps; per-step position overrides are how movement is expressed.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
 A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest" (plus "count"), which re-targets itself as the party moves. Either way it holds in every step with no overrides to redo.

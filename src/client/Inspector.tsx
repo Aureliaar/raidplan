@@ -11,6 +11,8 @@ import {
   BAIT_RULES,
   type BaitRule,
   ZONE_SHAPES,
+  arenaUnitsToYalms,
+  yalmsToArenaUnits,
   resolveEntity,
   type Entity,
   type Plan,
@@ -20,6 +22,11 @@ import { playersHit } from "../shared/hits";
 import { JOBS, ROLES } from "../shared/jobs";
 import { ACTOR_KEYS, ARENA_BACKGROUNDS, MARKER_KEYS } from "../shared/assets";
 import { api } from "./api";
+import {
+  arenaCalibration,
+  arenaMatchesKnownGeometry,
+  knownArenaCalibration,
+} from "../shared/arena-calibration";
 
 
 
@@ -365,6 +372,7 @@ export function Inspector({
 
   const mechOf = entity.mech ? plan.mechs.find((m) => m.id === entity.mech) : undefined;
   const shown = resolveEntity(entity, stepId, variant);
+  const physicalCalibration = arenaCalibration(plan);
   const players = plan.entities.filter((candidate) => candidate.type === "player");
   const tetherSet = entity.type === "tether" && entity.bond
     ? plan.entities.filter((e) => e.type === "tether" && e.bond?.id === entity.bond?.id)
@@ -620,9 +628,26 @@ export function Inspector({
                 }}
               >
                 <option value="" disabled>not configured</option>
-                {[50, 100, 150, 200, 250, 300, 350, 400, 500].map((range) => (
-                  <option key={range} value={range}>{range} arena units</option>
-                ))}
+                {(() => {
+                  const current = (shown as { range?: number }).range;
+                  const presets = [5, 8, 10, 12, 15, 20, 25, 30].map((yalms) => ({
+                    yalms,
+                    range: yalmsToArenaUnits(plan.arena, yalms, physicalCalibration.widthYalms),
+                  }));
+                  const custom = current !== undefined && !presets.some(({ range }) => Math.abs(range - current) < 1e-6)
+                    ? arenaUnitsToYalms(plan.arena, current, physicalCalibration.widthYalms)
+                    : undefined;
+                  return (
+                    <>
+                      {custom !== undefined && (
+                        <option value={current}>{Math.round(custom * 10) / 10} yalms (current)</option>
+                      )}
+                      {presets.map(({ yalms, range }) => (
+                        <option key={yalms} value={range}>{yalms} yalms</option>
+                      ))}
+                    </>
+                  );
+                })()}
               </select>
             </Field>
             {(() => {
@@ -634,9 +659,13 @@ export function Inspector({
               if (!from || !to || tether.range === undefined || (tether.style !== "close" && tether.style !== "far")) return null;
               const distance = Math.hypot(to.x - from.x, to.y - from.y);
               const ok = tether.style === "close" ? distance <= tether.range : distance >= tether.range;
+              const measured = arenaUnitsToYalms(plan.arena, distance, physicalCalibration.widthYalms);
+              const required = arenaUnitsToYalms(plan.arena, tether.range, physicalCalibration.widthYalms);
+              const shownDistance = Math.round(measured * 10) / 10;
+              const shownRange = Math.round(required * 10) / 10;
               return (
                 <p className={`col-span-2 rounded px-2 py-1 text-xs ${ok ? "bg-emerald-950 text-emerald-300" : "bg-red-950 text-red-300"}`}>
-                  {Math.round(distance * 10) / 10} {tether.style === "close" ? "≤" : "≥"} {tether.range} — {ok ? "satisfied" : "not satisfied"}
+                  {shownDistance} {tether.style === "close" ? "≤" : "≥"} {shownRange} yalms — {ok ? "satisfied" : "not satisfied"}
                 </p>
               );
             })()}
@@ -781,6 +810,8 @@ function ArenaFields({
   const [uploadError, setUploadError] = useState("");
   const [uploadNotice, setUploadNotice] = useState("");
   const customBackdrop = plan.arena.image && !ARENA_BACKGROUNDS.some((b) => b.key === plan.arena.image);
+  const calibration = arenaCalibration(plan);
+  const knownCalibration = knownArenaCalibration(plan);
   return (
     <div className="grid grid-cols-2 gap-2">
       <Field label="shape" span>
@@ -828,6 +859,36 @@ function ArenaFields({
             </option>
           ))}
         </select>
+      </Field>
+      <Field label="arena width (yalms)" span>
+        <NumberInput
+          value={calibration.widthYalms}
+          step={0.1}
+          disabled={!editable}
+          onCommit={(widthYalms) => set({ widthYalms })}
+        />
+        <div className="mt-1 flex flex-wrap items-center gap-1 text-xs text-ink-400">
+          <span>
+            {Math.round(calibration.widthYalms * 10) / 10}×{Math.round(calibration.heightYalms * 10) / 10} yalms · {calibration.label}
+          </span>
+          {calibration.source === "manual" && (
+            <button className="btn px-1.5 py-0.5 text-[10px]" disabled={!editable} onClick={() => set({ widthYalms: null })}>
+              reset
+            </button>
+          )}
+        </div>
+        {knownCalibration && !arenaMatchesKnownGeometry(plan, knownCalibration) && (
+          <button
+            className="btn mt-1 w-full text-xs"
+            disabled={!editable}
+            onClick={() => set({
+              shape: knownCalibration.shape,
+              height: plan.arena.width * (knownCalibration.heightYalms / knownCalibration.widthYalms),
+            })}
+          >
+            Apply known {knownCalibration.widthYalms}×{knownCalibration.heightYalms} shape
+          </button>
+        )}
       </Field>
       <Field label="custom backdrop" span>
         <input

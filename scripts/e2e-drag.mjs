@@ -17,8 +17,8 @@ const DRAG_PX = { x: 60, y: -45 };
 // No waymark here on purpose: a waymark is frozen on the step layer and only
 // moves on its own one, which is what scripts/e2e-markers.mjs checks.
 const SPECS = [
-  ["player", { type: "player", job: "WHM", name: "H1", x: -350, y: -350 }],
-  ["enemy", { type: "enemy", name: "boss", size: 120, x: 350, y: -350 }],
+  ["player", { type: "player", job: "WHM", name: "H1", x: -350, y: -350, rotation: 135 }],
+  ["enemy", { type: "enemy", name: "boss", size: 120, x: 350, y: -350, rotation: 180 }],
   ["icon", { type: "icon", src: "marker/attack1", size: 90, x: -350, y: 0 }],
   ["zone circle", { type: "zone", shape: "circle", radius: 90, x: 0, y: 0 }],
   ["zone cone", { type: "zone", shape: "cone", radius: 200, angle: 60, x: 350, y: 0 }],
@@ -60,6 +60,16 @@ const scale = size / Math.max(before.arena.width, before.arena.height);
 const expected = { x: Math.round(DRAG_PX.x / scale), y: Math.round(DRAG_PX.y / scale) };
 
 let failed = 0;
+for (const entity of before.entities.filter((e) => e.name === "H1" || e.name === "boss")) {
+  const labelRotation = await page.evaluate((id) => {
+    const label = window.Konva.stages[0]?.findOne(`#${id}`)?.findOne(".entity-name");
+    return label?.getAbsoluteTransform().decompose().rotation;
+  }, entity.id);
+  const upright = labelRotation !== undefined && Math.abs(labelRotation) < 0.01;
+  console.log(`${upright ? "PASS" : "FAIL"} ${entity.name.padEnd(12)} label upright`);
+  if (!upright) failed++;
+}
+
 for (const [label, spec] of SPECS) {
   const entity = before.entities.find((e) => e.type === spec.type && e.x === spec.x && e.y === spec.y);
   const from = { x: box.x + size / 2 + entity.x * scale, y: box.y + size / 2 + entity.y * scale };

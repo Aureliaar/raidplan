@@ -417,9 +417,9 @@ await page.locator("div", { hasText: /^Go-far tether$/ }).last().dragTo(chip("Da
 await page.waitForTimeout(700);
 doc = await load();
 tethers = doc.entities.filter((e) => e.type === "tether" && e.style === "far");
-if (tethers.length !== 4 || !tethers.every((t) => t.range === 200))
+if (tethers.length !== 4 || !tethers.every((t) => t.range === 625))
   fail("Go-far tether on Damagers did not make four ranged links");
-else console.log("Go-far tether works from the Damagers card too");
+else console.log("Go-far tether works from the Damagers card with a 25-yalm default");
 
 /* --- bare floor makes a shape of your own --------------------------------- */
 
