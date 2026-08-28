@@ -67,15 +67,15 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 
 - Status: open
 - Issue: Editing a shared part currently requires duplicate positioning in each variant, but some shared parts must later diverge.
-- Agreed direction: Add an optional variant-link control to shared parts.
-- Open question: Whether unlinking snapshots every property immediately or diverges only upon the next edit.
+- Agreed direction: Use a contextual treatment rather than persistent controls in every variant header. Show quiet per-step inheritance glyphs in the timeline; expose full state and actions in the inspector. Automatic detachment already snapshots the whole step upon its first scene edit (2.3).
+- Open question: Whether an explicit pre-emptive “detach now” action is useful in addition to automatic first-edit detachment.
 
 ### 2.2 — Align-to-other-variant action
 
 - Status: open
 - Issue: Authors need exact synchronization after variants have diverged.
-- Agreed direction: Add an explicit align/copy-from-other-variant action in part details.
-- Open question: Whether alignment covers only transforms or all visual/attachment properties.
+- Agreed direction: In the inspector, show `Following shared` or `Edited independently`. For detached steps, provide `Resume shared` with explicit copy that the step's edits will be discarded. This removes the detached snapshot and resumes live inheritance; it is not a one-time positional copy.
+- Open question: Whether a separate one-time “copy shared state but remain detached” action is needed later.
 
 ### 2.3 — New-variant initial inheritance
 
