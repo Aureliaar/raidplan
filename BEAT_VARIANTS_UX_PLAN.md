@@ -14,6 +14,7 @@ This plan replaces whole-Mechanic variants with variants owned by one Beat. It u
 
 - There is no Mechanic-wide active Variant.
 - Every varying Beat independently remembers which Variant is being previewed.
+- Sibling Variant boxes inside one Beat are mutually exclusive: exactly one playable Variant contributes at a time. The Beat's direct/shared Parts always contribute alongside it.
 - Preview choice and edit destination are separate state:
   - `Preview` determines what the canvas/playback displays.
   - `Editing` determines where the next authored change is stored.
@@ -170,7 +171,9 @@ PREVIEW   Explosion: Light ▾   Orbs: Clockwise ▾
 - Choices remain remembered while navigating Steps, even while a Beat is inactive.
 - Viewer mode uses the same preview strip without authoring controls.
 - Shared Beats never appear in the strip.
-- A/D cycles the selected/focused Beat's Variants; if no Beat is focused and several vary, it does nothing rather than guessing.
+- A/D cycles the selected/focused Beat's mutually exclusive Variant boxes.
+- If exactly one varying Beat is active on the current Step, A/D cycles it automatically even when it is not selected, preserving the previous quick-preview behavior.
+- If several varying Beats are active and none is selected/focused, A/D does nothing and briefly asks the user to choose a Beat rather than changing an unrelated choice invisibly.
 - W/S continues changing Steps.
 
 Optional later feature: **Routes**, named presets containing only a `Beat → Variant` selection map. Manually changing a selection makes the current preview `Custom`. Routes own no Parts or movement.
