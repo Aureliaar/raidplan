@@ -15,6 +15,7 @@
     "e2e:background": "node scripts/e2e-background.mjs",
     "e2e:calibration": "node scripts/e2e-calibration.mjs",
     "e2e:click": "node scripts/e2e-click.mjs",
+    "e2e:contextual-panels": "node scripts/e2e-contextual-panels.mjs",
     "e2e:debuff": "node scripts/e2e-debuff.mjs",
     "e2e:glide": "node scripts/e2e-glide.mjs",
     "e2e:history": "node scripts/e2e-history.mjs",

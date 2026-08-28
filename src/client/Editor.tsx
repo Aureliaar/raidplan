@@ -1456,7 +1456,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             Read-only. {user ? "You have viewer access to this plan." : "Sign in to edit plans of your own."}
           </aside>
         ) : (
-        <aside className="panel w-[320px] shrink-0 overflow-y-auto border-y-0 border-r-0 p-3">
+        <aside
+          className="panel w-[320px] shrink-0 overflow-y-auto border-y-0 border-r-0 p-3"
+          data-panel={selectedEntity ? "inspector" : "palette"}
+        >
+          {!selectedEntity ? (
+          <>
           <h2 className="label mb-2">Add</h2>
           <p className="mb-2 text-xs text-ink-400">
             Drag onto the floor to place one, onto a group to give everybody one, or onto a boss,
@@ -1580,7 +1585,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             </button>
             {note && <span className="text-xs text-ink-400">{note}</span>}
           </div>
-
+          </>
+          ) : (
           <Inspector
             plan={plan}
             entity={selectedEntity}
@@ -1592,6 +1598,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             run={run}
             onDeselect={() => setSelected(null)}
           />
+          )}
         </aside>
         )}
       </div>
