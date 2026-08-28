@@ -284,10 +284,19 @@ Acceptance:
 
 ## 2.6.13 — Open product decisions
 
-- Whether collaborators exclusively own Beat Variants, or `createdBy` becomes attribution only while normal editor permissions govern edits.
-- Whether Routes ship with the migration or remain hidden compatibility records until later.
-- Whether `Duplicate Variant` copies every detached Step or only the currently selected Step.
 - Whether movement overrides should later support boss/add/anchor actors in the UI; the schema should use general actor IDs even if the first UI exposes players only.
+
+## 2.6.13A — Decisions locked for implementation
+
+- A detached content snapshot is the complete resolved content of its owning Beat at one `Beat × Variant × Step`; it replaces only that Beat's shared result at that Step.
+- Compatibility Routes and a document-owned default Route ship with migration. Local preview changes remain session-only.
+- `Duplicate Variant` copies content and movement across all Steps and rewires Variant-private Part references.
+- Beat Variants are collaborative plan content. `createdBy` is attribution only; normal plan editor permissions govern edits and the plan owner retains destructive authority.
+- If several selected Beat Variants move the same actor at one Step, render that actor at the shared Step pose and show a conflict. Never choose a winning Beat silently, and do not allow the conflicting map to become a default or saved Route.
+- A/D changes preview only. It never redirects the edit destination; only explicit inspector/Variant-box selection does that.
+- Legacy conversion is owner-only and creates a new plan copy atomically with a pinned source archive; it never mutates the only source.
+- Cross-Beat draw order is stable Beat order followed by Part order within each resolved Beat.
+- Migration tests use a pinned Dark & Light export and checksum, never the mutable public URL.
 
 ## 2.6.14 — Rejected approaches
 
