@@ -101,6 +101,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [note, setNote] = useState("");
   const [connected, setConnected] = useState(false);
   const [history, setHistory] = useState<PlanHistory | null>(null);
+  /** History metadata and snapshots already seen by this tab, for instant travel. */
+  const historyRef = useRef<PlanHistory | null>(null);
+  historyRef.current = history;
+  const historyPlans = useRef(new Map<string, Plan>());
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
@@ -145,6 +149,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   planRef.current = plan;
   /** The last server-confirmed document, beneath any in-flight local edits. */
   const serverPlanRef = useRef<Plan | null>(null);
+  /** A cached undo/redo destination held above late socket echoes until acked. */
+  const pendingHistoryPlan = useRef<{ token: symbol; plan: Plan } | null>(null);
   const pendingEntityEdits = useRef<{ token: symbol; ops: Op[] }[]>([]);
   /** Preserve the order gestures were made in, even if fetches would race. */
   const mutationTail = useRef<Promise<void>>(Promise.resolve());
@@ -166,6 +172,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     if (!serverPlanRef.current || incoming.rev >= serverPlanRef.current.rev)
       serverPlanRef.current = incoming;
     let visible = serverPlanRef.current;
+    if (pendingHistoryPlan.current) {
+      visible = hydratePlan({
+        ...pendingHistoryPlan.current.plan,
+        rev: Math.max(pendingHistoryPlan.current.plan.rev, visible.rev + 1),
+      });
+    }
     // Optimistic operations contain no server-generated IDs, so they are safe
     // to replay over broadcasts until their own request is acknowledged.
     for (const pending of pendingEntityEdits.current) {
@@ -329,6 +341,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 ),
               }
             : current;
+        const currentRevision = historyRef.current?.currentId;
+        if (serverPlanRef.current && currentRevision)
+          historyPlans.current.set(currentRevision, hydratePlan(serverPlanRef.current));
         const symmetricCount = symmetryCount === 2 ? 2 : 4;
         const expanded = contextual.flatMap((op): Op[] => {
           if (
@@ -359,7 +374,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           if (op.op === "assign_mech" && editPlan && expandSymmetry && symmetryCount > 1)
             return [{ ...op, ids: symmetryIds(editPlan, op.ids) }];
           return [op];
-        });
+        }).map((op): Op =>
+          op.op === "add_entity" && typeof op.spec.id !== "string"
+            ? {
+                ...op,
+                // Caller-provided IDs make creation just as optimistic as a
+                // move or delete. The preview can become the real entity in
+                // the same paint instead of vanishing for a round trip.
+                spec: { ...op.spec, id: `${op.spec.type}_${crypto.randomUUID()}` },
+              }
+            : op
+        );
         const optimistic = expanded.every(
           (op) =>
             op.op === "update_entity" ||
@@ -387,6 +412,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             (edit) => edit.token !== optimisticToken
           );
         showServerPlan(res.plan);
+        if (res.history.currentId)
+          historyPlans.current.set(res.history.currentId, hydratePlan(res.plan));
+        historyRef.current = res.history;
         setHistory(res.history);
         return res;
       } catch (e) {
@@ -407,6 +435,21 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     async (direction: "undo" | "redo" | "revert", revisionId?: string) => {
       if (historyBusy) return;
       setHistoryBusy(true);
+      const before = planRef.current;
+      const known = historyRef.current;
+      const targetId =
+        direction === "undo" ? known?.undoId : direction === "redo" ? known?.redoId : revisionId;
+      const cached = targetId ? historyPlans.current.get(targetId) : undefined;
+      const historyToken = cached ? Symbol("history travel") : null;
+      if (before && cached) {
+        // History snapshots keep their original revision number. Rebase the
+        // cached contents over the current document so an in-flight socket
+        // update cannot mistake this intentional transition for stale state.
+        const optimistic = hydratePlan({ ...cached, rev: before.rev + 1 });
+        pendingHistoryPlan.current = { token: historyToken!, plan: optimistic };
+        planRef.current = optimistic;
+        setPlan(optimistic);
+      }
       try {
         const res =
           direction === "undo"
@@ -414,7 +457,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             : direction === "redo"
               ? await api.redo(planId)
               : await api.revert(planId, revisionId!, editSession.current);
+        if (historyToken && pendingHistoryPlan.current?.token === historyToken)
+          pendingHistoryPlan.current = null;
         showServerPlan(res.plan);
+        if (res.history.currentId)
+          historyPlans.current.set(res.history.currentId, hydratePlan(res.plan));
+        historyRef.current = res.history;
         setHistory(res.history);
         setSelected(null);
         setNote(
@@ -425,6 +473,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               : "Restored an earlier revision"
         );
       } catch (e) {
+        if (historyToken && pendingHistoryPlan.current?.token === historyToken)
+          pendingHistoryPlan.current = null;
+        if (cached && serverPlanRef.current) showServerPlan(serverPlanRef.current);
         setError((e as Error).message);
       } finally {
         setHistoryBusy(false);

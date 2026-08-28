@@ -25,6 +25,9 @@ export interface PlanRevision {
 export interface PlanHistory {
   revisions: PlanRevision[];
   currentId: string | null;
+  /** The exact snapshots the server stacks would visit next. */
+  undoId: string | null;
+  redoId: string | null;
   canUndo: boolean;
   canRedo: boolean;
 }

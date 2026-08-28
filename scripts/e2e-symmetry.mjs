@@ -240,7 +240,24 @@ if (
 const beforeCreate = await read();
 if (beforeCreate.entities.some((e) => e.type === "zone" && e.shape === "circle"))
   fail("circle placement committed before mouseup");
+// Hold the write off the server long enough to inspect the first post-drop
+// paint. The preview must hand directly to optimistic persistent entities.
+await page.route(`**/api/plans/${id}/ops`, async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await route.continue();
+}, { times: 1 });
 await page.mouse.up();
+await page.waitForTimeout(50);
+const handoff = await page.evaluate(() => ({
+  previews: window.Konva.stages[0].find(".drop-preview").length,
+  circles: window.Konva.stages[0]
+    .find(".entity")
+    .filter((node) => node.id().startsWith("zone_"))
+    .map((node) => ({ x: Math.round(node.x()), y: Math.round(node.y()) })),
+}));
+if (handoff.previews || handoff.circles.length !== 4)
+  fail(`drop handoff flashed before the server reply: ${JSON.stringify(handoff)}`);
+else console.log("mouseup hands the preview directly to persistent entities without a blank frame");
 await page.waitForTimeout(700);
 
 plan = await read();
