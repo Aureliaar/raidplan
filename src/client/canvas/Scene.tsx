@@ -473,6 +473,16 @@ export function Scene({
 
     const hits = stage.getAllIntersections(point);
     const arenaAt = { x: (point.x - size / 2) / scale, y: (point.y - size / 2) / scale };
+    // A frozen waymark is still the thing the pointer visibly landed on. Do
+    // not click through it into a smaller actor underneath; on the Step layer
+    // the mark is scenery and the whole gesture is intentionally inert.
+    if (
+      layer !== "markers" &&
+      hits.some((shape) => {
+        const group = shape.findAncestor(".entity", true) as Konva.Group | undefined;
+        return group ? byId.get(group.id())?.type === "marker" : false;
+      })
+    ) return undefined;
     let best: { node: Konva.Group; id: string } | undefined;
     let bestSize = Infinity;
     for (const shape of hits) {
@@ -496,6 +506,22 @@ export function Scene({
   }
 
   function pickAt(evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+    const stagePoint = evt.target.getStage()?.getPointerPosition();
+    const onFrozenMarker =
+      layer !== "markers" &&
+      !!stagePoint &&
+      entities.some(
+        (entity) =>
+          entity.type === "marker" &&
+          Math.hypot(
+            (stagePoint.x - size / 2) / scale - entity.x,
+            (stagePoint.y - size / 2) / scale - entity.y,
+          ) <= entity.size * entity.scale * 0.55
+      );
+    if (onFrozenMarker) {
+      onSelect([]);
+      return;
+    }
     const best = under(evt);
     const additive = "shiftKey" in evt.evt && evt.evt.shiftKey;
     if (!best) {

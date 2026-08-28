@@ -9,6 +9,7 @@ import { Inspector } from "./Inspector";
 import { ChatPanel } from "./ChatPanel";
 import { applyOp, type Op } from "../shared/apply";
 import type { PlanHistory, PlanRevision } from "../shared/history";
+import type { LegacyConversionReport } from "../shared/beat-variant-conversion";
 import type {
   Entity,
   Mech,
@@ -113,6 +114,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const historyPlans = useRef(new Map<string, Plan>());
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
+  const [conversionOpen, setConversionOpen] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
   /** What is in the hand mid-drag, purely so the drop targets can light up. */
   const [carrying, setCarrying] = useState<PaletteKind | null>(null);
@@ -1266,6 +1268,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             </button>
           </div>
         )}
+        {role === "owner" && plan.variantModel !== "beat" && plan.mechanics.some((section) => section.variants.length >= 2) && (
+          <button className="btn" onClick={() => setConversionOpen(true)}>
+            Convert Variants to Beats…
+          </button>
+        )}
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {editable && (
             <>
@@ -1363,6 +1370,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           </span>
         </div>
       </header>
+
+      {conversionOpen && (
+        <BeatVariantConversionDialog
+          planId={planId}
+          onClose={() => setConversionOpen(false)}
+        />
+      )}
 
       {plan.variantModel === "beat" && (
         <div className="panel flex flex-wrap items-center gap-2 border-x-0 border-t-0 px-3 py-1.5 text-xs">
@@ -1688,9 +1702,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         ) : (
         <aside
           className="panel w-[320px] shrink-0 overflow-y-auto border-y-0 border-r-0 p-3"
-          data-panel={selectedEntity ? "inspector" : "palette"}
+          data-panel={selectedEntity && layer !== "markers" ? "inspector" : "palette"}
         >
-          {!selectedEntity ? (
+          {!selectedEntity || layer === "markers" ? (
           <>
           <h2 className="label mb-2">Add</h2>
           <p className="mb-2 text-xs text-ink-400">
@@ -2584,7 +2598,7 @@ function StepRail({
                 className="flex items-center rounded border-t-2 px-1 py-1"
               >
                 <Rename
-                  title="Rename mech"
+                  title="Rename Beat"
                   value={mech.name}
                   placeholder={label}
                   onDone={(name) => {
@@ -3247,7 +3261,7 @@ function MechBox({
           </p>
           <button
             className="btn mt-2 h-6 w-full py-0 text-[11px]"
-            title="Deal the fight's debuffs onto role pools for this mech"
+            title="Deal the fight's debuffs onto role pools for this Beat"
             onClick={() => onDebuffs(open.id)}
           >
             {open.debuffs ? "edit the debuff deal" : "deal debuffs…"}
@@ -3293,6 +3307,110 @@ function Rename({
       }}
       onBlur={(e) => onDone(e.target.value)}
     />
+  );
+}
+
+function BeatVariantConversionDialog({
+  planId,
+  onClose,
+}: {
+  planId: string;
+  onClose: () => void;
+}) {
+  const [report, setReport] = useState<LegacyConversionReport | null>(null);
+  const [checksum, setChecksum] = useState("");
+  const [busy, setBusy] = useState(true);
+  const [error, setError] = useState("");
+
+  const runReport = useCallback(async () => {
+    setBusy(true);
+    setError("");
+    try {
+      const result = await api.beatVariantConversionDryRun(planId);
+      setReport(result.report);
+      setChecksum(result.checksum);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Could not inspect this plan");
+    } finally {
+      setBusy(false);
+    }
+  }, [planId]);
+
+  useEffect(() => {
+    void runReport();
+  }, [runReport]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="presentation">
+      <section
+        className="panel max-h-[90vh] w-full max-w-[620px] overflow-y-auto rounded-lg p-5 shadow-2xl"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="beat-conversion-title"
+      >
+        <div className="flex items-start gap-3">
+          <div>
+            <h2 id="beat-conversion-title" className="text-lg font-semibold text-white">
+              Convert legacy Variants to Beat boxes
+            </h2>
+            <p className="mt-1 text-sm text-ink-300">
+              This creates a new plan copy. The source plan stays unchanged and its exact payload is archived in the copy.
+            </p>
+          </div>
+          <button className="btn ml-auto" aria-label="Close conversion report" onClick={onClose}>✕</button>
+        </div>
+
+        {busy && <p className="mt-4 text-sm text-ink-300">Running lossless conversion report…</p>}
+        {error && <p className="mt-4 rounded border border-red-500 bg-red-950/50 p-3 text-sm text-red-200">{error}</p>}
+        {report && (
+          <div className="mt-4 space-y-3" data-conversion-report data-convertible={report.convertible ? "true" : "false"}>
+            <div className={`rounded border p-3 ${report.convertible ? "border-emerald-500 bg-emerald-950/35" : "border-amber-500 bg-amber-950/35"}`}>
+              <p className="font-semibold text-ink-100">
+                {report.convertible ? "Lossless conversion verified" : "Conversion needs attention"}
+              </p>
+              <p className="mt-1 text-xs text-ink-300">
+                {report.legacyMechanics} legacy sections · {report.legacyVariants} legacy choices · {report.varyingBeats} varying Beats · {report.movementBeats} movement Beats · {report.routes} compatibility Routes
+              </p>
+              <p className="mt-1 text-xs text-ink-300">
+                {report.comparisons} Route × Step render comparisons · {report.mismatches.length} mismatches · {report.compatibilityActorStates} pinned legacy actor-state overrides
+              </p>
+            </div>
+            {!!report.errors.length && (
+              <ul className="list-disc space-y-1 pl-5 text-sm text-red-200">
+                {report.errors.map((message, index) => <li key={`${index}:${message}`}>{message}</li>)}
+              </ul>
+            )}
+            {!!report.warnings.length && (
+              <ul className="list-disc space-y-1 pl-5 text-sm text-amber-200">
+                {report.warnings.map((message, index) => <li key={`${index}:${message}`}>{message}</li>)}
+              </ul>
+            )}
+            <p className="break-all text-[11px] text-ink-500">Source SHA-256: {checksum}</p>
+          </div>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button className="btn" disabled={busy} onClick={() => void runReport()}>Run report again</button>
+          <button
+            className="btn btn-primary"
+            disabled={busy || !report?.convertible || !checksum}
+            onClick={async () => {
+              setBusy(true);
+              setError("");
+              try {
+                const result = await api.convertBeatVariantsToCopy(planId, report!.sourceRev, checksum);
+                navigate(`/p/${result.id}`);
+              } catch (reason) {
+                setError(reason instanceof Error ? reason.message : "Could not create the converted copy");
+                setBusy(false);
+              }
+            }}
+          >
+            {busy ? "Checking…" : "Convert to copy"}
+          </button>
+        </div>
+      </section>
+    </div>
   );
 }
 

@@ -6,7 +6,7 @@ export interface HistoryActor {
   actorName?: string;
   /** A browser tab or automation run. Consecutive edits share this work session. */
   sessionId?: string;
-  source?: "editor" | "chat" | "mcp" | "system";
+  source?: "editor" | "chat" | "mcp" | "migration" | "system";
 }
 
 /** Lightweight revision metadata returned to the browser. */
@@ -18,7 +18,7 @@ export interface PlanRevision {
   sessionStartedAt: number;
   actorId?: string;
   actorName: string;
-  source: "editor" | "chat" | "mcp" | "system";
+  source: "editor" | "chat" | "mcp" | "migration" | "system";
   summary: string;
 }
 

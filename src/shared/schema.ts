@@ -350,11 +350,32 @@ export const BeatVariantContentSchema = z.object({
 });
 export type BeatVariantContent = z.infer<typeof BeatVariantContentSchema>;
 
+/**
+ * Frozen actor presentation fields needed only by a lossless legacy import.
+ * New authoring never writes this object: Beat Variant actor edits remain
+ * movement-only, while an archived legacy reading may have detached before a
+ * shared actor style changed (the rev-3018 fixture has one such size change).
+ */
+export const BeatVariantCompatibilityActorStateSchema = z.object({
+  name: z.string().optional(),
+  scale: z.number().optional(),
+  opacity: z.number().optional(),
+  locked: z.boolean().optional(),
+  hidden: z.boolean().optional(),
+  size: z.number().optional(),
+  job: z.string().optional(),
+  showFacing: z.boolean().optional(),
+  ring: z.boolean().optional(),
+  color: z.string().optional(),
+  icon: z.string().optional(),
+});
+
 /** A sparse absolute actor pose owned by one Beat Variant at one Step. */
 export const BeatVariantPoseSchema = z.object({
   x: z.number(),
   y: z.number(),
   rotation: z.number(),
+  compatibilityState: BeatVariantCompatibilityActorStateSchema.optional(),
 });
 export type BeatVariantPose = z.infer<typeof BeatVariantPoseSchema>;
 
@@ -601,6 +622,19 @@ export const PlanSchema = z.object({
   variantRoutes: z.array(BeatVariantRouteSchema).optional(),
   /** Route used when a viewer has not made local preview choices. */
   defaultVariantRoute: z.string().optional(),
+  /**
+   * Immutable recovery metadata pinned when an owner converts a legacy plan
+   * to a new copy. The payload itself stays in owner-only Durable Object
+   * storage, so it is not rebroadcast with every collaborative edit.
+   */
+  conversionArchive: z
+    .object({
+      sourcePlanId: z.string(),
+      sourceRev: z.number().int().nonnegative(),
+      sha256: z.string().regex(/^[a-f0-9]{64}$/),
+      convertedAt: z.number().nonnegative(),
+    })
+    .optional(),
   /** Draw order: later entities render on top. */
   entities: z.array(EntitySchema).default([]),
   ownerId: z.string().default(""),
@@ -1072,7 +1106,10 @@ export function composeBeatVariantEntities(
   const composed = entities.map((entity) => {
     const moves = movesByActor.get(entity.id);
     if (!moves?.length) return entity;
-    if (moves.length === 1) return { ...entity, ...moves[0].pose } as Entity;
+    if (moves.length === 1) {
+      const { compatibilityState, ...pose } = moves[0].pose;
+      return EntitySchema.parse({ ...entity, ...compatibilityState, ...pose });
+    }
     conflicts.push({
       actorId: entity.id,
       beatIds: moves.map((move) => move.beatId),

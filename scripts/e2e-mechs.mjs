@@ -81,7 +81,7 @@ const chip = (label) => page.locator("div", { hasText: new RegExp("^" + label + 
 
 /* --- open a slot in the step the cast snapshots in ------------------------ */
 
-await page.getByRole("button", { name: "New mech here" }).click();
+await page.getByRole("button", { name: "New Beat here" }).click();
 await page.waitForTimeout(500);
 doc = await load();
 if (doc.mechs.length !== 1) fail("New mech here made " + doc.mechs.length + " mechs");
@@ -106,7 +106,7 @@ else console.log("eight donuts dropped straight into the mech");
 // Unnamed, it goes by what is in it — F2 opens the name where the box sits, and
 // offers that as the placeholder rather than an empty field.
 await page.keyboard.press("F2");
-const nameField = page.getByTitle("Rename mech");
+const nameField = page.getByTitle("Rename Beat");
 await nameField.waitFor();
 const name = await nameField.getAttribute("placeholder");
 await nameField.press("Escape");
@@ -245,8 +245,8 @@ await ops({ op: "delete_mech", mechId: (await load()).mechs[1].id });
 // span and explicitly reopen it before using its controls.
 await page.getByRole("button", { name: "2. Run" }).click();
 await page.locator(`[data-mech="${mechId}"]`).click();
-const swatch = page.getByTitle(/^Draw it in #/).nth(3);
-const picked = (await swatch.getAttribute("title")).slice("Draw it in ".length);
+const swatch = page.getByTitle(/^Draw this Beat in #/).nth(3);
+const picked = (await swatch.getAttribute("title")).slice("Draw this Beat in ".length);
 await swatch.click();
 await page.waitForTimeout(500);
 const after = await mod((m, d) => m.entitiesForStep(d, d.steps[1].id).find((e) => e.mech).color);
@@ -257,13 +257,13 @@ if (!worn.length) fail("nothing of the mech was drawn in Run");
 /* --- the slot is the object ----------------------------------------------- */
 
 await page.keyboard.press("F2");
-await page.getByTitle("Rename mech").fill("Ice Missile");
-await page.getByTitle("Rename mech").press("Enter");
+await page.getByTitle("Rename Beat").fill("Ice Missile");
+await page.getByTitle("Rename Beat").press("Enter");
 await page.waitForTimeout(600);
 doc = await load();
 if (doc.mechs[0].name !== "Ice Missile") fail("renaming the slot did not stick: " + doc.mechs[0].name);
 
-await page.getByTitle("Delete this mech and everything in it").click();
+await page.getByTitle("Delete this Beat and everything in it").click();
 await page.waitForTimeout(700);
 doc = await load();
 if (doc.mechs.length) fail("the mech survived its own delete button");

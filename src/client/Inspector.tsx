@@ -435,7 +435,7 @@ export function Inspector({
         <h2 className="label">
           {entity.type} {overridden && <span className="text-accent">· step override</span>}
         </h2>
-        <button className="btn text-xs" onClick={onDeselect}>
+        <button className="btn text-xs" aria-label="Close inspector" onClick={onDeselect}>
           ✕
         </button>
       </div>
@@ -783,7 +783,7 @@ export function Inspector({
               disabled={!editable || !!entity.mech}
               title={
                 entity.mech
-                  ? "This belongs to a mech, which decides when it is on the floor"
+                  ? "This belongs to a Beat, which decides when it is on the floor"
                   : undefined
               }
               onClick={() =>
@@ -802,13 +802,13 @@ export function Inspector({
               <span
                 className="inline-block h-3 w-3 shrink-0 rounded-sm"
                 style={{ background: mechColor(plan, mechOf) }}
-                title="Drawn in its mech's colour"
+                title="Drawn in its Beat's colour"
               />
             )}
             <select
               className="field w-auto"
               disabled={!editable}
-              title="The mech this shape belongs to"
+              title="The Beat this Part belongs to"
               value={entity.mech ?? ""}
               onChange={(e) =>
                 run({
@@ -818,7 +818,7 @@ export function Inspector({
                 })
               }
             >
-              <option value="">no mech</option>
+              <option value="">no Beat</option>
               {plan.mechs.map((m) => (
                 <option key={m.id} value={m.id}>
                   {mechLabel(plan, m)}

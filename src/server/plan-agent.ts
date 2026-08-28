@@ -9,6 +9,7 @@ import type { HistoryActor, HistoryResult, PlanHistory, PlanRevision } from "../
 
 const EMPTY: Plan = PlanSchema.parse({ id: "", name: "", steps: [], entities: [] });
 const HISTORY_INDEX = "plan-history:index:v1";
+const CONVERSION_ARCHIVE = "beat-variant:conversion-archive:v1";
 const HISTORY_LIMIT = 100;
 const SESSION_GAP = 30 * 60 * 1000;
 
@@ -22,6 +23,14 @@ interface HistoryIndex {
   undo: string[];
   redo: string[];
   sessions?: Record<string, { id: string; startedAt: number; lastAt: number }>;
+}
+
+export interface StoredConversionArchive {
+  sourcePlanId: string;
+  sourceRev: number;
+  sha256: string;
+  payload: string;
+  convertedAt: number;
 }
 
 const revisionKey = (id: string) => `plan-history:revision:${id}`;
@@ -119,8 +128,60 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
    * still that worker's plan — only what is drawn on it comes across.
    */
   async replace(doc: unknown, keep: { id: string; ownerId: string }, actor?: HistoryActor): Promise<Plan> {
+    return this.replaceDocument(doc, keep, actor);
+  }
+
+  /** Install the one immutable source archive while creating a converted copy. */
+  async replaceConverted(
+    doc: unknown,
+    keep: { id: string; ownerId: string },
+    archive: StoredConversionArchive,
+    actor?: HistoryActor,
+  ): Promise<Plan> {
+    if (this.plan.conversionArchive || await this.ctx.storage.get(CONVERSION_ARCHIVE))
+      throw new Error("This plan already has a conversion archive");
+    const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(archive.payload));
+    const checksum = [...new Uint8Array(digest)]
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    if (checksum !== archive.sha256) throw new Error("Conversion archive checksum does not match its payload");
+    await this.ctx.storage.put(CONVERSION_ARCHIVE, archive);
+    try {
+      return await this.replaceDocument(doc, keep, actor, archive);
+    } catch (error) {
+      await this.ctx.storage.delete(CONVERSION_ARCHIVE);
+      throw error;
+    }
+  }
+
+  async getConversionArchive(): Promise<StoredConversionArchive | null> {
+    return (await this.ctx.storage.get<StoredConversionArchive>(CONVERSION_ARCHIVE)) ?? null;
+  }
+
+  private async replaceDocument(
+    doc: unknown,
+    keep: { id: string; ownerId: string },
+    actor?: HistoryActor,
+    archive?: StoredConversionArchive,
+  ): Promise<Plan> {
     const index = await this.ensureHistory(this.plan);
-    const plan = hydratePlan({ ...PlanSchema.parse(doc), ...keep, rev: (this.state?.rev ?? 0) + 1 });
+    const incoming = PlanSchema.parse(doc);
+    const conversionArchive = this.plan.conversionArchive ?? (archive
+      ? {
+          sourcePlanId: archive.sourcePlanId,
+          sourceRev: archive.sourceRev,
+          sha256: archive.sha256,
+          convertedAt: archive.convertedAt,
+        }
+      : undefined);
+    const plan = hydratePlan({
+      ...incoming,
+      ...keep,
+      rev: (this.state?.rev ?? 0) + 1,
+      // Once a converted copy has pinned its source, neither another import nor
+      // time travel may rewrite that provenance.
+      conversionArchive,
+    });
     this.setState(plan);
     await this.recordRevision(index, plan, "Imported plan contents", actor);
     return plan;
@@ -206,6 +267,7 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
       id: this.plan.id,
       ownerId: this.plan.ownerId,
       rev: this.plan.rev + 1,
+      conversionArchive: this.plan.conversionArchive ?? snapshot.conversionArchive,
     }));
   }
 
@@ -333,6 +395,13 @@ export interface PlanStub {
   }): Promise<Plan>;
   getPlan(): Promise<Plan>;
   replace(doc: unknown, keep: { id: string; ownerId: string }, actor?: HistoryActor): Promise<Plan>;
+  replaceConverted(
+    doc: unknown,
+    keep: { id: string; ownerId: string },
+    archive: StoredConversionArchive,
+    actor?: HistoryActor,
+  ): Promise<Plan>;
+  getConversionArchive(): Promise<StoredConversionArchive | null>;
   exists(): Promise<boolean>;
   apply(
     op: Op | Op[],

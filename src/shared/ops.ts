@@ -263,7 +263,11 @@ function updateBeatMovement(
     if (errors.length)
       throw new Error(`Movement would make saved Route “${route.name}” unsafe: ${errors.join("; ")}`);
   }
-  return { plan: touch(next), entity: { ...shared, ...pose } as Entity };
+  const { compatibilityState, ...movement } = pose;
+  return {
+    plan: touch(next),
+    entity: EntitySchema.parse({ ...shared, ...compatibilityState, ...movement }),
+  };
 }
 
 const hasAuthoredVariants = (step: Step): boolean =>

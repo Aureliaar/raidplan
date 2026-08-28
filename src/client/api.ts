@@ -3,6 +3,7 @@ import type { Plan, PlanRole, PlanSummary, User } from "../shared/schema";
 import type { HistoryResult, PlanHistory } from "../shared/history";
 import { prepareBackground } from "./background-image";
 import type { FFLogsDebuffDump } from "../shared/fflogs";
+import type { LegacyConversionReport } from "../shared/beat-variant-conversion";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -65,6 +66,21 @@ export const api = {
     }),
   collaborators: (id: string) =>
     req<{ userId: string; role: PlanRole; name: string | null }[]>(`/api/plans/${id}/collaborators`),
+  beatVariantConversionDryRun: (id: string) =>
+    req<{ checksum: string; report: LegacyConversionReport }>(`/api/plans/${id}/beat-variants/dry-run`, {
+      method: "POST",
+    }),
+  convertBeatVariantsToCopy: (id: string, expectedRev: number, expectedChecksum: string) =>
+    req<{
+      id: string;
+      sourceId: string;
+      sourceRev: number;
+      checksum: string;
+      report: LegacyConversionReport;
+    }>(`/api/plans/${id}/beat-variants/convert-to-copy`, {
+      method: "POST",
+      body: JSON.stringify({ expectedRev, expectedChecksum }),
+    }),
 
   /** Every mutation in the app goes through here. */
   ops: (planId: string, ops: Op | Op[], sessionId?: string) =>

@@ -6,8 +6,9 @@ import { registry } from "./registry";
 import { planStub } from "./plan-agent";
 import { RaidPlanMCP } from "./mcp";
 import { chatRoutes } from "./chat";
-import { createPlan, encounterSetup } from "../shared/ops";
+import { createPlan, encounterSetup, newId } from "../shared/ops";
 import { parsePublicOpsRequest, validatePublicOps } from "../shared/op-schema";
+import { convertLegacyPlan } from "../shared/beat-variant-conversion";
 import { guardVariants } from "./variants";
 import type { PlanRole, User } from "../shared/schema";
 import type { HistoryActor } from "../shared/history";
@@ -46,6 +47,11 @@ class HttpError extends Error {
 
 function historyActor(user: User, sessionId?: string, source: HistoryActor["source"] = "editor"): HistoryActor {
   return { actorId: user.id, actorName: user.name, sessionId: sessionId?.slice(0, 128), source };
+}
+
+async function sha256(payload: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
 }
 
 app.onError((err, c) => {
@@ -345,6 +351,94 @@ app.post("/api/plans/:id/import", async (c) => {
     ownerId: plan.ownerId,
   });
   return c.json({ ok: true, name: plan.name, steps: plan.steps.length });
+});
+
+/**
+ * Report exactly what a legacy Mechanic-wide Variant conversion would create.
+ * The source remains untouched, and the checksum identifies the precise
+ * document revision that was inspected.
+ */
+app.post("/api/plans/:id/beat-variants/dry-run", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "own");
+  const source = await (await planStub(c.env, id)).getPlan();
+  const payload = JSON.stringify(source);
+  const checksum = await sha256(payload);
+  return c.json({ checksum, report: convertLegacyPlan(source).report });
+});
+
+app.get("/api/plans/:id/beat-variants/conversion-archive", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "own");
+  const archive = await (await planStub(c.env, id)).getConversionArchive();
+  if (!archive) throw new HttpError(404, "This plan has no legacy conversion archive");
+  return c.json({ archive });
+});
+
+/**
+ * Owner-only, lossless conversion into a fresh document. The old plan is
+ * never mutated. Registration happens only after the complete converted copy
+ * and its immutable source archive have been installed in the new PlanAgent.
+ */
+app.post("/api/plans/:id/beat-variants/convert-to-copy", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "own");
+  const user = requireUser(c);
+  const body = (await c.req.json().catch(() => ({}))) as {
+    expectedRev?: number;
+    expectedChecksum?: string;
+  };
+  const source = await (await planStub(c.env, id)).getPlan();
+  if (body.expectedRev !== undefined && body.expectedRev !== source.rev)
+    throw new HttpError(409, `The source changed from rev ${body.expectedRev} to rev ${source.rev}; run the report again`);
+  const payload = JSON.stringify(source);
+  const checksum = await sha256(payload);
+  if (body.expectedChecksum && body.expectedChecksum !== checksum)
+    throw new HttpError(409, "The source changed since the conversion report; run the report again");
+
+  const copyId = newId("plan");
+  const converted = convertLegacyPlan(source, {
+    id: copyId,
+    ownerId: user.id,
+    archive: { payload, sha256: checksum, convertedAt: Date.now() },
+  });
+  if (!converted.plan)
+    return c.json({ error: "This plan cannot be converted losslessly", checksum, report: converted.report }, 409);
+
+  const copy = await planStub(c.env, copyId);
+  await copy.init({
+    id: copyId,
+    name: converted.plan.name,
+    encounter: converted.plan.encounter,
+    ownerId: user.id,
+    withParty: false,
+    variantModel: "beat",
+  });
+  const plan = await copy.replaceConverted(
+    converted.plan,
+    { id: copyId, ownerId: user.id },
+    {
+      sourcePlanId: source.id,
+      sourceRev: source.rev,
+      payload,
+      sha256: checksum,
+      convertedAt: converted.plan.conversionArchive!.convertedAt,
+    },
+    historyActor(user, undefined, "migration")
+  );
+  await registry(c.env).registerPlan({
+    id: copyId,
+    name: plan.name,
+    encounter: plan.encounter,
+    ownerId: user.id,
+  });
+  return c.json({
+    id: copyId,
+    sourceId: id,
+    sourceRev: source.rev,
+    checksum,
+    report: converted.report,
+  }, 201);
 });
 
 app.post("/api/plans/:id/public", async (c) => {

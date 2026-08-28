@@ -142,7 +142,7 @@ else console.log("and back down again, blocks and all");
 
 await page.getByRole("button", { name: "1. Step 1" }).click();
 await page.waitForTimeout(300);
-await page.getByRole("button", { name: "New mech here" }).click();
+await page.getByRole("button", { name: "New Beat here" }).click();
 await page.waitForTimeout(600);
 await page
   .locator("div", { hasText: /^Donut$/ })
@@ -151,7 +151,7 @@ await page
 await page.waitForTimeout(1100);
 if (!(await page.getByText("Donut ×8", { exact: true }).count()))
   fail("the open cast's Party set is missing from the group card");
-await page.getByRole("button", { name: "done filling" }).click();
+await page.getByRole("button", { name: "done editing Beat" }).click();
 await page.waitForTimeout(300);
 doc = await load();
 const mechId = doc.mechs[0]?.id;
@@ -165,7 +165,7 @@ await page.waitForTimeout(200);
 if (!(await page.getByText("Donut ×8", { exact: true }).count()))
   fail("the Party set did not return when its cast was selected again");
 else console.log("group-card sets follow the cast currently selected");
-await page.getByRole("button", { name: "done filling" }).click();
+await page.getByRole("button", { name: "done editing Beat" }).click();
 
 /* --- another reading of the mechanic copies nothing ----------------------- */
 
@@ -238,31 +238,31 @@ else {
 
 await page.locator(`[data-mech="${mechId}"]`).click();
 await page.waitForTimeout(200);
-if (!(await page.getByRole("button", { name: "done filling" }).count()))
+if (!(await page.getByRole("button", { name: "done editing Beat" }).count()))
   fail("selecting the cast did not open it for filling");
 
 await page.getByRole("button", { name: "2. Step 2" }).click();
 await page.waitForTimeout(200);
-if (!(await page.getByRole("button", { name: "done filling" }).count()))
+if (!(await page.getByRole("button", { name: "done editing Beat" }).count()))
   fail("the cast was unselected on its explosion boundary step");
 
 await page.getByRole("button", { name: "1. Step 1" }).click();
 await page.waitForTimeout(200);
-if (!(await page.getByRole("button", { name: "done filling" }).count()))
+if (!(await page.getByRole("button", { name: "done editing Beat" }).count()))
   fail("the cast was unselected on its snapshot boundary step");
 
 await page.keyboard.press("w");
 await page.waitForTimeout(200);
 if (!(await selectedRow()).includes("Pull"))
   fail("W did not navigate to the preceding step outside the cast's span");
-else if (await page.getByRole("button", { name: "done filling" }).count())
+else if (await page.getByRole("button", { name: "done editing Beat" }).count())
   fail("the cast stayed selected after navigating outside its span");
 else console.log("filling stays open on both boundary steps and closes outside the cast's span");
 
 // Return to the cast's section for the remaining reading and timing checks.
 await page.keyboard.press("s");
 await page.waitForTimeout(200);
-if (await page.getByRole("button", { name: "done filling" }).count())
+if (await page.getByRole("button", { name: "done editing Beat" }).count())
   fail("the cast became selected again after returning to its span");
 
 /* --- a cast is what a reading owns ---------------------------------------- */

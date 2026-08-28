@@ -74,7 +74,7 @@ else console.log("waymark A ignored a drag on the step layer");
 // And it does not steal the click either: nothing gets selected.
 await page.mouse.click(...Object.values(screen(markerA.x, markerA.y)));
 await page.waitForTimeout(300);
-if (await page.getByText("Select something on the canvas").isHidden())
+if ((await page.locator('[data-panel="palette"]').count()) !== 1)
   fail("clicking a frozen waymark selected something");
 else console.log("clicking a frozen waymark selects nothing");
 
@@ -127,6 +127,7 @@ else console.log("back on the step layer the party drags again");
 
 // Each slot stands on the mark it is named for: that is what "PF positions" is.
 const ON_MARK = { MT: "A", R2: "2", H2: "B", M2: "3", OT: "C", M1: "4", H1: "D", R1: "1" };
+await page.getByRole("button", { name: "Close inspector" }).click();
 await page.getByRole("button", { name: "standard markers" }).click();
 await page.waitForTimeout(400);
 await page.getByRole("button", { name: "PF positions" }).click();

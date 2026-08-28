@@ -14,6 +14,7 @@ import {
   describePlan,
   encounterSetup,
   findEntities,
+  newId,
   resolveRef,
 } from "../shared/ops";
 import {
@@ -24,14 +25,20 @@ import {
   MARKER_IDS,
   TETHER_STYLES,
   ZONE_SHAPES,
+  activeBeatVariants,
   authoredEntitiesForStep,
+  beatVariantLabel,
+  composeBeatVariantEntities,
+  defaultBeatVariantSelections,
   mechLabel,
   mechSpan,
   mechanicLabel,
   mechanicSteps,
+  validateBeatVariantSelections,
   variantLabel,
   type Plan,
 } from "../shared/schema";
+import { convertLegacyPlan } from "../shared/beat-variant-conversion";
 import { JOB_IDS } from "../shared/jobs";
 import { ACTOR_KEYS, ARENA_BACKGROUNDS, ASSETS, MARKER_KEYS, MECHANIC_KEYS } from "../shared/assets";
 
@@ -155,6 +162,24 @@ function variantIdOf(plan: Plan, mechanicId: string, variant: string): string {
   );
 }
 
+/** Accept a Beat-local Variant id, a 1-based index, its name or A/B letter. */
+function beatVariantIdOf(plan: Plan, beatId: string, variant: string): string {
+  const beat = plan.mechs.find((candidate) => candidate.id === beatId)!;
+  const byId = beat.variants.find((candidate) => candidate.id === variant);
+  if (byId) return byId.id;
+  const n = Number(variant);
+  if (Number.isInteger(n) && n >= 1 && n <= beat.variants.length) return beat.variants[n - 1].id;
+  const byName = beat.variants.find(
+    (candidate) => beatVariantLabel(beat, candidate.id).toLowerCase() === variant.toLowerCase()
+  );
+  if (byName) return byName.id;
+  throw new Error(
+    `No Variant "${variant}" of Beat ${mechLabel(plan, beat)}. Variants: ${beat.variants
+      .map((candidate, index) => `${index + 1}=${beatVariantLabel(beat, candidate.id)} [${candidate.id}]`)
+      .join(", ") || "none"}`
+  );
+}
+
 async function load(ctx: ToolContext, planId: string, need: "view" | "edit" | "own") {
   const role = await registry(ctx.env).roleFor(ctx.userId, planId);
   if (!role) throw new Error(`Plan ${planId} not found, or you do not have access to it`);
@@ -199,6 +224,37 @@ async function edit(ctx: ToolContext, planId: string, make: (plan: Plan) => Op |
 const planUrl = (ctx: ToolContext, id: string) => `${ctx.appUrl}/p/${id}`;
 const idOf = (v: unknown) => (v as { id: string }).id;
 
+async function sha256(payload: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function requireBeatModel(plan: Plan): void {
+  if (plan.variantModel !== "beat")
+    throw new Error("This is a legacy plan. Convert it to a copy before authoring Beat Variants.");
+}
+
+function resolvedBeatSelections(plan: Plan, selections: Record<string, string>): Record<string, string> {
+  requireBeatModel(plan);
+  return Object.fromEntries(
+    Object.entries(selections).map(([beatRef, variantRef]) => {
+      const beatId = mechIdOf(plan, beatRef);
+      return [beatId, beatVariantIdOf(plan, beatId, variantRef)];
+    })
+  );
+}
+
+function routeIdOf(plan: Plan, route: string): string {
+  const routes = plan.variantRoutes ?? [];
+  const byId = routes.find((candidate) => candidate.id === route);
+  if (byId) return byId.id;
+  const n = Number(route);
+  if (Number.isInteger(n) && n >= 1 && n <= routes.length) return routes[n - 1].id;
+  const byName = routes.find((candidate) => candidate.name.toLowerCase() === route.toLowerCase());
+  if (byName) return byName.id;
+  throw new Error(`No Route "${route}". Routes: ${routes.map((candidate, index) => `${index + 1}=${candidate.name} [${candidate.id}]`).join(", ") || "none"}`);
+}
+
 const stepArg = {
   step: z
     .string()
@@ -208,14 +264,40 @@ const stepArg = {
     .string()
     .optional()
     .describe(
-      "With `step`, in a mechanic that goes more than one way: file the pose under that reading only (id, index or name). A step shared by every reading can hold a different party layout in each."
+      "With `step`, file this edit under one Variant (id, index, name or letter). In a Beat Variant plan, also give `beat` when more than one varying Beat is active."
     ),
+  beat: z
+    .string()
+    .optional()
+    .describe("Beat id, index or name owning `variant`; optional when exactly one varying Beat is active in the Step"),
 };
 
-/** The variant a pose is filed under: named, and belonging to the step's mechanic. */
-function poseVariant(plan: Plan, stepId: string | undefined, variant?: string): string | undefined {
+/** The Variant an edit is filed under, resolved in either persisted model. */
+function poseVariant(
+  plan: Plan,
+  stepId: string | undefined,
+  variant?: string,
+  beatRef?: string,
+): string | undefined {
   if (variant && !stepId) throw new Error("Give step when selecting a variant");
   if (!variant) return undefined;
+  if (plan.variantModel === "beat") {
+    const active = activeBeatVariants(plan, stepId!, {});
+    const beatId = beatRef
+      ? mechIdOf(plan, beatRef)
+      : active.length === 1
+        ? active[0].beat.id
+        : undefined;
+    if (!beatId)
+      throw new Error(
+        active.length
+          ? "More than one varying Beat is active; give beat to choose the edit destination"
+          : "No varying Beat is active in that Step"
+      );
+    if (!active.some(({ beat }) => beat.id === beatId))
+      throw new Error(`Beat ${mechLabel(plan, plan.mechs.find((candidate) => candidate.id === beatId)!)} is not active in that Step`);
+    return beatVariantIdOf(plan, beatId, variant);
+  }
   const step = plan.steps.find((s) => s.id === stepId);
   if (!step?.mechanic) throw new Error("That step is not in a mechanic, so it has no readings");
   return variantIdOf(plan, step.mechanic, variant);
@@ -223,9 +305,21 @@ function poseVariant(plan: Plan, stepId: string | undefined, variant?: string): 
 
 /** Let entity lookup see variant-only additions when an op targets a detached scene. */
 function scenePlan(plan: Plan, stepId?: string, variantId?: string): Plan {
-  return stepId && variantId
-    ? { ...plan, entities: authoredEntitiesForStep(plan, stepId, variantId) }
-    : plan;
+  if (!stepId || !variantId) return plan;
+  if (plan.variantModel === "beat") {
+    const beat = plan.mechs.find((candidate) =>
+      candidate.variants.some((variant) => variant.id === variantId)
+    );
+    if (!beat) throw new Error(`No Beat Variant ${variantId}`);
+    return {
+      ...plan,
+      entities: composeBeatVariantEntities(plan, stepId, {
+        ...defaultBeatVariantSelections(plan),
+        [beat.id]: variantId,
+      }).entities,
+    };
+  }
+  return { ...plan, entities: authoredEntitiesForStep(plan, stepId, variantId) };
 }
 
 /* -------------------------------------------------------------------- tools */
@@ -256,7 +350,7 @@ export const TOOLS: ToolDef[] = [
       with_waymarks: z.boolean().optional().describe("Seed A-D and 1-4 waymarks (default false)"),
     },
     async run(ctx, a) {
-      const draft = createPlan({ name: a.name, encounter: a.encounter, ownerId: ctx.userId });
+      const draft = createPlan({ name: a.name, encounter: a.encounter, ownerId: ctx.userId, variantModel: "beat" });
       const stub = await planStub(ctx.env, draft.id);
       await stub.init({
         id: draft.id,
@@ -264,6 +358,7 @@ export const TOOLS: ToolDef[] = [
         encounter: a.encounter,
         ownerId: ctx.userId,
         withParty: a.with_party ?? true,
+        variantModel: "beat",
       });
       await registry(ctx.env).registerPlan({
         id: draft.id,
@@ -300,14 +395,22 @@ export const TOOLS: ToolDef[] = [
       plan_id: z.string(),
       step: z.string().optional().describe("Step id, 1-based index or name; omit for every step"),
       variant: z.string().optional().describe("With step, inspect this reading (id, index, name or letter)"),
+      beat: z.string().optional().describe("In a Beat Variant plan, the Beat owning variant"),
     },
     async run(ctx, a) {
       const { plan } = await load(ctx, a.plan_id, "view");
       const stepId = stepIdOf(plan, a.step);
       if (a.variant && !stepId) throw new Error("Give step when selecting a variant");
-      const variant = poseVariant(plan, stepId, a.variant);
+      const variant = poseVariant(plan, stepId, a.variant, a.beat);
       const step = stepId ? plan.steps.find((candidate) => candidate.id === stepId) : undefined;
-      const shown = step?.mechanic && variant ? { [step.mechanic]: variant } : undefined;
+      const beatOwner = variant && plan.variantModel === "beat"
+        ? plan.mechs.find((candidate) => candidate.variants.some((choice) => choice.id === variant))
+        : undefined;
+      const shown = beatOwner
+        ? { [beatOwner.id]: variant! }
+        : step?.mechanic && variant
+          ? { [step.mechanic]: variant }
+          : undefined;
       return describePlan(plan, stepId, shown);
     },
   }),
@@ -319,6 +422,81 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const { plan } = await load(ctx, a.plan_id, "view");
       return JSON.stringify(plan, null, 2);
+    },
+  }),
+
+  def({
+    name: "inspect_legacy_variant_conversion",
+    description:
+      "Owner-only dry run for converting legacy Mechanic-wide Variants into Beat Variant boxes. Returns a checksum, compatibility Route counts and exact visual-equivalence results without writing anything.",
+    schema: { plan_id: z.string() },
+    async run(ctx, a) {
+      const { plan } = await load(ctx, a.plan_id, "own");
+      const payload = JSON.stringify(plan);
+      const checksum = await sha256(payload);
+      const report = convertLegacyPlan(plan).report;
+      return JSON.stringify({ checksum, report }, null, 2);
+    },
+  }),
+
+  def({
+    name: "convert_legacy_variants_to_copy",
+    description:
+      "Owner-only commit of a clean legacy conversion report into a fresh Beat Variant plan. The source is never changed; its exact payload and checksum are pinned in the copy.",
+    schema: {
+      plan_id: z.string(),
+      expected_rev: z.number().int().nonnegative().describe("sourceRev returned by inspect_legacy_variant_conversion"),
+      expected_checksum: z.string().length(64).describe("checksum returned by inspect_legacy_variant_conversion"),
+    },
+    async run(ctx, a) {
+      const { plan: source } = await load(ctx, a.plan_id, "own");
+      if (source.rev !== a.expected_rev)
+        throw new Error(`The source changed from rev ${a.expected_rev} to rev ${source.rev}; inspect it again`);
+      const payload = JSON.stringify(source);
+      const checksum = await sha256(payload);
+      if (checksum !== a.expected_checksum)
+        throw new Error("The source checksum changed; inspect it again");
+      const copyId = newId("plan");
+      const result = convertLegacyPlan(source, {
+        id: copyId,
+        ownerId: ctx.userId,
+        archive: { payload, sha256: checksum, convertedAt: Date.now() },
+      });
+      if (!result.plan)
+        throw new Error(`Conversion is not lossless: ${result.report.errors.join("; ")}`);
+      const me = await registry(ctx.env).getUser(ctx.userId);
+      const copy = await planStub(ctx.env, copyId);
+      await copy.init({
+        id: copyId,
+        name: result.plan.name,
+        encounter: result.plan.encounter,
+        ownerId: ctx.userId,
+        withParty: false,
+        variantModel: "beat",
+      });
+      const plan = await copy.replaceConverted(
+        result.plan,
+        { id: copyId, ownerId: ctx.userId },
+        {
+          sourcePlanId: source.id,
+          sourceRev: source.rev,
+          payload,
+          sha256: checksum,
+          convertedAt: result.plan.conversionArchive!.convertedAt,
+        },
+        {
+          actorId: ctx.userId,
+          actorName: me?.name,
+          source: "migration",
+        }
+      );
+      await registry(ctx.env).registerPlan({
+        id: copyId,
+        name: plan.name,
+        encounter: plan.encounter,
+        ownerId: ctx.userId,
+      });
+      return `Converted copy ${copyId} created from ${a.plan_id} rev ${source.rev}; source unchanged — ${planUrl(ctx, copyId)}`;
     },
   }),
 
@@ -723,6 +901,203 @@ export const TOOLS: ToolDef[] = [
   }),
 
   def({
+    name: "list_beats",
+    description:
+      "List timed Beats, their mutually exclusive child Variant boxes, and optional Step-local content/movement state.",
+    schema: {
+      plan_id: z.string(),
+      step: z.string().optional().describe("Step id, index or name to include per-Variant COW state"),
+    },
+    async run(ctx, a) {
+      const { plan } = await load(ctx, a.plan_id, "view");
+      requireBeatModel(plan);
+      const stepId = stepIdOf(plan, a.step);
+      if (!plan.mechs.length) return "No Beats yet.";
+      return plan.mechs.map((beat, index) => {
+        const variants = beat.variants.map((variant) => {
+          const step = stepId ? plan.steps.find((candidate) => candidate.id === stepId) : undefined;
+          const content = step?.beatVariantContent?.[variant.id];
+          const movement = step?.beatVariantMovement?.[variant.id] ?? {};
+          const state = stepId
+            ? `${content ? "Edited independently" : "Following shared"}; ${Object.keys(movement).length ? `${Object.keys(movement).length} actor movement override(s)` : "following shared movement"}`
+            : "";
+          return `${beatVariantLabel(beat, variant.id)} [${variant.id}]${variant.createdBy ? ` by ${variant.createdByName || variant.createdBy}` : ""}${state ? ` — ${state}` : ""}`;
+        });
+        return `${index + 1}. ${mechLabel(plan, beat)} [${beat.id}] — ${mechSpan(plan, beat).length} Step(s)${variants.length ? `\n   ${variants.join("\n   ")}` : " — shared only"}`;
+      }).join("\n");
+    },
+  }),
+
+  def({
+    name: "add_beat_variant",
+    description:
+      "Add a mutually exclusive Variant box inside one Beat. The first call creates A and B; both initially follow that Beat's shared Parts and Step movement.",
+    schema: { plan_id: z.string(), beat: z.string(), name: z.string().optional() },
+    async run(ctx, a) {
+      let beatId = "";
+      const result = await edit(ctx, a.plan_id, (plan) => {
+        requireBeatModel(plan);
+        beatId = mechIdOf(plan, a.beat);
+        return { op: "add_beat_variant", beatId, name: a.name };
+      });
+      const beat = result.plan.mechs.find((candidate) => candidate.id === beatId)!;
+      return `${mechLabel(result.plan, beat)} Variants: ${beat.variants.map((variant) => `${beatVariantLabel(beat, variant.id)} [${variant.id}]`).join(" / ")}`;
+    },
+  }),
+
+  def({
+    name: "rename_beat_variant",
+    description: "Rename one Beat-local Variant. Attribution is informational; ordinary plan editor permissions apply.",
+    schema: { plan_id: z.string(), beat: z.string(), variant: z.string(), name: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        requireBeatModel(plan);
+        const beatId = mechIdOf(plan, a.beat);
+        return { op: "update_beat_variant", beatId, variantId: beatVariantIdOf(plan, beatId, a.variant), patch: { name: a.name } };
+      });
+      return "Beat Variant renamed.";
+    },
+  }),
+
+  def({
+    name: "duplicate_beat_variant",
+    description:
+      "Duplicate a Beat Variant across every Step. Content and movement are deep-copied with fresh private Part ids and internal references.",
+    schema: { plan_id: z.string(), beat: z.string(), variant: z.string(), name: z.string().optional() },
+    async run(ctx, a) {
+      const result = await edit(ctx, a.plan_id, (plan) => {
+        requireBeatModel(plan);
+        const beatId = mechIdOf(plan, a.beat);
+        return { op: "duplicate_beat_variant", beatId, variantId: beatVariantIdOf(plan, beatId, a.variant), name: a.name };
+      });
+      const made = result.values[0] as { id: string };
+      return `Beat Variant duplicated [${made.id}].`;
+    },
+  }),
+
+  def({
+    name: "delete_beat_variant",
+    description: "Delete one Beat-local Variant and its Step-local content/movement. The owner may always perform this destructive edit.",
+    schema: { plan_id: z.string(), beat: z.string(), variant: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        requireBeatModel(plan);
+        const beatId = mechIdOf(plan, a.beat);
+        return { op: "delete_beat_variant", beatId, variantId: beatVariantIdOf(plan, beatId, a.variant) };
+      });
+      return "Beat Variant deleted.";
+    },
+  }),
+
+  def({
+    name: "reset_beat_variant_step",
+    description:
+      "Resume shared Beat content, clear sparse actor movement, or reset both independent domains for one Beat Variant at one Step.",
+    schema: {
+      plan_id: z.string(),
+      beat: z.string(),
+      variant: z.string(),
+      step: z.string(),
+      domain: z.enum(["content", "movement", "both"]),
+    },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        requireBeatModel(plan);
+        const beatId = mechIdOf(plan, a.beat);
+        const variantId = beatVariantIdOf(plan, beatId, a.variant);
+        const stepId = stepIdOf(plan, a.step)!;
+        if (!mechSpan(plan, plan.mechs.find((candidate) => candidate.id === beatId)!).includes(stepId))
+          throw new Error("That Beat is not active in the chosen Step");
+        return {
+          op: a.domain === "content"
+            ? "resume_beat_variant_content"
+            : a.domain === "movement"
+              ? "clear_beat_variant_movement"
+              : "reset_beat_variant_step",
+          stepId,
+          variantId,
+        };
+      });
+      return a.domain === "content" ? "Following shared Beat Parts again." : a.domain === "movement" ? "Following shared Step movement again." : "Beat Variant Step reset to shared content and movement.";
+    },
+  }),
+
+  def({
+    name: "list_beat_variant_routes",
+    description: "List saved non-owning Beat-selection Routes and the document default.",
+    schema: { plan_id: z.string() },
+    async run(ctx, a) {
+      const { plan } = await load(ctx, a.plan_id, "view");
+      requireBeatModel(plan);
+      const routes = plan.variantRoutes ?? [];
+      if (!routes.length) return "No saved Beat Variant Routes.";
+      return routes.map((route, index) => {
+        const choices = Object.entries(route.selections).map(([beatId, variantId]) => {
+          const beat = plan.mechs.find((candidate) => candidate.id === beatId);
+          return beat ? `${mechLabel(plan, beat)}=${beatVariantLabel(beat, variantId)}` : `${beatId}=${variantId}`;
+        });
+        return `${index + 1}. ${route.name} [${route.id}]${route.id === plan.defaultVariantRoute ? " (default)" : ""}${route.compatibility ? " (compatibility)" : ""} — ${choices.join(", ")}`;
+      }).join("\n");
+    },
+  }),
+
+  def({
+    name: "save_beat_variant_route",
+    description:
+      "Save a complete conflict-free Beat preview as a non-owning Route. Keys/values accept Beat and Variant ids, indexes or names.",
+    schema: { plan_id: z.string(), name: z.string().optional(), selections: z.record(z.string(), z.string()), make_default: z.boolean().optional() },
+    async run(ctx, a) {
+      const result = await edit(ctx, a.plan_id, (plan) => {
+        const selections = resolvedBeatSelections(plan, a.selections);
+        const errors = validateBeatVariantSelections(plan, selections);
+        if (errors.length) throw new Error(errors.join("; "));
+        return { op: "add_beat_variant_route", name: a.name, selections };
+      });
+      const route = result.values[0] as { id: string };
+      if (a.make_default)
+        await edit(ctx, a.plan_id, () => ({ op: "set_default_beat_variant_route", routeId: route.id }));
+      return `Saved Beat Variant Route [${route.id}]${a.make_default ? " as the document default" : ""}.`;
+    },
+  }),
+
+  def({
+    name: "update_beat_variant_route",
+    description: "Rename a saved Route or replace its complete conflict-free Beat selection map.",
+    schema: { plan_id: z.string(), route: z.string(), name: z.string().optional(), selections: z.record(z.string(), z.string()).optional() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => ({
+        op: "update_beat_variant_route",
+        routeId: routeIdOf(plan, a.route),
+        patch: { name: a.name, selections: a.selections ? resolvedBeatSelections(plan, a.selections) : undefined },
+      }));
+      return "Beat Variant Route updated.";
+    },
+  }),
+
+  def({
+    name: "delete_beat_variant_route",
+    description: "Delete a saved Beat Variant Route. Beat content and movement are not owned by Routes.",
+    schema: { plan_id: z.string(), route: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => ({ op: "delete_beat_variant_route", routeId: routeIdOf(plan, a.route) }));
+      return "Beat Variant Route deleted.";
+    },
+  }),
+
+  def({
+    name: "set_default_beat_variant_route",
+    description: "Choose the plan's document-owned default Route, or clear it. Browser preview overrides remain session-only.",
+    schema: { plan_id: z.string(), route: z.string().optional() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => ({
+        op: "set_default_beat_variant_route",
+        routeId: a.route ? routeIdOf(plan, a.route) : undefined,
+      }));
+      return a.route ? "Default Beat Variant Route changed." : "Document default Route cleared.";
+    },
+  }),
+
+  def({
     name: "add_mech",
     description:
       "Add a mechanic: one cast, spanning the step it snapshots in to the step it goes off in. Shapes put in it are visible for exactly that span and are aimed at where people stood at the snapshot — put a zone in one with `mech` on add_zone, or move an existing one with assign_mech.",
@@ -792,7 +1167,7 @@ export const TOOLS: ToolDef[] = [
           ids: a.ids,
           mechId: a.mech ? mechIdOf(plan, a.mech) : null,
           stepId,
-          variant: poseVariant(plan, stepId, a.variant),
+          variant: poseVariant(plan, stepId, a.variant, a.beat),
         };
       });
       return a.mech ? `${a.ids.length} shape(s) moved into the mech.` : `${a.ids.length} shape(s) taken out of their mech.`;
@@ -835,7 +1210,7 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         return { op: "add_entity", stepId, variant, spec: {
           type: "player",
           job: a.job,
@@ -869,7 +1244,7 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         return { op: "add_entity", stepId, variant, spec: {
           type: "enemy",
           name: a.name,
@@ -931,7 +1306,7 @@ export const TOOLS: ToolDef[] = [
         op: "arrange_party",
         radiusFraction: a.distance,
         stepId: stepIdOf(plan, a.step),
-        variant: poseVariant(plan, stepIdOf(plan, a.step), a.variant),
+        variant: poseVariant(plan, stepIdOf(plan, a.step), a.variant, a.beat),
       }));
       return `Arranged ${(res.values[0] as string[]).length} players.`;
     },
@@ -984,7 +1359,7 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         return {
           op: "add_entity",
           stepId,
@@ -1027,7 +1402,7 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         return {
           op: "add_entity",
           stepId,
@@ -1060,7 +1435,7 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         const visible = scenePlan(plan, stepId, variant);
         return {
           op: "add_entity",
@@ -1151,7 +1526,7 @@ export const TOOLS: ToolDef[] = [
       let labels: string[] = [];
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         const visible = scenePlan(plan, stepId, variant);
         const source = a.from ? resolveRef(visible, a.from).id : undefined;
         const steps = stepId ? [stepId] : "all";
@@ -1214,7 +1589,7 @@ export const TOOLS: ToolDef[] = [
       let moved = { id: "", x: 0, y: 0, step: "" };
       await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         const target = resolveRef(scenePlan(plan, stepId, variant), a.entity);
         const pos = positionOf(plan, a);
         // Report where it ends up, which for a step override is not its base pose.
@@ -1256,7 +1631,7 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         return {
           op: "update_entity",
           id: resolveRef(scenePlan(plan, stepId, variant), a.entity).id,
@@ -1276,7 +1651,7 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         const visible = scenePlan(plan, stepId, variant);
         return {
           op: "delete_entities",
@@ -1301,7 +1676,7 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const { plan } = await load(ctx, a.plan_id, "view");
       const stepId = stepIdOf(plan, a.step);
-      const variant = poseVariant(plan, stepId, a.variant);
+      const variant = poseVariant(plan, stepId, a.variant, a.beat);
       const hits = findEntities(scenePlan(plan, stepId, variant), {
         text: a.query,
         type: a.type as never,
@@ -1350,7 +1725,7 @@ export const TOOLS: ToolDef[] = [
         throw new Error(`Unknown asset "${a.icon}". Use list_assets to find one.`);
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const variant = poseVariant(plan, stepId, a.variant);
+        const variant = poseVariant(plan, stepId, a.variant, a.beat);
         return {
           op: "add_entity",
           stepId,
@@ -1460,5 +1835,6 @@ A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degr
 Arena distances are yalms: a manual arena.widthYalms wins, supported encounters use known dimensions, and unknown fights default to 40 yalms across. Calibration never changes stored coordinates.
 Entities live in a plan and may appear in one step or all steps; per-step position overrides are how movement is expressed.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
+A Beat is one timed card/frame. Its child Variant boxes are mutually exclusive and contain only divergent Beat Parts plus optional sparse actor movement. Shared Parts stay directly on the Beat. Preview choices and edit destinations are separate: passing beat + variant explicitly chooses where an edit is stored, never a saved preview. Saved Routes are non-owning complete Beat-selection maps and cannot contain movement conflicts. New plans use this Beat Variant model; legacy Mechanic-wide Variants are read-only until their owner runs inspect_legacy_variant_conversion and converts to a copy.
 A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest" (plus "count"), which re-targets itself as the party moves. Either way it holds in every step with no overrides to redo.
 Real FFXIV art is bundled: job/role tokens, waymarks A-D and 1-4, field markers (attack1-8, bind, ignore, limit cut, tankbuster) and arena backdrops. Call list_assets to browse it.`;
