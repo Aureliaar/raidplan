@@ -79,10 +79,14 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 
 ### 2.3 — New-variant initial inheritance
 
-- Status: open
+- Status: done
 - Issue: Creating a new variant can discard already-positioned groundwork.
-- Agreed direction: A new variant initially inherits the existing shared state until touched or explicitly unlinked.
-- Open question: How this interacts with parts already customized in several variants.
+- Agreed direction: A new variant step inherits the live shared authored scene until that variant step receives its first scene edit. Any edit detaches the whole step; conflict detection is not required.
+- Resolution: Added copy-on-write `variantScenes`: absence means live shared inheritance, while the first contextual add/update/clear/delete/duplicate/reorder/assign/arrange snapshots the complete ordered non-waymark scene. Later shared edits cannot change a detached step; other untouched variant steps continue inheriting independently. Arena, waymarks, timeline/mechanic definitions, and plan metadata remain shared.
+- Security/lifecycle: Added strict runtime operation validation and patch allowlists, ownership/context enforcement, concurrency revision checks, lossless detached-variant lifecycle handling, validated history/import boundaries, and coherent client/MCP handling of variant-only entities.
+- Open question: None for automatic inheritance/detachment; explicit relinking remains tracked in 2.1 and 2.5.
+- Verification: Typecheck/build/diff check; focused inheritance and adversarial ownership/concurrency/history suites; mechanics, mechs, steps, markers, palette, bait, symmetry, history, glide, keys, source, multiselect, and group regressions; final independent Sol audit found no blocker; live root and production bundle both HTTP 200.
+- Commit/deployment: `99a1daf` (`Implement copy-on-write variant scenes`); production version `97d044e0-5cd9-4655-ad25-fad048d72501`.
 
 ### 2.4 — Draggable variant start/end and branch rejoin
 
