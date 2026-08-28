@@ -102,6 +102,13 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 - Agreed direction: Preserve explicit per-variant divergence without forcing duplicate work before divergence.
 - Open question: Precedence for edits, relinking, alignment, persistence, and nested mechanics.
 
+### 2.6 — Scope variants to a Beat
+
+- Status: open
+- Issue: Variants currently belong to an entire timeline sequence, but authors need alternatives for one timed item within that sequence.
+- Agreed direction: A Variant belongs to one Beat, not to the whole Mechanic. A Mechanic can therefore contain several independently varying Beats alongside shared Beats.
+- Open question: Data migration for existing mechanic-wide variants; timeline interaction for choosing simultaneous Beat variants; whether variant ownership/collaboration remains per Variant or moves to the Beat.
+
 ## 3 — Timeline, lifetimes, and structure
 
 ### 3.1 — Independent part lifetime/removal
@@ -169,9 +176,9 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 ### 4.5 — Auto-promote parts to mechanics and revisit terminology
 
 - Status: open
-- Issue: “Create mechanic, then assign part” is heavy when most mechanics contain one part, while users understand “mechanic” as the whole encounter sequence.
-- Agreed direction: Consider auto-promoting dropped parts to mechanics and renaming concepts.
-- Open question: Final vocabulary and handling for intentional multi-part mechanics.
+- Issue: “Mechanic” is overloaded across the whole encounter sequence, timed timeline items, and visual primitives. XIV players expect a named sequence such as “Dark and Light” to be a Mechanic.
+- Agreed direction: Use `Mechanic → Beat → Part`. A Part is a visual primitive such as a circle, beam, tether, text, or castbar. A Beat is one timed item placed on the Mechanic timeline and can own one or more Parts. A Mechanic is the complete authored sequence. Step remains the side-axis discrete moment/keyframe. Variants belong to Beats (2.6). Consider auto-promoting a dropped Part into a Beat when appropriate.
+- Open question: Migration/code naming, multi-Part Beat authoring, and whether any visible UI needs the expanded label “Mechanic Beat” during onboarding.
 
 ## 5 — Visual presentation
 
