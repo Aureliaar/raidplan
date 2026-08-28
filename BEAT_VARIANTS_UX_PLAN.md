@@ -24,7 +24,9 @@ This plan replaces whole-Mechanic variants with variants owned by one Beat. It u
 
 Remove the current whole-Mechanic `Shared | A | B` columns.
 
-- Render one card per Beat, regardless of how many Variants it owns.
+- Render one timed frame/card per Beat, regardless of how many Variants it owns.
+- Shared Parts sit directly on the Beat. There is no `Shared` Variant box.
+- Optional Variant boxes are child containers inside the Beat and contain only divergent Variant Parts/overrides plus optional Variant movement.
 - Continue using ordinary lanes only for overlapping Beats.
 - A Beat with Variants gets a quiet fork badge such as `◇2` and may show the previewed Variant name, such as `Light ▾`.
 - A small footsteps glyph marks movement authored by that Beat at the current Step.
@@ -42,7 +44,7 @@ BEAT
 Explosion                         Step 3 → Step 4
 
 VARIANTS
-[ Shared ]   [ Light ] [ Dark ]   [+]
+[ Beat ]   [ Light ] [ Dark ]   [+]
 
 Previewing: Light
 Editing: Explosion › Light › Step 3
@@ -54,9 +56,9 @@ Movement
 Uses Step positions
 ```
 
-- `Shared` is the Beat's authoring baseline, not a playable Variant.
+- `Beat` selects the Beat itself and edits Parts placed directly on it; it is not a Variant box.
 - Clicking a playable Variant previews it and makes it the explicit edit destination.
-- Selecting `Shared` edits the Beat baseline inherited by still-linked Variants.
+- Selecting `Beat` edits the shared baseline inherited by still-linked Variant content.
 - A persistent breadcrumb above the canvas states the exact destination, for example `Editing: Explosion › Light › Step 3`.
 - With no Beat selected, the breadcrumb reads `Editing: Step 3 shared scene`.
 
@@ -81,8 +83,10 @@ For each `Beat × Variant × Step`, content and movement detach independently.
 
 ### Content
 
+- Shared Parts are direct children of the Beat, outside every Variant box.
 - No Variant content snapshot means `Following shared`.
 - The first Part/style edit at that Step snapshots only this Beat's resolved content for that Step.
+- That detached/overridden content belongs inside the selected Variant box; the source Shared Part remains on the Beat.
 - Content includes the Beat's visible Parts, their properties/order, Beat color/style, and whether the Beat happens in that Variant.
 - Later Shared content changes continue reaching untouched Steps but cannot modify detached Steps.
 - `Resume shared content` deletes the current snapshot and resumes live inheritance.
@@ -133,7 +137,7 @@ Quiet glyphs:
 ## 2.6.7 — Player-drag behavior
 
 - No Beat selected: dragging players edits the shared Step positions.
-- `Shared` selected: dragging players edits the shared Step positions.
+- The Beat itself selected: dragging players edits the shared Step positions.
 - A playable Beat Variant selected: dragging a player creates movement for that Beat Variant at the current Step.
 - The first Variant-owned drag produces an undoable toast:
 
