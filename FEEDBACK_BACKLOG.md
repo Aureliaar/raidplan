@@ -104,7 +104,8 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 
 ### 2.6 — Scope variants to a Beat
 
-- Status: open
+- Status: in progress
+- Implementation baseline: `defc744` on `origin/master` (minor-fixes release plus contextual palette regression update).
 - Issue: Variants currently belong to an entire timeline sequence, but authors need alternatives for one timed item within that sequence.
 - Agreed direction: A Variant belongs to one Beat, not to the whole Mechanic. Use one timeline card per Beat, independent per-Beat preview choices, contextual authoring in the selected Beat inspector, and separate per-Step copy-on-write domains for Beat content and sparse player movement. See `BEAT_VARIANTS_UX_PLAN.md`.
 - Port fixture: Aerelion's Dark & Light plan is losslessly convertible; see `DARK_LIGHT_PORT_AUDIT.md`. It exposes a need for optional linked Variant selection across coordinated Beats.
