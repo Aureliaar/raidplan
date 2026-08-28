@@ -46,10 +46,13 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 
 ### 1.5 — Dropping into an inactive selected mechanic makes parts disappear
 
-- Status: open
+- Status: done
 - Issue: A mechanic stays selected after navigating outside its active range; parts dropped into it then appear to disappear.
 - Agreed direction: Automatically finish/exit mechanic fill mode when moving to a step outside that mechanic.
-- Open question: Whether to deselect entirely or select the most relevant active mechanic.
+- Resolution: Navigation outside the selected mechanic's inclusive active span now clears selection; returning to the span does not automatically reselect it.
+- Open question: None.
+- Verification: Covered by the mechanics E2E boundary/navigation regression in 3.4.
+- Commit/deployment: `aca3068` (`Close mech filling outside its active steps`); production version `69a25404-0381-4903-8535-cc8e02dbdb6b`.
 
 ### 1.6 — Symmetry mode creates only one circle AOE
 
@@ -120,10 +123,14 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 
 ### 3.4 — Auto-exit inactive mechanic fill mode
 
-- Status: open
+- Status: done
 - Issue: Manual “done filling” is tedious and contributes to 1.5.
 - Agreed direction: Leaving the selected mechanic's active range should end fill mode automatically.
-- Open question: Exact selection behavior after exiting.
+- Resolution: The selected mechanic remains active on both inclusive range boundaries and is unselected upon navigation to the first step outside the range. Returning does not reselect it.
+- Root cause: Fill selection persisted independently of `stepIndex`, so later drops could still be assigned to an off-screen mechanic.
+- Open question: None.
+- Verification: `npm run check`; `npm run build`; full mechanics E2E including both boundaries, outside navigation, and return navigation.
+- Commit/deployment: `aca3068` (`Close mech filling outside its active steps`); production version `69a25404-0381-4903-8535-cc8e02dbdb6b`.
 
 ## 4 — Part authoring
 
