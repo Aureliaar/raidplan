@@ -106,8 +106,8 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 
 - Status: open
 - Issue: Variants currently belong to an entire timeline sequence, but authors need alternatives for one timed item within that sequence.
-- Agreed direction: A Variant belongs to one Beat, not to the whole Mechanic. A Mechanic can therefore contain several independently varying Beats alongside shared Beats.
-- Open question: Data migration for existing mechanic-wide variants; timeline interaction for choosing simultaneous Beat variants; whether variant ownership/collaboration remains per Variant or moves to the Beat.
+- Agreed direction: A Variant belongs to one Beat, not to the whole Mechanic. Use one timeline card per Beat, independent per-Beat preview choices, contextual authoring in the selected Beat inspector, and separate per-Step copy-on-write domains for Beat content and sparse player movement. See `BEAT_VARIANTS_UX_PLAN.md`.
+- Open question: Collaborator ownership semantics, whether Routes ship visibly with migration, Duplicate Variant scope, and later support for non-player actor movement.
 
 ## 3 — Timeline, lifetimes, and structure
 
