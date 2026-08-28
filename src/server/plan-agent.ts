@@ -200,6 +200,8 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
     return {
       revisions: [...index.revisions].reverse(),
       currentId: index.head,
+      undoId: index.undo.at(-1) ?? null,
+      redoId: index.redo.at(-1) ?? null,
       canUndo: index.undo.length > 0,
       canRedo: index.redo.length > 0,
     };

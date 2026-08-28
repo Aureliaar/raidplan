@@ -65,9 +65,47 @@ plan = await api(`/api/plans/${planId}`).then((response) => response.plan);
 if (plan.name !== "second revision") fail("Ctrl+Y did not redo");
 else console.log("Ctrl+Z and Ctrl+Y drive the persistent stack");
 
+// Make an edit in this tab so it has both sides of the history handoff, then
+// delay the network. Undo and redo should paint their cached target immediately.
+const nameInput = page.locator("header input").first();
+const saved = page.waitForResponse(
+  (response) => response.url().includes(`/api/plans/${planId}/ops`) && response.request().method() === "POST"
+);
+await nameInput.fill("instant revision");
+await nameInput.press("Tab");
+await saved;
+
+await page.route(`**/api/plans/${planId}/history/undo`, async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await route.continue();
+}, { times: 1 });
+const undoSettled = page.waitForResponse(
+  (response) => response.url().endsWith(`/api/plans/${planId}/history/undo`)
+);
+await page.getByTitle("Undo (Ctrl+Z)").click();
+await page.waitForTimeout(50);
+if ((await nameInput.inputValue()) !== "second revision")
+  fail("undo waited for the delayed server response before painting its known snapshot");
+else console.log("undo paints its known snapshot before the server round trip");
+await undoSettled;
+
+await page.route(`**/api/plans/${planId}/history/redo`, async (route) => {
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  await route.continue();
+}, { times: 1 });
+const redoSettled = page.waitForResponse(
+  (response) => response.url().endsWith(`/api/plans/${planId}/history/redo`)
+);
+await page.getByTitle("Redo (Ctrl+Y or Ctrl+Shift+Z)").click();
+await page.waitForTimeout(50);
+if ((await nameInput.inputValue()) !== "instant revision")
+  fail("redo waited for the delayed server response before painting its known snapshot");
+else console.log("redo paints its known snapshot before the server round trip");
+await redoSettled;
+
 await page.getByRole("button", { name: "History" }).click();
 await page.getByText("Revision history").waitFor();
-if (!(await page.locator("aside").getByText("history-e2e", { exact: true }).isVisible())) fail("history drawer omitted actor/session");
+if (!(await page.locator("aside").getByText("history-e2e", { exact: true }).first().isVisible())) fail("history drawer omitted actor/session");
 else console.log("history drawer shows the identified work session");
 
 history = await api(`/api/plans/${planId}/history`);
