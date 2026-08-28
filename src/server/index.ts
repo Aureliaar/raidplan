@@ -7,7 +7,7 @@ import { planStub } from "./plan-agent";
 import { RaidPlanMCP } from "./mcp";
 import { chatRoutes } from "./chat";
 import { createPlan, encounterSetup } from "../shared/ops";
-import type { Op } from "../shared/apply";
+import { parsePublicOpsRequest, validatePublicOps } from "../shared/op-schema";
 import { guardVariants } from "./variants";
 import type { PlanRole, User } from "../shared/schema";
 import type { HistoryActor } from "../shared/history";
@@ -179,18 +179,40 @@ app.get("/api/plans/:id", async (c) => {
 app.post("/api/plans/:id/ops", async (c) => {
   const id = c.req.param("id");
   const role = await roleOrThrow(c, id, "edit");
-  const body = (await c.req.json()) as { ops: Op | Op[]; sessionId?: string };
+  const raw = await c.req.json().catch(() => {
+    throw new HttpError(400, "The operation body must be valid JSON");
+  });
+  let body: ReturnType<typeof parsePublicOpsRequest>;
+  try {
+    body = parsePublicOpsRequest(raw);
+  } catch (error) {
+    throw new HttpError(400, error instanceof Error ? error.message : "Invalid operation payload");
+  }
   const stub = await planStub(c.env, id);
   // Somebody else's reading of the fight is theirs, even from an editor's hands.
   const user = requireUser(c);
-  const ops = guardVariants(
-    await stub.getPlan(),
-    body.ops,
-    { id: user.id, name: user.name },
-    role,
-    (m) => new HttpError(403, m)
-  );
-  const res = await stub.apply(ops, historyActor(user, body.sessionId));
+  let res: Awaited<ReturnType<typeof stub.apply>> | undefined;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const current = await stub.getPlan();
+    try {
+      validatePublicOps(current, body.ops);
+    } catch (error) {
+      throw new HttpError(400, error instanceof Error ? error.message : "Invalid operation");
+    }
+    const ops = guardVariants(
+      current,
+      body.ops,
+      { id: user.id, name: user.name },
+      role,
+      (m) => new HttpError(403, m)
+    );
+    const candidate = await stub.apply(ops, historyActor(user, body.sessionId), current.rev);
+    if (!candidate.conflict) {
+      res = candidate;
+      break;
+    }
+  }
+  if (!res) throw new HttpError(409, "The plan kept changing; try that edit again");
   await registry(c.env).touchPlan(id, { name: res.plan.name, encounter: res.plan.encounter });
   return c.json({
     rev: res.plan.rev,
@@ -208,7 +230,7 @@ app.get("/api/plans/:id/history", async (c) => {
 
 app.post("/api/plans/:id/history/undo", async (c) => {
   const id = c.req.param("id");
-  await roleOrThrow(c, id, "edit");
+  await roleOrThrow(c, id, "own");
   const result = await (await planStub(c.env, id)).undo();
   await registry(c.env).touchPlan(id, { name: result.plan.name, encounter: result.plan.encounter });
   return c.json(result);
@@ -216,7 +238,7 @@ app.post("/api/plans/:id/history/undo", async (c) => {
 
 app.post("/api/plans/:id/history/redo", async (c) => {
   const id = c.req.param("id");
-  await roleOrThrow(c, id, "edit");
+  await roleOrThrow(c, id, "own");
   const result = await (await planStub(c.env, id)).redo();
   await registry(c.env).touchPlan(id, { name: result.plan.name, encounter: result.plan.encounter });
   return c.json(result);
@@ -224,7 +246,7 @@ app.post("/api/plans/:id/history/redo", async (c) => {
 
 app.post("/api/plans/:id/history/revert", async (c) => {
   const id = c.req.param("id");
-  await roleOrThrow(c, id, "edit");
+  await roleOrThrow(c, id, "own");
   const user = requireUser(c);
   const body = (await c.req.json()) as { revisionId?: string; sessionId?: string };
   if (!body.revisionId) throw new HttpError(400, "Choose a revision to restore");

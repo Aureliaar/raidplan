@@ -65,7 +65,7 @@ async function dragOnto(from, to) {
 
 /** The step row the rail has selected, which is the step the canvas draws. */
 const selectedRow = () =>
-  page.locator('nav button[data-step][class*="text-white"]').first().innerText();
+  page.locator('nav button[data-step][aria-current="step"]').first().innerText();
 const stepsOf = (doc, mechanicId) => doc.steps.filter((s) => s.mechanic === mechanicId);
 
 await page.goto(base + "/p/" + planId);
@@ -233,6 +233,37 @@ else {
     fail("dragging down inside the section did not carry the explosion to its second step");
   else console.log("dragging the box down the section's rows stretched the cast to step 2");
 }
+
+/* --- filling follows the cast's inclusive span, then closes --------------- */
+
+await page.locator(`[data-mech="${mechId}"]`).click();
+await page.waitForTimeout(200);
+if (!(await page.getByRole("button", { name: "done filling" }).count()))
+  fail("selecting the cast did not open it for filling");
+
+await page.getByRole("button", { name: "2. Step 2" }).click();
+await page.waitForTimeout(200);
+if (!(await page.getByRole("button", { name: "done filling" }).count()))
+  fail("the cast was unselected on its explosion boundary step");
+
+await page.getByRole("button", { name: "1. Step 1" }).click();
+await page.waitForTimeout(200);
+if (!(await page.getByRole("button", { name: "done filling" }).count()))
+  fail("the cast was unselected on its snapshot boundary step");
+
+await page.keyboard.press("w");
+await page.waitForTimeout(200);
+if (!(await selectedRow()).includes("Pull"))
+  fail("W did not navigate to the preceding step outside the cast's span");
+else if (await page.getByRole("button", { name: "done filling" }).count())
+  fail("the cast stayed selected after navigating outside its span");
+else console.log("filling stays open on both boundary steps and closes outside the cast's span");
+
+// Return to the cast's section for the remaining reading and timing checks.
+await page.keyboard.press("s");
+await page.waitForTimeout(200);
+if (await page.getByRole("button", { name: "done filling" }).count())
+  fail("the cast became selected again after returning to its span");
 
 /* --- a cast is what a reading owns ---------------------------------------- */
 
@@ -410,12 +441,13 @@ await page.waitForTimeout(900);
 const movedInA = await drawnIn(first.id, mt.id, A);
 const stillInB = await drawnIn(first.id, mt.id, B);
 doc = await load();
-const keys = Object.keys(doc.entities.find((e) => e.id === mt.id).overrides ?? {});
+const authoredA = stepsOf(doc, mechanicId).find((step) => step.id === first.id)?.variantScenes?.[A];
 if (Math.hypot(movedInA.x - home.x, movedInA.y - home.y) < 50)
   fail("dragging MT while A was playing did not move it: " + JSON.stringify(movedInA));
 else if (stillInB.x !== home.x || stillInB.y !== home.y)
   fail("the move leaked into B: " + JSON.stringify(stillInB) + " vs " + JSON.stringify(home));
-else if (!keys.includes(first.id + "@" + A)) fail("the pose is not filed under A: " + keys.join(","));
+else if (!authoredA?.some((entity) => entity.id === mt.id))
+  fail("the authored A scene did not materialize MT");
 else
   console.log(
     "MT moved to " + JSON.stringify(movedInA) + " in A and stayed at " +
@@ -436,12 +468,12 @@ await page.getByTitle("Delete this reading and the casts only it has").click();
 await page.waitForTimeout(900);
 doc = await load();
 const left = stepsOf(doc, mechanicId);
-if (witchHunt().variants.length)
-  fail("deleting the last-but-one reading left " + witchHunt().variants.length + " behind");
+if (witchHunt().variants.length !== 1 || witchHunt().variants[0].id !== A)
+  fail("deleting B did not retain the one detached reading losslessly");
 else if (left.length !== 2) fail("deleting B took steps with it: " + left.length + " left");
 else if (doc.mechs.length || donutCount())
   fail("deleting B left the cast that was only its: " + doc.mechs.length + " casts");
-else console.log("deleting B took the cast that was only B's, and left both steps alone");
+else console.log("deleting B took its cast, retained detached A, and left both steps alone");
 
 /* --- and a mechanic is its steps ------------------------------------------ */
 
@@ -473,9 +505,9 @@ oldDoc.steps = [
 oldDoc.mechs = [
   { id: "mech_legacy", name: "Sunrise", snap: oldDoc.steps[0].id, boom: "step_legacy2" },
 ];
-await api("/api/plans/" + oldId + "/ops", {
+await api("/api/plans/" + oldId + "/import", {
   method: "POST",
-  body: JSON.stringify({ ops: [{ op: "replace_plan", plan: oldDoc }] }),
+  body: JSON.stringify({ plan: oldDoc }),
 });
 
 const hydrated = await api("/api/plans/" + oldId).then((p) => p.plan ?? p);

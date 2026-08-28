@@ -24,6 +24,7 @@ import {
   MARKER_IDS,
   TETHER_STYLES,
   ZONE_SHAPES,
+  authoredEntitiesForStep,
   mechLabel,
   mechSpan,
   mechanicLabel,
@@ -167,24 +168,32 @@ async function load(ctx: ToolContext, planId: string, need: "view" | "edit" | "o
 
 /** Read the plan, build ops from it, apply them, keep the index fresh. */
 async function edit(ctx: ToolContext, planId: string, make: (plan: Plan) => Op | Op[]) {
-  const { stub, plan, role } = await load(ctx, planId, "edit");
   // A model editing on someone's behalf is still that someone: another
   // player's reading of the fight is no more yours through a tool than by hand.
   const me = await registry(ctx.env).getUser(ctx.userId);
-  const ops = guardVariants(
-    plan,
-    make(plan),
-    { id: ctx.userId, name: me?.name },
-    role,
-    (m) => new Error(m)
-  );
-  const res = await stub.apply(ops, {
-    actorId: ctx.userId,
-    actorName: me?.name,
-    source: "mcp",
-  });
-  await registry(ctx.env).touchPlan(planId, { name: res.plan.name, encounter: res.plan.encounter });
-  return res;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const { stub, plan, role } = await load(ctx, planId, "edit");
+    const ops = guardVariants(
+      plan,
+      make(plan),
+      { id: ctx.userId, name: me?.name },
+      role,
+      (m) => new Error(m)
+    );
+    const res = await stub.apply(
+      ops,
+      {
+        actorId: ctx.userId,
+        actorName: me?.name,
+        source: "mcp",
+      },
+      plan.rev
+    );
+    if (res.conflict) continue;
+    await registry(ctx.env).touchPlan(planId, { name: res.plan.name, encounter: res.plan.encounter });
+    return res;
+  }
+  throw new Error("The plan kept changing; try that edit again");
 }
 
 const planUrl = (ctx: ToolContext, id: string) => `${ctx.appUrl}/p/${id}`;
@@ -205,10 +214,18 @@ const stepArg = {
 
 /** The variant a pose is filed under: named, and belonging to the step's mechanic. */
 function poseVariant(plan: Plan, stepId: string | undefined, variant?: string): string | undefined {
-  if (!stepId || !variant) return undefined;
+  if (variant && !stepId) throw new Error("Give step when selecting a variant");
+  if (!variant) return undefined;
   const step = plan.steps.find((s) => s.id === stepId);
   if (!step?.mechanic) throw new Error("That step is not in a mechanic, so it has no readings");
   return variantIdOf(plan, step.mechanic, variant);
+}
+
+/** Let entity lookup see variant-only additions when an op targets a detached scene. */
+function scenePlan(plan: Plan, stepId?: string, variantId?: string): Plan {
+  return stepId && variantId
+    ? { ...plan, entities: authoredEntitiesForStep(plan, stepId, variantId) }
+    : plan;
 }
 
 /* -------------------------------------------------------------------- tools */
@@ -278,14 +295,20 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "read_plan",
     description:
-      "Read a plan as text: arena, steps, and every entity with its id and position. Call this before editing.",
+      "Read a plan as text: arena, steps, and every entity with its id and position. Call this before editing. Name a step and variant to inspect a detached reading.",
     schema: {
       plan_id: z.string(),
       step: z.string().optional().describe("Step id, 1-based index or name; omit for every step"),
+      variant: z.string().optional().describe("With step, inspect this reading (id, index, name or letter)"),
     },
     async run(ctx, a) {
       const { plan } = await load(ctx, a.plan_id, "view");
-      return describePlan(plan, stepIdOf(plan, a.step));
+      const stepId = stepIdOf(plan, a.step);
+      if (a.variant && !stepId) throw new Error("Give step when selecting a variant");
+      const variant = poseVariant(plan, stepId, a.variant);
+      const step = stepId ? plan.steps.find((candidate) => candidate.id === stepId) : undefined;
+      const shown = step?.mechanic && variant ? { [step.mechanic]: variant } : undefined;
+      return describePlan(plan, stepId, shown);
     },
   }),
 
@@ -686,7 +709,14 @@ export const TOOLS: ToolDef[] = [
           (m, i) =>
             `${i + 1}. ${mechLabel(plan, m)} [${m.id}] — snapshots in ${stepName(m.snap)}, ` +
             `goes off in ${stepName(m.boom)}, ${mechSpan(plan, m).length} steps on the floor, ` +
-            `${plan.entities.filter((e) => e.mech === m.id).length} shapes`
+            `${new Set([
+              ...plan.entities.filter((e) => e.mech === m.id).map((e) => e.id),
+              ...plan.steps.flatMap((step) =>
+                Object.values(step.variantScenes ?? {}).flatMap((scene) =>
+                  scene.filter((e) => e.mech === m.id).map((e) => e.id)
+                )
+              ),
+            ]).size} shapes`
         )
         .join("\n");
     },
@@ -752,13 +782,19 @@ export const TOOLS: ToolDef[] = [
       plan_id: z.string(),
       ids: z.array(z.string()).describe("Entity ids"),
       mech: z.string().describe("Mech id, index or name; empty string to unassign"),
+      ...stepArg,
     },
     async run(ctx, a) {
-      await edit(ctx, a.plan_id, (plan) => ({
-        op: "assign_mech",
-        ids: a.ids,
-        mechId: a.mech ? mechIdOf(plan, a.mech) : null,
-      }));
+      await edit(ctx, a.plan_id, (plan) => {
+        const stepId = stepIdOf(plan, a.step);
+        return {
+          op: "assign_mech",
+          ids: a.ids,
+          mechId: a.mech ? mechIdOf(plan, a.mech) : null,
+          stepId,
+          variant: poseVariant(plan, stepId, a.variant),
+        };
+      });
       return a.mech ? `${a.ids.length} shape(s) moved into the mech.` : `${a.ids.length} shape(s) taken out of their mech.`;
     },
   }),
@@ -793,12 +829,14 @@ export const TOOLS: ToolDef[] = [
       icon: z.string().optional().describe("Override the art, e.g. actor/tank1 (see list_assets)"),
       rotation: z.number().optional().describe("Facing in degrees, 0 = north"),
       show_facing: z.boolean().optional(),
+      ...stepArg,
       ...posArgs,
     },
     async run(ctx, a) {
-      const res = await edit(ctx, a.plan_id, (plan) => ({
-        op: "add_entity",
-        spec: {
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
+        return { op: "add_entity", stepId, variant, spec: {
           type: "player",
           job: a.job,
           name: a.name,
@@ -806,8 +844,8 @@ export const TOOLS: ToolDef[] = [
           rotation: a.rotation,
           showFacing: a.show_facing,
           ...positionOf(plan, a),
-        },
-      }));
+        } };
+      });
       return `Added player ${idOf(res.values[0])}`;
     },
   }),
@@ -825,12 +863,14 @@ export const TOOLS: ToolDef[] = [
       rotation: z.number().optional().describe("Facing in degrees, 0 = north"),
       ring: z.boolean().optional().describe("Draw the hitbox ring — off suits small objects"),
       color: z.string().optional(),
+      ...stepArg,
       ...posArgs,
     },
     async run(ctx, a) {
-      const res = await edit(ctx, a.plan_id, (plan) => ({
-        op: "add_entity",
-        spec: {
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
+        return { op: "add_entity", stepId, variant, spec: {
           type: "enemy",
           name: a.name,
           size: a.size,
@@ -839,8 +879,8 @@ export const TOOLS: ToolDef[] = [
           ring: a.ring,
           color: a.color,
           ...positionOf(plan, a),
-        },
-      }));
+        } };
+      });
       return `Added enemy ${idOf(res.values[0])}`;
     },
   }),
@@ -884,13 +924,14 @@ export const TOOLS: ToolDef[] = [
         .max(1)
         .optional()
         .describe("Ring radius as a fraction of the arena radius (default 0.25)"),
-      step: z.string().optional().describe("Arrange them in this step only"),
+      ...stepArg,
     },
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => ({
         op: "arrange_party",
         radiusFraction: a.distance,
         stepId: stepIdOf(plan, a.step),
+        variant: poseVariant(plan, stepIdOf(plan, a.step), a.variant),
       }));
       return `Arranged ${(res.values[0] as string[]).length} players.`;
     },
@@ -943,8 +984,11 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
         return {
           op: "add_entity",
+          stepId,
+          variant,
           spec: {
             type: "zone",
             shape: a.shape,
@@ -983,8 +1027,11 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
         return {
           op: "add_entity",
+          stepId,
+          variant,
           spec: {
             type: "text",
             text: a.text,
@@ -1013,12 +1060,16 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
+        const visible = scenePlan(plan, stepId, variant);
         return {
           op: "add_entity",
+          stepId,
+          variant,
           spec: {
             type: "tether",
-            from: resolveRef(plan, a.from).id,
-            to: resolveRef(plan, a.to).id,
+            from: resolveRef(visible, a.from).id,
+            to: resolveRef(visible, a.to).id,
             style: a.style,
             color: a.color,
             steps: stepId ? [stepId] : "all",
@@ -1100,7 +1151,9 @@ export const TOOLS: ToolDef[] = [
       let labels: string[] = [];
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
-        const source = a.from ? resolveRef(plan, a.from).id : undefined;
+        const variant = poseVariant(plan, stepId, a.variant);
+        const visible = scenePlan(plan, stepId, variant);
+        const source = a.from ? resolveRef(visible, a.from).id : undefined;
         const steps = stepId ? [stepId] : "all";
         labels = [];
 
@@ -1111,6 +1164,8 @@ export const TOOLS: ToolDef[] = [
             labels.push(count > 1 ? `${a.pick} #${rank}` : (a.pick as string));
             return {
               op: "add_entity",
+              stepId,
+              variant,
               spec: baitSpec(a.kind, { pick: a.pick!, rank, of: a.of }, source, {
                 ...props,
                 name: a.name ? (count > 1 ? `${a.name} ${rank}` : a.name) : undefined,
@@ -1121,10 +1176,12 @@ export const TOOLS: ToolDef[] = [
         }
 
         return named.map((ref) => {
-          const target = resolveRef(plan, ref);
+          const target = resolveRef(visible, ref);
           labels.push(target.name ?? target.id);
           return {
             op: "add_entity",
+            stepId,
+            variant,
             spec: baitSpec(a.kind, target.id, source, {
               ...props,
               name: a.name ? `${a.name} ${target.name ?? ref}` : undefined,
@@ -1156,9 +1213,10 @@ export const TOOLS: ToolDef[] = [
     async run(ctx, a) {
       let moved = { id: "", x: 0, y: 0, step: "" };
       await edit(ctx, a.plan_id, (plan) => {
-        const target = resolveRef(plan, a.entity);
-        const pos = positionOf(plan, a);
         const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
+        const target = resolveRef(scenePlan(plan, stepId, variant), a.entity);
+        const pos = positionOf(plan, a);
         // Report where it ends up, which for a step override is not its base pose.
         moved = {
           id: target.id,
@@ -1176,7 +1234,7 @@ export const TOOLS: ToolDef[] = [
           id: target.id,
           patch: { ...pos, ...(a.rotation !== undefined ? { rotation: a.rotation } : {}) },
           stepId,
-          variant: poseVariant(plan, stepId, a.variant),
+          variant,
         };
       });
       return `Moved ${moved.id} to (${Math.round(moved.x)}, ${Math.round(moved.y)})${moved.step}`;
@@ -1196,13 +1254,17 @@ export const TOOLS: ToolDef[] = [
       ...stepArg,
     },
     async run(ctx, a) {
-      const res = await edit(ctx, a.plan_id, (plan) => ({
-        op: "update_entity",
-        id: resolveRef(plan, a.entity).id,
-        patch: a.patch,
-        stepId: stepIdOf(plan, a.step),
-        variant: poseVariant(plan, stepIdOf(plan, a.step), a.variant),
-      }));
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
+        return {
+          op: "update_entity",
+          id: resolveRef(scenePlan(plan, stepId, variant), a.entity).id,
+          patch: a.patch,
+          stepId,
+          variant,
+        };
+      });
       return `Updated ${idOf(res.values[0])}`;
     },
   }),
@@ -1210,12 +1272,19 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "delete_entity",
     description: "Delete one or more entities.",
-    schema: { plan_id: z.string(), entities: z.array(z.string()).min(1) },
+    schema: { plan_id: z.string(), entities: z.array(z.string()).min(1), ...stepArg },
     async run(ctx, a) {
-      const res = await edit(ctx, a.plan_id, (plan) => ({
-        op: "delete_entities",
-        ids: a.entities.map((ref) => resolveRef(plan, ref).id),
-      }));
+      const res = await edit(ctx, a.plan_id, (plan) => {
+        const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
+        const visible = scenePlan(plan, stepId, variant);
+        return {
+          op: "delete_entities",
+          ids: a.entities.map((ref) => resolveRef(visible, ref).id),
+          stepId,
+          variant,
+        };
+      });
       return `Deleted ${(res.values[0] as string[]).length} entities.`;
     },
   }),
@@ -1227,10 +1296,16 @@ export const TOOLS: ToolDef[] = [
       plan_id: z.string(),
       query: z.string().optional(),
       type: z.enum(ENTITY_TYPES as [string, ...string[]]).optional(),
+      ...stepArg,
     },
     async run(ctx, a) {
       const { plan } = await load(ctx, a.plan_id, "view");
-      const hits = findEntities(plan, { text: a.query, type: a.type as never });
+      const stepId = stepIdOf(plan, a.step);
+      const variant = poseVariant(plan, stepId, a.variant);
+      const hits = findEntities(scenePlan(plan, stepId, variant), {
+        text: a.query,
+        type: a.type as never,
+      });
       if (!hits.length) return "No matches.";
       return hits
         .map((e) => `- [${e.id}] ${e.type}${e.name ? ` "${e.name}"` : ""} at (${Math.round(e.x)}, ${Math.round(e.y)})`)
@@ -1275,8 +1350,11 @@ export const TOOLS: ToolDef[] = [
         throw new Error(`Unknown asset "${a.icon}". Use list_assets to find one.`);
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
+        const variant = poseVariant(plan, stepId, a.variant);
         return {
           op: "add_entity",
+          stepId,
+          variant,
           spec: {
             type: "icon",
             src: a.icon,

@@ -25,7 +25,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
-import { entitiesForStep, resolveEntity } from "../../shared/schema";
+import { authoredEntitiesForStep, entitiesForStep } from "../../shared/schema";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
 import { assetUrl, enemyIconKey, jobIconKey, waymarkIconKey } from "../../shared/assets";
@@ -329,15 +329,23 @@ export function Scene({
    */
   const anchorBase = useMemo(() => {
     const m = new Map<string, { x: number; y: number }>();
+    const step = stepId ? plan.steps.find((candidate) => candidate.id === stepId) : undefined;
+    const mechanic = step?.mechanic
+      ? plan.mechanics.find((candidate) => candidate.id === step.mechanic)
+      : undefined;
+    const requested = mechanic ? shown?.[mechanic.id] : undefined;
+    const variant = mechanic?.variants.length
+      ? (mechanic.variants.find((candidate) => candidate.id === requested) ?? mechanic.variants[0]).id
+      : undefined;
+    const authoredScene = authoredEntitiesForStep(plan, stepId, variant);
     for (const e of committed) {
       if (!e.anchor) continue;
-      const authored = plan.entities.find((b) => b.id === e.id);
+      const authored = authoredScene.find((b) => b.id === e.id);
       if (!authored) continue;
-      const nudge = resolveEntity(authored, stepId, stepId ? shown?.[plan.steps.find((s) => s.id === stepId)?.mechanic ?? ""] : undefined);
-      m.set(e.id, { x: e.x - nudge.x, y: e.y - nudge.y });
+      m.set(e.id, { x: e.x - authored.x, y: e.y - authored.y });
     }
     return m;
-  }, [committed, plan, stepId]);
+  }, [committed, plan, shown, stepId]);
 
   /** A node's live position as the entity would store it: an offset, if anchored. */
   const poseOf = (id: string, node: { x(): number; y(): number }) => {

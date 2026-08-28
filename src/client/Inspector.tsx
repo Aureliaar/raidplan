@@ -5,6 +5,7 @@ import {
   TETHER_STYLES,
   anchorTarget,
   anchoredPose,
+  authoredEntitiesForStep,
   entitiesForStep,
   mechLabel,
   mechColor,
@@ -13,7 +14,8 @@ import {
   ZONE_SHAPES,
   arenaUnitsToYalms,
   yalmsToArenaUnits,
-  resolveEntity,
+  resolveEntityForStep,
+  variantStepEdited,
   type Entity,
   type Plan,
 } from "../shared/schema";
@@ -36,8 +38,18 @@ import {
  * overlaps the edge is not necessarily in it — the one call you cannot make by
  * looking at the picture.
  */
-function Hits({ plan, stepId, zoneId }: { plan: Plan; stepId: string; zoneId: string }) {
-  const hit = playersHit(plan, stepId, zoneId);
+function Hits({
+  plan,
+  stepId,
+  zoneId,
+  shown,
+}: {
+  plan: Plan;
+  stepId: string;
+  zoneId: string;
+  shown?: Record<string, string>;
+}) {
+  const hit = playersHit(plan, stepId, zoneId, shown);
   return (
     <p className="mb-3 rounded bg-ink-800 px-2 py-1 text-xs text-ink-400">
       hits{" "}
@@ -84,8 +96,10 @@ function BaitTarget({
 
   const resolved = entitiesForStep(plan, stepId, undefined, shown);
   const now = anchorTarget({ ...entity, anchor } as Entity, new Map(resolved.map((e) => [e.id, e])));
-  const candidates = plan.entities.filter((e) => !e.anchor && e.type !== "tether" && e.id !== entity.id);
-  const nudged = resolveEntity(entity, stepId, variant);
+  const candidates = authoredEntitiesForStep(plan, stepId, variant).filter(
+    (e) => !e.anchor && e.type !== "tether" && e.id !== entity.id
+  );
+  const nudged = resolveEntityForStep(plan, entity, stepId, variant);
 
   return (
     <div className="mb-3 rounded bg-ink-800 p-2 text-xs">
@@ -225,7 +239,9 @@ function BaitPanel({
   editable: boolean;
   run(ops: Op | Op[]): Promise<unknown>;
 }) {
-  const sources = plan.entities.filter((e) => e.id !== target.id && e.type !== "tether" && !e.anchor);
+  const sources = authoredEntitiesForStep(plan, stepId, variant).filter(
+    (e) => e.id !== target.id && e.type !== "tether" && !e.anchor
+  );
   const [kind, setKind] = useState<BaitKind>("beam");
   const [from, setFrom] = useState(
     () => sources.find((e) => e.type === "enemy")?.id ?? sources[0]?.id ?? ""
@@ -285,9 +301,6 @@ function freeze(plan: Plan, stepId: string, entity: Entity, shown?: Record<strin
   const byId = new Map(entitiesForStep(plan, stepId, undefined, shown).map((e) => [e.id, e]));
   return anchoredPose(entity, byId, plan.arena) ?? {};
 }
-
-const nameOf = (plan: Plan, id: string) =>
-  plan.entities.find((e) => e.id === id)?.name ?? id;
 
 /** Preserve useful intermediate text such as `0.` while a number is typed. */
 function NumberInput({
@@ -371,16 +384,19 @@ export function Inspector({
   }
 
   const mechOf = entity.mech ? plan.mechs.find((m) => m.id === entity.mech) : undefined;
-  const shown = resolveEntity(entity, stepId, variant);
+  const shown = resolveEntityForStep(plan, entity, stepId, variant);
   const physicalCalibration = arenaCalibration(plan);
-  const players = plan.entities.filter((candidate) => candidate.type === "player");
+  const authoredScene = authoredEntitiesForStep(plan, stepId, variant);
+  const variantOnly = !plan.entities.some((candidate) => candidate.id === entity.id);
+  const detached = !!variant && variantStepEdited(plan, stepId, variant);
+  const players = authoredScene.filter((candidate) => candidate.type === "player");
   const tetherSet = entity.type === "tether" && entity.bond
-    ? plan.entities.filter((e) => e.type === "tether" && e.bond?.id === entity.bond?.id)
+    ? authoredScene.filter((e) => e.type === "tether" && e.bond?.id === entity.bond?.id)
     : entity.type === "tether" ? [entity] : [];
   const patchTetherSet = (props: Record<string, unknown>) =>
     run(tetherSet.map((tether) => ({ op: "update_entity" as const, id: tether.id, patch: props })));
   const overridden =
-    !!entity.overrides?.[stepId] || (!!variant && !!entity.overrides?.[`${stepId}@${variant}`]);
+    !!entity.overrides?.[stepId] || (!!variant && variantStepEdited(plan, stepId, variant));
   const patch = (props: Record<string, unknown>) =>
     run({
       op: "update_entity",
@@ -419,7 +435,20 @@ export function Inspector({
         </p>
       )}
 
-      {entity.type === "zone" && entity.shape !== "arrow" && <Hits plan={plan} stepId={stepId} zoneId={entity.id} />}
+      {entity.type === "zone" && entity.shape !== "arrow" && (
+        <Hits plan={plan} stepId={stepId} zoneId={entity.id} shown={playing} />
+      )}
+
+      {variantOnly && scope === "all" && (
+        <p className="mb-2 text-xs text-ink-400">
+          This exists only in this reading and step, so its edits stay here.
+        </p>
+      )}
+      {entity.type !== "marker" && !variantOnly && detached && scope === "all" && (
+        <p className="mb-2 text-xs text-ink-400">
+          This reading is detached. Every-step edits update the shared source, not this frozen scene.
+        </p>
+      )}
 
       {!entity.anchor && entity.type !== "tether" && (
         <BaitPanel
@@ -724,7 +753,14 @@ export function Inspector({
             <button
               className="btn"
               disabled={!editable || !overridden}
-              onClick={() => run({ op: "clear_override", id: entity.id, stepId })}
+              onClick={() =>
+                run({
+                  op: "clear_override",
+                  id: entity.id,
+                  stepId,
+                  variant: scope === "step" ? variant : undefined,
+                })
+              }
               title="Revert this entity to its base pose in this step"
             >
               Clear override

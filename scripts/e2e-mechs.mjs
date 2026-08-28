@@ -241,6 +241,10 @@ else console.log("a second mech is a different colour: " + second);
 await ops({ op: "delete_mech", mechId: (await load()).mechs[1].id });
 
 // And the swatches in the mech panel change it, shapes and all.
+// Moving the snapshot off Cast closed filling there; stand inside the mech's
+// span and explicitly reopen it before using its controls.
+await page.getByRole("button", { name: "2. Run" }).click();
+await page.locator(`[data-mech="${mechId}"]`).click();
 const swatch = page.getByTitle(/^Draw it in #/).nth(3);
 const picked = (await swatch.getAttribute("title")).slice("Draw it in ".length);
 await swatch.click();
