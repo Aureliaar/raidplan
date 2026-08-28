@@ -55,10 +55,9 @@ check((await tabs.allTextContents()).join("|").includes("Beat|A|B"), "inspector 
 
 await page.locator(`[data-timeline-variant="${explosionA}"]`).click();
 check((await page.locator("[data-edit-destination]").innerText()).includes("Explosion › A"), "timeline box changes explicit edit destination");
-const beforeEdit = await page.locator("[data-edit-destination]").innerText();
 await page.keyboard.press("d");
 check((await page.locator(`[data-preview-beat="${explosion}"]`).inputValue()) === explosionB, "A/D changes focused Beat preview");
-check((await page.locator("[data-edit-destination]").innerText()) === beforeEdit, "A/D never changes edit destination");
+check((await page.locator("[data-edit-destination]").innerText()).includes("Explosion › B"), "A/D selects the next exclusive box");
 
 // Multiple varying Beats with no selected/focused Beat: A/D does nothing and hints.
 await page.locator(`[data-mech="${explosion}"]`).click();

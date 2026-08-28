@@ -653,16 +653,19 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       setGlide((n) => n + 1);
       setOnward(false);
       setFocusedBeat(target.id);
-      setShown((was) => {
-        const currentSelection = active.find(({ beat }) => beat.id === target.id)?.variant.id;
-        const at = target.variants.findIndex(
-          (variant) => variant.id === (was[target.id] ?? currentSelection)
-        );
-        const from = at < 0 ? 0 : at;
-        const to =
-          (from + (key === "d" ? 1 : -1) + target.variants.length) % target.variants.length;
-        return { ...was, [target.id]: target.variants[to].id };
-      });
+      const currentSelection = active.find(({ beat }) => beat.id === target.id)?.variant.id;
+      const at = target.variants.findIndex(
+        (variant) => variant.id === (shown[target.id] ?? currentSelection)
+      );
+      const from = at < 0 ? 0 : at;
+      const to =
+        (from + (key === "d" ? 1 : -1) + target.variants.length) % target.variants.length;
+      const next = target.variants[to].id;
+      setShown((was) => ({ ...was, [target.id]: next }));
+      // Once an author has selected this Beat, A/D means "select the other
+      // exclusive box", not "preview elsewhere while edits stay behind".
+      // With no selected Beat it remains a viewer-safe preview shortcut.
+      if (mech === target.id) setEditingBeatVariant(next);
       return;
     };
     window.addEventListener("keydown", onKey);
@@ -2698,16 +2701,16 @@ function StepRail({
                       key={variant.id}
                       type="button"
                       data-timeline-variant={variant.id}
-                      aria-pressed={editing}
+                      aria-pressed={previewing}
                       aria-label={`${beatVariantLabel(mech, variant.id)}, ${
                         inherited ? "Shared" : "edited independently"
                       }`}
                       className={`flex min-h-[14px] flex-1 items-center gap-0.5 overflow-hidden rounded border px-1 text-left text-[8px] leading-none ${
-                        editing
-                          ? "border-blue-200 bg-blue-500/35 text-white ring-1 ring-blue-300/40"
-                          : previewing
-                            ? "border-blue-400/70 bg-blue-950/70 text-blue-50"
-                            : "border-ink-500/80 bg-ink-900/65 text-ink-200 hover:border-ink-300"
+                        previewing
+                          ? "border-blue-200 bg-blue-500/40 text-white ring-1 ring-blue-300/40"
+                          : editing
+                            ? "border-amber-300/70 bg-amber-500/10 text-ink-100"
+                            : "border-ink-500/80 bg-ink-900/65 text-ink-300 hover:border-ink-300"
                       }`}
                       title={`${beatVariantLabel(mech, variant.id)} — ${
                         inherited
@@ -2723,14 +2726,13 @@ function StepRail({
                         onEditBeatVariant(variant.id);
                       }}
                     >
-                      <span
-                        aria-hidden
-                        className={`h-1.5 w-1.5 shrink-0 rounded-[2px] ${
-                          inherited ? "border border-emerald-300 bg-emerald-400/15" : "bg-amber-300"
-                        }`}
-                      />
+                      <span aria-hidden className={`w-2 shrink-0 ${previewing ? "text-blue-100" : ""}`}>
+                        {previewing ? "▶" : editing ? "✎" : ""}
+                      </span>
                       <span className="min-w-0 flex-1 truncate">{beatVariantLabel(mech, variant.id)}</span>
-                      {!inherited && (
+                      {inherited ? (
+                        <span className="shrink-0 text-emerald-300" title="Following Shared">↳</span>
+                      ) : (
                         <span className="shrink-0 text-amber-200">
                           {`${state.content ? `×${state.parts}` : ""}${state.movement ? ` M${state.movement}` : ""}`}
                         </span>
