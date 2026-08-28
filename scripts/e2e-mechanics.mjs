@@ -441,12 +441,13 @@ await page.waitForTimeout(900);
 const movedInA = await drawnIn(first.id, mt.id, A);
 const stillInB = await drawnIn(first.id, mt.id, B);
 doc = await load();
-const keys = Object.keys(doc.entities.find((e) => e.id === mt.id).overrides ?? {});
+const authoredA = stepsOf(doc, mechanicId).find((step) => step.id === first.id)?.variantScenes?.[A];
 if (Math.hypot(movedInA.x - home.x, movedInA.y - home.y) < 50)
   fail("dragging MT while A was playing did not move it: " + JSON.stringify(movedInA));
 else if (stillInB.x !== home.x || stillInB.y !== home.y)
   fail("the move leaked into B: " + JSON.stringify(stillInB) + " vs " + JSON.stringify(home));
-else if (!keys.includes(first.id + "@" + A)) fail("the pose is not filed under A: " + keys.join(","));
+else if (!authoredA?.some((entity) => entity.id === mt.id))
+  fail("the authored A scene did not materialize MT");
 else
   console.log(
     "MT moved to " + JSON.stringify(movedInA) + " in A and stayed at " +
@@ -467,12 +468,12 @@ await page.getByTitle("Delete this reading and the casts only it has").click();
 await page.waitForTimeout(900);
 doc = await load();
 const left = stepsOf(doc, mechanicId);
-if (witchHunt().variants.length)
-  fail("deleting the last-but-one reading left " + witchHunt().variants.length + " behind");
+if (witchHunt().variants.length !== 1 || witchHunt().variants[0].id !== A)
+  fail("deleting B did not retain the one detached reading losslessly");
 else if (left.length !== 2) fail("deleting B took steps with it: " + left.length + " left");
 else if (doc.mechs.length || donutCount())
   fail("deleting B left the cast that was only its: " + doc.mechs.length + " casts");
-else console.log("deleting B took the cast that was only B's, and left both steps alone");
+else console.log("deleting B took its cast, retained detached A, and left both steps alone");
 
 /* --- and a mechanic is its steps ------------------------------------------ */
 
@@ -504,9 +505,9 @@ oldDoc.steps = [
 oldDoc.mechs = [
   { id: "mech_legacy", name: "Sunrise", snap: oldDoc.steps[0].id, boom: "step_legacy2" },
 ];
-await api("/api/plans/" + oldId + "/ops", {
+await api("/api/plans/" + oldId + "/import", {
   method: "POST",
-  body: JSON.stringify({ ops: [{ op: "replace_plan", plan: oldDoc }] }),
+  body: JSON.stringify({ plan: oldDoc }),
 });
 
 const hydrated = await api("/api/plans/" + oldId).then((p) => p.plan ?? p);

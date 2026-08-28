@@ -103,7 +103,7 @@ export function makeSymmetricAdds(
   kind: SymmetryKind,
   count: 2 | 4,
   group = `sym_${Math.random().toString(36).slice(2, 10)}`
-): Op[] {
+): Extract<Op, { op: "add_entity" }>[] {
   return Array.from({ length: count }, (_, index) => ({
     op: "add_entity" as const,
     spec: {
@@ -127,7 +127,7 @@ export function symmetricUpdates(
   count: 2 | 4,
   visible: Entity[] = plan.entities
 ): Extract<Op, { op: "update_entity" }>[] {
-  const source = plan.entities.find((e) => e.id === op.id);
+  const source = visible.find((e) => e.id === op.id);
   if (!source) return [op];
   const matched = matchSymmetryMembers(plan, source, kind, count, visible);
   if (!matched) return [op];
@@ -157,7 +157,7 @@ export function symmetryMemberIds(
   count: 2 | 4,
   visible: Entity[] = plan.entities
 ): string[] {
-  const source = plan.entities.find((e) => e.id === sourceId);
+  const source = visible.find((e) => e.id === sourceId);
   if (!source) return [sourceId];
   return matchSymmetryMembers(plan, source, kind, count, visible)?.members.map(({ member }) => member.id) ?? [sourceId];
 }
@@ -173,7 +173,7 @@ function matchSymmetryMembers(
   if (source.symmetry) {
     return {
       sourceSymmetry: source.symmetry,
-      members: plan.entities
+      members: visible
         .filter((e) => e.symmetry?.id === source.symmetry!.id)
         .map((member) => ({ member, symmetry: member.symmetry! })),
     };

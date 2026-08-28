@@ -17,6 +17,7 @@ import {
   EncounterSetupSchema,
   EntitySchema,
   PlanSchema,
+  entityInStep,
   entitiesForStep,
   mechLabel,
   MECH_COLORS,
@@ -24,9 +25,11 @@ import {
   mechSpan,
   mechanicLabel,
   mechanicSteps,
+  materializeVariantStep,
   poseKey,
   poseStep,
   resolveEntity,
+  variantStepScene,
   variantLabel,
 } from "./schema";
 import { DEFAULT_PARTY, jobLabel } from "./jobs";
@@ -132,16 +135,70 @@ const DEFAULTS_BY_TYPE: Record<EntityType, PropBag> = {
   icon: { src: "" },
 };
 
-/** Add an entity. `spec.type` is required; everything else is defaulted. */
-export function addEntity(
-  plan: Plan,
-  spec: PropBag & { type: EntityType }
-): { plan: Plan; entity: Entity } {
-  const entity = EntitySchema.parse({
+/** Build one fully-defaulted authored entity without deciding which scene owns it. */
+function makeEntity(spec: PropBag & { type: EntityType }): Entity {
+  return EntitySchema.parse({
     ...DEFAULTS_BY_TYPE[spec.type],
     ...spec,
     id: (spec.id as string | undefined) ?? newId(spec.type),
   });
+}
+
+/** Replace one already-materialized reading without touching revision metadata. */
+function replaceVariantScene(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+  scene: Entity[]
+): Plan {
+  const steps = plan.steps.map((step) =>
+    step.id === stepId
+      ? { ...step, variantScenes: { ...step.variantScenes, [variantId]: scene } }
+      : step
+  );
+  return { ...plan, steps };
+}
+
+/** Materialize and return the ordered scene that a variant-scoped edit owns. */
+function sceneForEdit(plan: Plan, stepId: string, variantId: string): { plan: Plan; scene: Entity[] } {
+  const detached = materializeVariantStep(plan, stepId, variantId);
+  return { plan: detached, scene: variantStepScene(detached, stepId, variantId)! };
+}
+
+const hasAuthoredVariants = (step: Step): boolean =>
+  Object.keys(step.variantScenes ?? {}).length > 0;
+
+/** The current shared source for one entity in one reading, ignoring any detached scene. */
+function sharedEntityInVariantStep(
+  plan: Plan,
+  id: string,
+  stepId: string,
+  variantId: string
+): Entity | undefined {
+  const entity = plan.entities.find((candidate) => candidate.id === id);
+  if (!entity || entity.type === "marker" || !entityInStep(entity, stepId, plan)) return undefined;
+  const mech = entity.mech
+    ? plan.mechs.find((candidate) => candidate.id === entity.mech)
+    : undefined;
+  if (mech?.variant && mech.variant !== variantId) return undefined;
+  return EntitySchema.parse({ ...resolveEntity(entity, stepId), overrides: {} });
+}
+
+/** Add an entity. `spec.type` is required; everything else is defaulted. */
+export function addEntity(
+  plan: Plan,
+  spec: PropBag & { type: EntityType },
+  stepId?: string,
+  variantId?: string
+): { plan: Plan; entity: Entity } {
+  const entity = makeEntity(spec);
+  if (stepId && variantId && entity.type !== "marker") {
+    const detached = sceneForEdit(plan, stepId, variantId);
+    return {
+      plan: touch(replaceVariantScene(detached.plan, stepId, variantId, [...detached.scene, entity])),
+      entity,
+    };
+  }
   return { plan: touch({ ...plan, entities: [...plan.entities, entity] }), entity };
 }
 
@@ -150,11 +207,9 @@ export function getEntity(plan: Plan, id: string): Entity | undefined {
 }
 
 /**
- * Patch an entity. With `stepId`, the patch is written as a per-step override
- * (so the entity keeps its base pose in every other step); without one it edits
- * the base properties. Name a variant as well and the override belongs to that
- * reading of the mechanic only — the same step played the other way is
- * untouched, which is how one shared step holds two sets of positions.
+ * Patch an entity. A step + variant edits the standalone authored scene for
+ * that reading. A step without a variant updates the shared per-step layer;
+ * without a step it updates the plan-wide entity source.
  */
 export function updateEntity(
   plan: Plan,
@@ -163,21 +218,39 @@ export function updateEntity(
   stepId?: string,
   variantId?: string
 ): { plan: Plan; entity: Entity } {
-  const idx = plan.entities.findIndex((e) => e.id === id);
-  if (idx < 0) throw new Error(`No entity ${id}`);
-  const current = plan.entities[idx];
-
   const clean: PropBag = defined(patch);
   delete clean.id;
   delete clean.type;
   delete clean.overrides;
 
+  // Waymarks are a plan-wide layer. A step-scoped gesture must never detach a
+  // reading merely because the editor happened to be showing one at the time.
+  const globalIdx = plan.entities.findIndex((entity) => entity.id === id);
+  const globalCurrent = globalIdx >= 0 ? plan.entities[globalIdx] : undefined;
+  if (globalCurrent?.type === "marker") {
+    const next = EntitySchema.parse({ ...globalCurrent, ...clean });
+    const entities = [...plan.entities];
+    entities[globalIdx] = next;
+    return { plan: touch({ ...plan, entities }), entity: next };
+  }
+
+  if (stepId && variantId) {
+    const detached = sceneForEdit(plan, stepId, variantId);
+    const idx = detached.scene.findIndex((entity) => entity.id === id);
+    if (idx < 0) throw new Error(`No entity ${id} in this variant step`);
+    const next = EntitySchema.parse({ ...detached.scene[idx], ...clean, overrides: {} });
+    const scene = [...detached.scene];
+    scene[idx] = next;
+    return { plan: touch(replaceVariantScene(detached.plan, stepId, variantId, scene)), entity: next };
+  }
+
+  const idx = globalIdx;
+  if (idx < 0) throw new Error(`No entity ${id}`);
+  const current = globalCurrent!;
+
   let next: Entity;
-  // Waymarks are placed before the pull and never move again, so a per-step
-  // drag on one is always a mistake: it would give the same fight a different
-  // A depending on which mechanic you were looking at.
-  if (stepId && current.type !== "marker") {
-    const key = poseKey(stepId, variantId);
+  if (stepId) {
+    const key = poseKey(stepId);
     const overrides = { ...current.overrides, [key]: { ...current.overrides?.[key], ...clean } };
     next = { ...current, overrides } as Entity;
     // Validate the merged result so a bad override is rejected at write time.
@@ -192,24 +265,45 @@ export function updateEntity(
 }
 
 /**
- * Drop a step's overrides for an entity, so it reverts to its base pose. Name a
- * variant and only that reading's move is dropped; without one the step goes
- * back to base in every reading.
+ * Revert an entity to its base pose in one layer. A shared clear only changes
+ * the live shared layer; authored variants keep their snapshots. A variant
+ * clear writes the base pose into that reading so it stays detached.
  */
 export function clearOverride(plan: Plan, id: string, stepId: string, variantId?: string): Plan {
+  const global = plan.entities.find((entity) => entity.id === id);
+  if (global?.type === "marker") {
+    const overrides = { ...global.overrides };
+    delete overrides[stepId];
+    const entities = plan.entities.map((entity) =>
+      entity.id === id ? ({ ...entity, overrides } as Entity) : entity
+    );
+    return touch({ ...plan, entities });
+  }
+  if (variantId) {
+    const detached = sceneForEdit(plan, stepId, variantId);
+    const idx = detached.scene.findIndex((entity) => entity.id === id);
+    if (idx < 0) throw new Error(`No entity ${id} in this variant step`);
+    const reset = sharedEntityInVariantStep(plan, id, stepId, variantId);
+    if (!reset)
+      return touch(
+        replaceVariantScene(detached.plan, stepId, variantId, withoutEntities(detached.scene, [id]))
+      );
+    const scene = [...detached.scene];
+    scene[idx] = reset;
+    return touch(replaceVariantScene(detached.plan, stepId, variantId, scene));
+  }
   const idx = plan.entities.findIndex((e) => e.id === id);
   if (idx < 0) throw new Error(`No entity ${id}`);
   const overrides = { ...plan.entities[idx].overrides };
-  if (variantId) delete overrides[poseKey(stepId, variantId)];
-  else for (const k of Object.keys(overrides)) if (poseStep(k) === stepId) delete overrides[k];
+  delete overrides[stepId];
   const entities = [...plan.entities];
   entities[idx] = { ...entities[idx], overrides } as Entity;
   return touch({ ...plan, entities });
 }
 
-export function deleteEntities(plan: Plan, ids: string[]): Plan {
+function withoutEntities(entities: Entity[], ids: string[]): Entity[] {
   const gone = new Set(ids);
-  const entities = plan.entities
+  return entities
     .filter((e) => !gone.has(e.id))
     // Tethers pointing at a deleted entity go with it.
     .filter((e) => !(e.type === "tether" && (gone.has(e.from) || gone.has(e.to))))
@@ -218,11 +312,82 @@ export function deleteEntities(plan: Plan, ids: string[]): Plan {
       (e) =>
         !(e.anchor && ((e.anchor.to && gone.has(e.anchor.to)) || (e.anchor.from && gone.has(e.anchor.from))))
     );
-  return touch({ ...plan, entities });
 }
 
-export function duplicateEntity(plan: Plan, id: string, offset = 60): { plan: Plan; entity: Entity } {
-  const src = getEntity(plan, id);
+export function deleteEntities(plan: Plan, ids: string[], stepId?: string, variantId?: string): Plan {
+  const markerIds = ids.filter(
+    (id) => plan.entities.find((entity) => entity.id === id)?.type === "marker"
+  );
+  const markerSet = new Set(markerIds);
+  const sceneIds = ids.filter((id) => !markerSet.has(id));
+  let next = plan;
+  if (markerIds.length) {
+    next = {
+      ...next,
+      entities: withoutEntities(next.entities, markerIds),
+      steps: next.steps.map((step) =>
+        step.variantScenes
+          ? {
+              ...step,
+              variantScenes: Object.fromEntries(
+                Object.entries(step.variantScenes).map(([variant, scene]) => [
+                  variant,
+                  withoutEntities(scene, markerIds),
+                ])
+              ),
+            }
+          : step
+      ),
+    };
+  }
+  if (stepId && variantId && sceneIds.length) {
+    const detached = sceneForEdit(next, stepId, variantId);
+    next = replaceVariantScene(
+      detached.plan,
+      stepId,
+      variantId,
+      withoutEntities(detached.scene, sceneIds)
+    );
+  } else if (sceneIds.length) {
+    next = { ...next, entities: withoutEntities(next.entities, sceneIds) };
+  }
+  return touch(next);
+}
+
+export function duplicateEntity(
+  plan: Plan,
+  id: string,
+  offset = 60,
+  stepId?: string,
+  variantId?: string
+): { plan: Plan; entity: Entity } {
+  const global = getEntity(plan, id);
+  if (global?.type === "marker") {
+    const copy = EntitySchema.parse({
+      ...global,
+      id: newId(global.type),
+      x: global.x + offset,
+      y: global.y + offset,
+    });
+    return { plan: touch({ ...plan, entities: [...plan.entities, copy] }), entity: copy };
+  }
+  if (stepId && variantId) {
+    const detached = sceneForEdit(plan, stepId, variantId);
+    const src = detached.scene.find((entity) => entity.id === id);
+    if (!src) throw new Error(`No entity ${id} in this variant step`);
+    const copy = EntitySchema.parse({
+      ...src,
+      id: newId(src.type),
+      x: src.x + offset,
+      y: src.y + offset,
+      overrides: {},
+    });
+    return {
+      plan: touch(replaceVariantScene(detached.plan, stepId, variantId, [...detached.scene, copy])),
+      entity: copy,
+    };
+  }
+  const src = global;
   if (!src) throw new Error(`No entity ${id}`);
   const copy = { ...src, id: newId(src.type), x: src.x + offset, y: src.y + offset } as Entity;
   return { plan: touch({ ...plan, entities: [...plan.entities, copy] }), entity: copy };
@@ -230,21 +395,40 @@ export function duplicateEntity(plan: Plan, id: string, offset = 60): { plan: Pl
 
 export type ZOrder = "front" | "back" | "forward" | "backward";
 
-export function reorderEntity(plan: Plan, id: string, where: ZOrder): Plan {
-  const idx = plan.entities.findIndex((e) => e.id === id);
+function reordered(entities: Entity[], id: string, where: ZOrder): Entity[] {
+  const idx = entities.findIndex((e) => e.id === id);
   if (idx < 0) throw new Error(`No entity ${id}`);
-  const entities = [...plan.entities];
-  const [item] = entities.splice(idx, 1);
+  const next = [...entities];
+  const [item] = next.splice(idx, 1);
   const target =
     where === "front"
-      ? entities.length
+      ? next.length
       : where === "back"
         ? 0
         : where === "forward"
-          ? Math.min(entities.length, idx + 1)
+          ? Math.min(next.length, idx + 1)
           : Math.max(0, idx - 1);
-  entities.splice(target, 0, item);
-  return touch({ ...plan, entities });
+  next.splice(target, 0, item);
+  return next;
+}
+
+export function reorderEntity(
+  plan: Plan,
+  id: string,
+  where: ZOrder,
+  stepId?: string,
+  variantId?: string
+): Plan {
+  const global = getEntity(plan, id);
+  if (global?.type === "marker")
+    return touch({ ...plan, entities: reordered(plan.entities, id, where) });
+  if (stepId && variantId) {
+    const detached = sceneForEdit(plan, stepId, variantId);
+    return touch(
+      replaceVariantScene(detached.plan, stepId, variantId, reordered(detached.scene, id, where))
+    );
+  }
+  return touch({ ...plan, entities: reordered(plan.entities, id, where) });
 }
 
 /** Fuzzy lookup used by the MCP tools: id, exact name, job, or substring. */
@@ -357,7 +541,21 @@ export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan
   const src = plan.steps[idx];
   // The copy is the same moment again, so it is in the same section: mechanic
   // and variant come along with the poses.
-  const step: Step = { ...src, id: newId("step"), name: name ?? `${src.name} (copy)` };
+  const step: Step = {
+    ...src,
+    id: newId("step"),
+    name: name ?? `${src.name} (copy)`,
+    ...(src.variantScenes
+      ? {
+          variantScenes: Object.fromEntries(
+            Object.entries(src.variantScenes).map(([variant, scene]) => [
+              variant,
+              scene.map((entity) => EntitySchema.parse({ ...entity, overrides: {} })),
+            ])
+          ),
+        }
+      : {}),
+  };
   const steps = [...plan.steps];
   steps.splice(idx + 1, 0, step);
 
@@ -377,8 +575,23 @@ export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan
   return { plan: touch({ ...plan, steps, entities }), step };
 }
 
-export function updateStep(plan: Plan, stepId: string, patch: Partial<Omit<Step, "id">>): Plan {
-  const steps = plan.steps.map((s) => (s.id === stepId ? { ...s, ...defined(patch) } : s));
+export function updateStep(
+  plan: Plan,
+  stepId: string,
+  patch: Partial<Omit<Step, "id" | "variantScenes">>
+): Plan {
+  // variantScenes is internal copy-on-write state, never a public step patch.
+  const clean = defined(patch) as PropBag;
+  delete clean.variantScenes;
+  const current = plan.steps.find((step) => step.id === stepId);
+  if (!current) throw new Error(`No step ${stepId}`);
+  if ("mechanic" in clean && clean.mechanic !== current.mechanic && hasAuthoredVariants(current))
+    throw new Error("This step has authored variant scenes; reconcile them before moving it to another mechanic");
+  const steps = plan.steps.map((s) =>
+    s.id === stepId
+      ? { ...s, ...clean }
+      : s
+  );
   return touch({ ...plan, steps });
 }
 
@@ -391,7 +604,7 @@ export function updateStep(plan: Plan, stepId: string, patch: Partial<Omit<Step,
  */
 function removeSteps(plan: Plan, ids: string[]): Plan {
   const gone = new Set(ids);
-  const steps = plan.steps.filter((s) => !gone.has(s.id));
+  let steps = plan.steps.filter((s) => !gone.has(s.id));
   // A mech that loses one end collapses onto the other; one that loses both was
   // entirely inside the steps that just went away, and goes with them.
   const mechs = plan.mechs
@@ -408,12 +621,39 @@ function removeSteps(plan: Plan, ids: string[]): Plan {
       const overrides = { ...e.overrides };
       for (const k of Object.keys(overrides)) if (gone.has(poseStep(k))) delete overrides[k];
       const steps2 = Array.isArray(e.steps) ? e.steps.filter((s) => !gone.has(s)) : e.steps;
-      return { ...e, overrides, steps: steps2 } as Entity;
+      return {
+        ...e,
+        overrides,
+        steps: steps2,
+        ...(e.declaredIn && gone.has(e.declaredIn) ? { declaredIn: undefined } : {}),
+      } as Entity;
     })
     // An entity that only existed in a deleted step goes away with it — and so
     // does one whose mech did.
     .filter((e) => !(e.mech && dead.has(e.mech)))
     .filter((e) => e.mech || e.steps === "all" || (e.steps as string[]).length > 0);
+  steps = steps.map((step) =>
+    step.variantScenes
+      ? {
+          ...step,
+          variantScenes: Object.fromEntries(
+            Object.entries(step.variantScenes).map(([variant, scene]) => {
+              const deadIds = scene
+                .filter((entity) => entity.mech && dead.has(entity.mech))
+                .map((entity) => entity.id);
+              return [
+                variant,
+                withoutEntities(scene, deadIds).map((entity) =>
+                  entity.declaredIn && gone.has(entity.declaredIn)
+                    ? ({ ...entity, declaredIn: undefined } as Entity)
+                    : entity
+                ),
+              ];
+            })
+          ),
+        }
+      : step
+  );
   return { ...plan, steps, mechs, entities };
 }
 
@@ -497,7 +737,18 @@ function pruneMechanic(plan: Plan, mechanicId: string): Plan {
   let variants = mechanic.variants;
   let mechs = plan.mechs;
   let entities = plan.entities;
-  if (variants.length <= 1) {
+  let steps = plan.steps;
+  const authoredSurvivor =
+    variants.length === 1 &&
+    steps.some(
+      (step) =>
+        step.mechanic === mechanicId &&
+        Object.prototype.hasOwnProperty.call(step.variantScenes ?? {}, variants[0].id)
+    );
+  // A detached survivor cannot be losslessly folded into the sparse shared
+  // source: it may own additions, deletions and order as well as properties.
+  // Keep its lone reading until the author explicitly reconciles that scene.
+  if (variants.length <= 1 && !authoredSurvivor) {
     const gone = new Set(variants.map((v) => v.id));
     variants = [];
     mechs = mechs.map((m) => (m.variant && gone.has(m.variant) ? { ...m, variant: undefined } : m));
@@ -512,9 +763,21 @@ function pruneMechanic(plan: Plan, mechanicId: string): Plan {
       }
       return { ...e, overrides } as Entity;
     });
+    steps = steps.map((step) =>
+      step.mechanic === mechanicId
+        ? {
+            ...step,
+            variantScenes: step.variantScenes
+              ? Object.fromEntries(
+                  Object.entries(step.variantScenes).filter(([variant]) => !gone.has(variant))
+                )
+              : undefined,
+          }
+        : step
+    );
   }
   const mechanics = plan.mechanics.map((m) => (m.id === mechanicId ? { ...m, variants } : m));
-  return { ...plan, mechanics, mechs, entities };
+  return { ...plan, mechanics, mechs, entities, steps };
 }
 
 /**
@@ -550,6 +813,12 @@ export function addMechanic(
   const mechanics = [...plan.mechanics];
   mechanics.splice(at < 0 ? mechanics.length : at + 1, 0, mechanic);
   const adopt = new Set(opts.stepIds ?? []);
+  for (const id of adopt) {
+    const step = plan.steps.find((candidate) => candidate.id === id);
+    if (!step) throw new Error(`No step ${id}`);
+    if (hasAuthoredVariants(step))
+      throw new Error("This step has authored variant scenes; reconcile them before moving it to another mechanic");
+  }
   const steps = adopt.size
     ? plan.steps.map((s) =>
         adopt.has(s.id) ? { ...s, mechanic: mechanic.id, variant: undefined } : s
@@ -582,6 +851,8 @@ export function deleteMechanic(plan: Plan, mechanicId: string, keepSteps = false
     const into = plan.mechanics[at - 1] ?? plan.mechanics[at + 1];
     if (!into)
       throw new Error("This is the only mechanic — its steps have no other section to go to");
+    if (plan.steps.some((step) => step.mechanic === mechanicId && hasAuthoredVariants(step)))
+      throw new Error("This mechanic has authored variant scenes; reconcile them before merging its steps");
     const steps = plan.steps.map((s) =>
       s.mechanic === mechanicId
         ? { ...s, mechanic: into.id, variant: into.variants[0]?.id }
@@ -686,10 +957,13 @@ export function deleteVariant(plan: Plan, mechanicId: string, variantId: string)
   if (!mechanic) throw new Error(`No mechanic ${mechanicId}`);
   if (!mechanic.variants.some((v) => v.id === variantId)) throw new Error(`No variant ${variantId}`);
   const doomedMechs = new Set(plan.mechs.filter((m) => m.variant === variantId).map((m) => m.id));
+  const doomedEntityIds = plan.entities
+    .filter((entity) => entity.mech && doomedMechs.has(entity.mech))
+    .map((entity) => entity.id);
   let next: Plan = {
     ...plan,
     mechs: plan.mechs.filter((m) => !doomedMechs.has(m.id)),
-    entities: plan.entities.filter((e) => !(e.mech && doomedMechs.has(e.mech))),
+    entities: withoutEntities(plan.entities, doomedEntityIds),
   };
   // The poses that were this reading's go with it; the shared ones stay.
   next = {
@@ -702,6 +976,25 @@ export function deleteVariant(plan: Plan, mechanicId: string, variantId: string)
   };
   next = {
     ...next,
+    steps: next.steps.map((step) =>
+      step.mechanic === mechanicId
+        ? {
+            ...step,
+            variantScenes: step.variantScenes
+              ? Object.fromEntries(
+                  Object.entries(step.variantScenes)
+                    .filter(([variant]) => variant !== variantId)
+                    .map(([variant, scene]) => {
+                      const sceneDoomed = scene
+                        .filter((entity) => entity.mech && doomedMechs.has(entity.mech))
+                        .map((entity) => entity.id);
+                      return [variant, withoutEntities(scene, sceneDoomed)];
+                    })
+                )
+              : undefined,
+          }
+        : step
+    ),
     mechanics: next.mechanics.map((m) =>
       m.id === mechanicId ? { ...m, variants: m.variants.filter((v) => v.id !== variantId) } : m
     ),
@@ -747,16 +1040,68 @@ export function updateMech(plan: Plan, mechId: string, patch: Partial<Omit<Mech,
  */
 export function deleteMech(plan: Plan, mechId: string, keepEntities = false): Plan {
   const mechs = plan.mechs.filter((m) => m.id !== mechId);
+  const deadBaseIds = plan.entities
+    .filter((entity) => entity.mech === mechId)
+    .map((entity) => entity.id);
   const entities = keepEntities
     ? plan.entities.map((e) => (e.mech === mechId ? ({ ...e, mech: undefined } as Entity) : e))
-    : plan.entities.filter((e) => e.mech !== mechId);
-  return touch({ ...plan, mechs, entities });
+    : withoutEntities(plan.entities, deadBaseIds);
+  const steps = plan.steps.map((step) =>
+    step.variantScenes
+      ? {
+          ...step,
+          variantScenes: Object.fromEntries(
+            Object.entries(step.variantScenes).map(([variant, scene]) => [
+              variant,
+              keepEntities
+                ? scene.map((entity) =>
+                    entity.mech === mechId ? ({ ...entity, mech: undefined } as Entity) : entity
+                  )
+                : withoutEntities(
+                    scene,
+                    scene
+                      .filter((entity) => entity.mech === mechId)
+                      .map((entity) => entity.id)
+                  ),
+            ])
+          ),
+        }
+      : step
+  );
+  return touch({ ...plan, mechs, entities, steps });
 }
 
 /** Move existing shapes into a mech, or (with `null`) out of whatever holds them. */
-export function assignMech(plan: Plan, ids: string[], mechId: string | null): Plan {
+export function assignMech(
+  plan: Plan,
+  ids: string[],
+  mechId: string | null,
+  stepId?: string,
+  variantId?: string
+): Plan {
   if (mechId && !plan.mechs.some((m) => m.id === mechId)) throw new Error(`No mech ${mechId}`);
   const want = new Set(ids);
+  if (stepId && variantId) {
+    const markerIds = new Set(
+      plan.entities
+        .filter((entity) => want.has(entity.id) && entity.type === "marker")
+        .map((entity) => entity.id)
+    );
+    const sceneIds = ids.filter((id) => !markerIds.has(id));
+    const withScene = sceneIds.length
+      ? (() => {
+          const detached = sceneForEdit(plan, stepId, variantId);
+          const scene = detached.scene.map((entity) =>
+            want.has(entity.id) ? ({ ...entity, mech: mechId ?? undefined } as Entity) : entity
+          );
+          return replaceVariantScene(detached.plan, stepId, variantId, scene);
+        })()
+      : plan;
+    const entities = withScene.entities.map((entity) =>
+      markerIds.has(entity.id) ? ({ ...entity, mech: mechId ?? undefined } as Entity) : entity
+    );
+    return touch({ ...withScene, entities });
+  }
   const entities = plan.entities.map((e) =>
     want.has(e.id) ? ({ ...e, mech: mechId ?? undefined } as Entity) : e,
   );
@@ -922,9 +1267,13 @@ export const PF_SLOTS: { slot: string; names: string[] }[] = [
 export function arrangeParty(
   plan: Plan,
   radiusFraction = PF_SPREAD,
-  stepId?: string
+  stepId?: string,
+  variantId?: string
 ): { plan: Plan; ids: string[] } {
-  const players = findEntities(plan, { type: "player" });
+  const wasEdited = stepId && variantId ? variantStepScene(plan, stepId, variantId) !== undefined : false;
+  if (stepId && variantId) plan = materializeVariantStep(plan, stepId, variantId);
+  const source = stepId && variantId ? variantStepScene(plan, stepId, variantId)! : plan.entities;
+  const players = source.filter((entity) => entity.type === "player");
   const taken = new Map<number, Entity>();
   const spare: Entity[] = [];
   for (const p of players) {
@@ -946,11 +1295,15 @@ export function arrangeParty(
       next,
       entity.id,
       { x: Math.round(Math.cos(a) * r), y: Math.round(Math.sin(a) * r) },
-      stepId
+      stepId,
+      variantId
     ).plan;
     ids.push(entity.id);
   }
   // Anyone past the eighth player keeps their position — better than stacking.
+  // An empty contextual arrangement is still the variant's first authored scene
+  // edit. Persist the copy-on-write boundary even when there was nothing to move.
+  if (!ids.length && stepId && variantId && !wasEdited) next = touch(next);
   return { plan: next, ids };
 }
 
@@ -1207,9 +1560,9 @@ function definedProps(props: PropBag): PropBag {
 
 const ordinal = (n: number) => ["", "", "2nd", "3rd", "4th", "5th", "6th", "7th", "8th"][n] ?? `${n}th`;
 
-function describeEntity(plan: Plan, e: Entity): string {
+function describeEntity(plan: Plan, e: Entity, scene: Entity[] = plan.entities): string {
   const label = e.name ? `"${e.name}"` : "";
-  const who = (id: string) => getEntity(plan, id)?.name ?? id;
+  const who = (id: string) => scene.find((candidate) => candidate.id === id)?.name ?? id;
   // An anchored entity has no pose of its own — reporting coordinates for it
   // would be reporting whatever it was authored with, not where it will land.
   const whom = (a: NonNullable<Entity["anchor"]>) =>
@@ -1264,7 +1617,11 @@ function describeHits(e: Entity, items: Entity[]): string {
 }
 
 /** Compact, model-readable rendering of a plan — what `read_plan` returns. */
-export function describePlan(plan: Plan, stepId?: string): string {
+export function describePlan(
+  plan: Plan,
+  stepId?: string,
+  shown?: Record<string, string>
+): string {
   const lines: string[] = [];
   lines.push(`# ${plan.name}${plan.encounter ? ` — ${plan.encounter}` : ""} (${plan.id}, rev ${plan.rev})`);
   if (plan.description) lines.push(plan.description);
@@ -1284,19 +1641,30 @@ export function describePlan(plan: Plan, stepId?: string): string {
       const mechanic = plan.mechanics.find((m) => m.id === step.mechanic);
       if (mechanic) {
         lines.push("", `## Mechanic: ${mechanicLabel(plan, mechanic)} [${mechanic.id}]`);
-        if (mechanic.variants.length)
+        if (mechanic.variants.length) {
+          const requested = shown?.[mechanic.id];
+          const reading =
+            mechanic.variants.find((variant) => variant.id === requested) ?? mechanic.variants[0];
           lines.push(
             `Goes ${mechanic.variants
               .map((v) => `${variantLabel(mechanic, v.id)} [${v.id}]`)
-              .join(" / ")} — same steps either way; the casts and the party's positions differ. Read as ${variantLabel(mechanic, mechanic.variants[0].id)}.`
+              .join(" / ")} — same steps either way; the casts and the party's positions differ. Read as ${variantLabel(mechanic, reading.id)}.`
           );
+        }
       }
     }
     lines.push("");
     lines.push(`## Step ${plan.steps.indexOf(step) + 1}: ${step.name} [${step.id}]`);
     if (step.notes) lines.push(`Notes: ${step.notes}`);
     // Which casts are in the air here, and whether this is the step one lands in.
-    const live = plan.mechs.filter((m) => mechSpan(plan, m).includes(step.id));
+    const stepMechanic = plan.mechanics.find((mechanic) => mechanic.id === step.mechanic);
+    const requested = stepMechanic ? shown?.[stepMechanic.id] : undefined;
+    const reading = stepMechanic?.variants.length
+      ? (stepMechanic.variants.find((variant) => variant.id === requested) ?? stepMechanic.variants[0]).id
+      : undefined;
+    const live = plan.mechs.filter(
+      (m) => mechSpan(plan, m).includes(step.id) && (!m.variant || m.variant === reading)
+    );
     if (live.length)
       lines.push(
         "Mechs: " +
@@ -1309,12 +1677,12 @@ export function describePlan(plan: Plan, stepId?: string): string {
             )
             .join("; ")
       );
-    const items = entitiesForStep(plan, step.id);
+    const items = entitiesForStep(plan, step.id, undefined, shown);
     if (!items.length) lines.push("(empty)");
     for (const e of items) {
-      const base = plan.entities.find((b) => b.id === e.id)!;
-      const moved = base.overrides?.[step.id] ? " *" : "";
-      lines.push(`- [${e.id}]${moved} ${describeEntity(plan, e)}${describeHits(e, items)}`);
+      const base = plan.entities.find((b) => b.id === e.id);
+      const moved = base?.overrides?.[step.id] ? " *" : "";
+      lines.push(`- [${e.id}]${moved} ${describeEntity(plan, e, items)}${describeHits(e, items)}`);
     }
   }
   if (!stepId && plan.steps.length > 1) lines.push("", "(* = entity has a pose override in that step)");

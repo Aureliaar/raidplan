@@ -22,6 +22,7 @@ import type {
 } from "../shared/schema";
 import {
   EntitySchema,
+  authoredEntitiesForStep,
   entitiesForStep,
   hydratePlan,
   mechLabel,
@@ -176,7 +177,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           if (
             op.op === "add_entity" &&
             typeof op.spec.id === "string" &&
-            visible.entities.some((entity) => entity.id === op.spec.id)
+            (visible.entities.some((entity) => entity.id === op.spec.id) ||
+              visible.steps.some((step) =>
+                Object.values(step.variantScenes ?? {}).some((scene) =>
+                  scene.some((entity) => entity.id === op.spec.id)
+                )
+              ))
           ) continue;
           visible = applyOp(visible, op).plan;
         } catch {
@@ -234,8 +240,97 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       let optimisticToken: symbol | null = null;
       try {
         const current = planRef.current;
+        const viewedStepId = step?.id;
+        const viewedStep = viewedStepId
+          ? current?.steps.find((candidate) => candidate.id === viewedStepId)
+          : undefined;
+        const viewedMechanic = viewedStep?.mechanic
+          ? current?.mechanics.find((candidate) => candidate.id === viewedStep.mechanic)
+          : undefined;
+        const viewedVariant = viewedMechanic?.variants.length
+          ? (viewedMechanic.variants.find((variant) => variant.id === shown[viewedMechanic.id]) ??
+              viewedMechanic.variants[0]).id
+          : undefined;
+        const activeStepId = scope === "step" ? viewedStepId : undefined;
+        const activeVariant = scope === "step" ? viewedVariant : undefined;
+        const sceneOps = new Set([
+          "add_entity",
+          "update_entity",
+          "clear_override",
+          "delete_entities",
+          "duplicate_entity",
+          "reorder_entity",
+          "assign_mech",
+          "arrange_party",
+        ]);
+        const markerIds = new Set(
+          current?.entities.filter((entity) => entity.type === "marker").map((entity) => entity.id)
+        );
+        const baseIds = new Set(current?.entities.map((entity) => entity.id));
+        const localOnlyIds = new Set(
+          current && viewedStepId && viewedVariant
+            ? authoredEntitiesForStep(current, viewedStepId, viewedVariant)
+                .filter((entity) => !baseIds.has(entity.id))
+                .map((entity) => entity.id)
+            : []
+        );
+        const contextual = (Array.isArray(ops) ? ops : [ops]).flatMap((op): Op[] => {
+          if (!sceneOps.has(op.op)) return [op];
+          // Waymarks are plan-wide even while the editor is in step scope.
+          if (op.op === "add_entity" && op.spec.type === "marker") return [op];
+          if (
+            (op.op === "update_entity" ||
+              op.op === "clear_override" ||
+              op.op === "duplicate_entity" ||
+              op.op === "reorder_entity") &&
+            markerIds.has(op.id)
+          ) return [op];
+          const sceneStepId = activeStepId ?? viewedStepId;
+          const sceneVariant = activeVariant ?? viewedVariant;
+          const forceLocal = (id: string) =>
+            !!sceneStepId && !!sceneVariant && localOnlyIds.has(id);
+          if (op.op === "delete_entities" || op.op === "assign_mech") {
+            const markers = op.ids.filter((id) => markerIds.has(id));
+            const local = op.ids.filter(
+              (id) => !markerIds.has(id) && (!!activeStepId || forceLocal(id))
+            );
+            const shared = op.ids.filter(
+              (id) => !markerIds.has(id) && !local.includes(id)
+            );
+            return [
+              ...(markers.length || shared.length ? [{ ...op, ids: [...markers, ...shared] }] : []),
+              ...(local.length
+                ? [{ ...op, ids: local, stepId: sceneStepId, variant: sceneVariant }]
+                : []),
+            ];
+          }
+          if (
+            (op.op === "update_entity" ||
+              op.op === "clear_override" ||
+              op.op === "duplicate_entity" ||
+              op.op === "reorder_entity") &&
+            forceLocal(op.id)
+          )
+            return [{ ...op, stepId: sceneStepId, variant: sceneVariant } as Op];
+          if (!activeStepId || !activeVariant) return [op];
+          return [{ ...op, stepId: activeStepId, variant: activeVariant } as Op];
+        });
+        const contextualScene = contextual.find(
+          (op) => "stepId" in op && "variant" in op && op.stepId && op.variant
+        ) as (Op & { stepId: string; variant: string }) | undefined;
+        const editPlan =
+          current && contextualScene
+            ? {
+                ...current,
+                entities: authoredEntitiesForStep(
+                  current,
+                  contextualScene.stepId,
+                  contextualScene.variant
+                ),
+              }
+            : current;
         const symmetricCount = symmetryCount === 2 ? 2 : 4;
-        const expanded = (Array.isArray(ops) ? ops : [ops]).flatMap((op): Op[] => {
+        const expanded = contextual.flatMap((op): Op[] => {
           if (
             op.op === "add_entity" &&
             expandSymmetry &&
@@ -246,19 +341,23 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             !op.spec.bond &&
             op.spec.type !== "tether"
           )
-            return makeSymmetricAdds(op.spec, symmetryKind, symmetricCount);
-          if (op.op === "update_entity" && current && expandSymmetry && symmetryCount > 1)
+            return makeSymmetricAdds(op.spec, symmetryKind, symmetricCount).map((made) => ({
+              ...made,
+              stepId: op.stepId,
+              variant: op.variant,
+            }));
+          if (op.op === "update_entity" && editPlan && expandSymmetry && symmetryCount > 1)
             return symmetricUpdates(
-              current,
+              editPlan,
               op,
               symmetryKind,
               symmetricCount,
-              entitiesForStep(current, step?.id, undefined, shown)
+              entitiesForStep(editPlan, step?.id, undefined, shown)
             );
-          if (op.op === "delete_entities" && current && expandSymmetry && symmetryCount > 1)
-            return [{ ...op, ids: symmetryIds(current, op.ids) }];
-          if (op.op === "assign_mech" && current && expandSymmetry && symmetryCount > 1)
-            return [{ ...op, ids: symmetryIds(current, op.ids) }];
+          if (op.op === "delete_entities" && editPlan && expandSymmetry && symmetryCount > 1)
+            return [{ ...op, ids: symmetryIds(editPlan, op.ids) }];
+          if (op.op === "assign_mech" && editPlan && expandSymmetry && symmetryCount > 1)
+            return [{ ...op, ids: symmetryIds(editPlan, op.ids) }];
           return [op];
         });
         const optimistic = expanded.every(
@@ -301,7 +400,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         throw e;
       }
     },
-    [planId, symmetryCount, symmetryKind, shown, step?.id, showServerPlan]
+    [planId, scope, symmetryCount, symmetryKind, shown, step?.id, showServerPlan]
   );
 
   const travelHistory = useCallback(
@@ -379,7 +478,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         return;
       }
       if (mod && ev.key.toLowerCase() === "c") {
-        const e = plan?.entities.find((x) => x.id === selected);
+        const currentStep = plan && step ? plan.steps.find((candidate) => candidate.id === step.id) : undefined;
+        const currentMechanic = currentStep?.mechanic
+          ? plan?.mechanics.find((candidate) => candidate.id === currentStep.mechanic)
+          : undefined;
+        const currentVariant = currentMechanic?.variants.length
+          ? (currentMechanic.variants.find((variant) => variant.id === shown[currentMechanic.id]) ??
+              currentMechanic.variants[0]).id
+          : undefined;
+        const e = plan && step
+          ? authoredEntitiesForStep(plan, step.id, currentVariant).find((entity) => entity.id === selected)
+          : plan?.entities.find((entity) => entity.id === selected);
         if (!e) return;
         const { id: _id, overrides: _o, ...rest } = e;
         clipboard.current = rest;
@@ -473,7 +582,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   if (error && !plan) return <div className="p-8 text-red-400">{error}</div>;
   if (!plan || !step) return <div className="p-8 text-ink-400">Loading plan…</div>;
 
-  const selectedEntity = plan.entities.find((e) => e.id === selected) ?? null;
   /** The mech slot currently open, if it exists and covers this step. */
   const openMech = selectedMechIsHere ? selectedMech : null;
   /** The debuff deal open in the popup, if that mech still exists. */
@@ -491,6 +599,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     ? (stepMechanic.variants.find((v) => v.id === shown[stepMechanic.id]) ?? stepMechanic.variants[0])
         .id
     : undefined;
+  const authoredScene = authoredEntitiesForStep(plan, step.id, playing);
+  const selectedEntity = authoredScene.find((entity) => entity.id === selected) ?? null;
 
   /** Pointer position, in arena units, from a point over the stage. */
   function arenaPointAt(clientX: number, clientY: number): { x: number; y: number } {
@@ -551,10 +661,15 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    */
   function resize(id: string, factor: number, what: "size" | "opacity" = "size") {
     const current = planRef.current;
-    const target = current?.entities.find((e) => e.id === id);
-    if (!current || !target) return;
+    if (!current) return;
+    const editableScene =
+      scope === "step" && playing
+        ? authoredEntitiesForStep(current, step!.id, playing)
+        : current.entities;
+    const target = editableScene.find((e) => e.id === id);
+    if (!target) return;
     const ids = target.bond
-      ? current.entities.filter((e) => e.bond?.id === target.bond!.id).map((e) => e.id)
+      ? editableScene.filter((e) => e.bond?.id === target.bond!.id).map((e) => e.id)
       : [id];
     // Pointing somewhere else mid-spin: land what is owed before starting again.
     if (
@@ -574,8 +689,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const current = planRef.current;
     pendingResize.current = null;
     if (!job || !current) return;
+    const editableScene =
+      scope === "step" && playing
+        ? authoredEntitiesForStep(current, step!.id, playing)
+        : current.entities;
     const edits = job.ids.flatMap((id) => {
-      const e = current.entities.find((x) => x.id === id);
+      const e = editableScene.find((x) => x.id === id);
       if (!e) return [];
       // Opacity is one number on everything; size is whatever meaningful
       // dimension the entity has (the required range for a tether). Either way
@@ -592,7 +711,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   /** The sets this group holds in the mechanic currently being filled. */
   function bondsOf(group: GroupId): { id: string; label: string; ids: string[] }[] {
     const out = new Map<string, { id: string; label: string; ids: string[] }>();
-    for (const e of plan!.entities) {
+    for (const e of authoredScene) {
       // A group card is part of the current authoring context. Showing bonds
       // from other mechs here made their remove controls appear to belong to
       // whichever mech happened to be open.
@@ -605,7 +724,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   }
 
   async function placeSource(kind: PaletteSourceKind, x: number, y: number) {
-    const matching = plan!.entities.filter(
+    const matching = authoredScene.filter(
       (e) =>
         e.type === "enemy" &&
         (kind === "anchor"
@@ -628,7 +747,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * in the middle — a protean has to be thrown from somewhere.
    */
   async function sourceForAimed() {
-    const enemies = plan!.entities.filter((e) => e.type === "enemy");
+    const enemies = authoredScene.filter((e) => e.type === "enemy");
     const boss = enemies
       .filter((e) => e.role !== "anchor")
       .sort((a, b) => b.size - a.size)[0] ?? enemies[0];
@@ -743,7 +862,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     }
     if (target.at === "source") {
       if (isPaletteTether(kind)) return setError("Drop this tether on its first player");
-      const taken = plan!.entities.filter(
+      const taken = authoredScene.filter(
         (e) =>
           e.type === "zone" &&
           e.shape === SHAPE_OF[kind] &&
@@ -775,10 +894,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   async function finishTether(to: string) {
     const pending = pendingTether;
     if (!pending) return;
-    const fromPlayer = plan!.entities.find(
+    const fromPlayer = authoredScene.find(
       (e): e is PlayerEntity => e.id === pending.from && e.type === "player"
     );
-    const toPlayer = plan!.entities.find(
+    const toPlayer = authoredScene.find(
       (e): e is PlayerEntity => e.id === to && e.type === "player"
     );
     if (!fromPlayer || !toPlayer) return setError("Choose a player for the other end of the tether");
@@ -1211,7 +1330,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 onward={onward}
                 onPick={(id) => {
                   if (!pendingTether) return false;
-                  const target = plan.entities.find((e) => e.id === id);
+                  const target = authoredScene.find((e) => e.id === id);
                   if (target?.type === "player") void finishTether(target.id);
                   else setError("Choose a player for the other end of the tether");
                   return true;
@@ -1402,7 +1521,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               disabled={!editable}
               title="Out at waymark spread: MT north, R2 NE, H2 east, M2 SE, OT south, M1 SW, H1 west, R1 NW"
               onClick={() =>
-                run({ op: "arrange_party", stepId: scope === "step" ? step.id : undefined })
+                run({
+                  op: "arrange_party",
+                  stepId: scope === "step" ? step.id : undefined,
+                  variant: scope === "step" ? playing : undefined,
+                })
               }
             >
               PF positions
@@ -2185,7 +2308,14 @@ function StepRail({
         {l.placed.map(({ mech, lo, hi, lane }) => {
           const active = openMech?.id === mech.id;
           const label = mechLabel(plan, mech);
-          const shapes = plan.entities.filter((e) => e.mech === mech.id).length;
+          const shapes = new Set([
+            ...plan.entities.filter((entity) => entity.mech === mech.id).map((entity) => entity.id),
+            ...plan.steps.flatMap((step) =>
+              Object.values(step.variantScenes ?? {}).flatMap((scene) =>
+                scene.filter((entity) => entity.mech === mech.id).map((entity) => entity.id)
+              )
+            ),
+          ]).size;
           const box = { gridColumn: lane + 2, gridRow: `${lo + 1 + head} / ${hi + 2 + head}` };
           const color = mechColor(plan, mech);
           // Mid-drag the box says what letting go would do, reading and all.

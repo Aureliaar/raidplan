@@ -344,6 +344,14 @@ export const StepSchema = z.object({
    */
   mechanic: z.string().optional(),
 
+  /**
+   * Ordered authored scenes for readings that have diverged in this step.
+   * Absence means the reading still resolves the live shared entity list;
+   * presence means membership, order and authored properties are a standalone
+   * copy-on-write snapshot. Waymarks remain plan-wide and are not stored here.
+   */
+  variantScenes: z.record(z.string(), z.array(EntitySchema)).optional(),
+
 });
 export type Step = z.infer<typeof StepSchema>;
 
@@ -603,7 +611,25 @@ export function hydratePlan(plan: Plan): Plan {
     plan.mechs && plan.mechanics
       ? plan
       : { ...plan, mechs: plan.mechs ?? [], mechanics: plan.mechanics ?? [] };
-  return groupLooseSteps(filled);
+  let hydrated = groupLooseSteps(filled);
+
+  // Before variantScenes existed, the presence of any variant override was
+  // the only evidence that this reading had been authored. Preserve the exact
+  // state those documents currently resolve to, then opt them into the new
+  // whole-step copy-on-write model. Untouched variants have no such override
+  // and remain live views of shared state.
+  for (const step of hydrated.steps) {
+    const mechanic = hydrated.mechanics.find((candidate) => candidate.id === step.mechanic);
+    for (const variant of mechanic?.variants ?? []) {
+      if (variantStepEdited(hydrated, step.id, variant.id)) continue;
+      const key = poseKey(step.id, variant.id);
+      const legacyEdit = hydrated.entities.some((entity) =>
+        Object.prototype.hasOwnProperty.call(entity.overrides ?? {}, key)
+      );
+      if (legacyEdit) hydrated = materializeVariantStep(hydrated, step.id, variant.id);
+    }
+  }
+  return hydrated;
 }
 
 /**
@@ -692,6 +718,55 @@ export function poseStep(key: string): string {
   return at < 0 ? key : key.slice(0, at);
 }
 
+/** Has this reading stopped following the shared entity state in this step? */
+export function variantStepEdited(plan: Plan, stepId: string, variantId: string): boolean {
+  const scenes = plan.steps.find((step) => step.id === stepId)?.variantScenes;
+  return !!scenes && Object.prototype.hasOwnProperty.call(scenes, variantId);
+}
+
+/** The materialized scene for one reading, if it has crossed copy-on-write. */
+export function variantStepScene(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+): Entity[] | undefined {
+  return plan.steps.find((step) => step.id === stepId)?.variantScenes?.[variantId];
+}
+
+/**
+ * Copy-on-write boundary for one moment in one reading.
+ *
+ * The first variant-scoped edit snapshots the ordered authored entity scene:
+ * every non-waymark member, including hidden entities, with base + shared +
+ * any legacy variant override resolved into a standalone full entity. Later
+ * shared additions, deletion, reorder and property edits cannot leak into it.
+ */
+export function materializeVariantStep(plan: Plan, stepId: string, variantId: string): Plan {
+  const step = plan.steps.find((candidate) => candidate.id === stepId);
+  if (!step) throw new Error(`No step ${stepId}`);
+  const mechanic = plan.mechanics.find((candidate) => candidate.id === step.mechanic);
+  if (!mechanic?.variants.some((variant) => variant.id === variantId))
+    throw new Error(`No variant ${variantId} in this step's mechanic`);
+  if (variantStepEdited(plan, stepId, variantId)) return plan;
+
+  const scene = plan.entities
+    .filter((entity) => {
+      if (entity.type === "marker" || !entityInStep(entity, stepId, plan)) return false;
+      const mech = entity.mech ? plan.mechs.find((candidate) => candidate.id === entity.mech) : undefined;
+      return !mech?.variant || mech.variant === variantId;
+    })
+    .map((entity) => EntitySchema.parse({ ...resolveEntity(entity, stepId, variantId), overrides: {} }));
+  const steps = plan.steps.map((candidate) =>
+    candidate.id === stepId
+      ? {
+          ...candidate,
+          variantScenes: { ...candidate.variantScenes, [variantId]: scene },
+        }
+      : candidate
+  );
+  return { ...plan, steps };
+}
+
 /**
  * Resolve an entity's properties for a given step: base props, then that step's
  * overrides, then the ones belonging to the variant being played. So a move
@@ -708,6 +783,50 @@ export function resolveEntity<T extends Entity>(
   const mine = variantId ? entity.overrides?.[poseKey(stepId, variantId)] : undefined;
   if (!shared && !mine) return entity;
   return { ...entity, ...(shared as Partial<T>), ...(mine as Partial<T>) };
+}
+
+/**
+ * Plan-aware entity resolution. An untouched variant reads base + shared step
+ * state. Once that variant-step has been edited, its materialized state is a
+ * standalone snapshot: neither shared overrides nor later base-property edits
+ * can leak into it.
+ */
+export function resolveEntityForStep<T extends Entity>(
+  plan: Plan,
+  entity: T,
+  stepId: string | undefined,
+  variantId?: string,
+): T {
+  if (stepId && variantId) {
+    const materialized = variantStepScene(plan, stepId, variantId)?.find(
+      (candidate) => candidate.id === entity.id
+    );
+    if (materialized) return materialized as T;
+  }
+  return resolveEntity(entity, stepId, variantId);
+}
+
+/**
+ * Ordered authored members before hidden filtering, binding and presentation
+ * dressing. Detached variants return their standalone scene plus live global
+ * waymarks; untouched variants resolve the shared entity source.
+ */
+export function authoredEntitiesForStep(
+  plan: Plan,
+  stepId: string | undefined,
+  variantId?: string,
+): Entity[] {
+  if (stepId && variantId) {
+    const scene = variantStepScene(plan, stepId, variantId);
+    if (scene) return [...plan.entities.filter((entity) => entity.type === "marker"), ...scene];
+  }
+  return plan.entities
+    .filter((entity) => entityInStep(entity, stepId, plan))
+    .filter((entity) => {
+      const mech = entity.mech ? plan.mechs.find((candidate) => candidate.id === entity.mech) : undefined;
+      return !mech?.variant || mech.variant === variantId;
+    })
+    .map((entity) => resolveEntity(entity, stepId, variantId));
 }
 
 /**
@@ -730,7 +849,11 @@ export function mechSpan(plan: Plan, mech: Mech): string[] {
 /** What a mech is called: its own name, or the first thing dropped into it. */
 export function mechLabel(plan: Plan, mech: Mech): string {
   if (mech.name) return mech.name;
-  const first = plan.entities.find((e) => e.mech === mech.id);
+  const first =
+    plan.entities.find((e) => e.mech === mech.id) ??
+    plan.steps
+      .flatMap((step) => Object.values(step.variantScenes ?? {}).flat())
+      .find((e) => e.mech === mech.id);
   return first?.bond?.label ?? first?.name ?? "Mech";
 }
 
@@ -911,15 +1034,13 @@ export function entitiesForStep(
   };
   /** Every entity as it stands in one step, before any binding is solved. */
   const posesIn = (sid: string | undefined) =>
-    plan.entities
-      .filter((e) => entityInStep(e, sid, plan))
-      .map((e) => {
-        const base = resolveEntity(e, sid, variantOf(sid));
+    authoredEntitiesForStep(plan, sid, variantOf(sid))
+      .map((base) => {
         // A drag in progress: the canvas hands us where the thing is *right
         // now*, before any of it has been committed, so bindings solve against
         // the pose you are looking at instead of the one you started from.
         // Only the step you are looking at has a drag in it.
-        const at = sid === stepId ? live?.get(e.id) : undefined;
+        const at = sid === stepId ? live?.get(base.id) : undefined;
         return at ? ({ ...base, x: at.x, y: at.y } as Entity) : base;
       });
 
@@ -942,8 +1063,8 @@ export function entitiesForStep(
     const mech = raw.mech
       ? plan.mechs?.find((m) => m.id === raw.mech)
       : undefined;
-    // A cast gated to one reading is simply not there in the other.
-    if (mech?.variant && mech.variant !== variantOf(stepId)) continue;
+    // Live shared scenes were gated before this point; detached scenes already
+    // captured their exact membership, even if the shared cast changes later.
     // A mech's shapes wear its colour, whatever they were dropped as. And
     // before it goes off a mech is a telegraph on the floor, so it is drawn
     // faint until the step it resolves in, where it reads as the hit it is.

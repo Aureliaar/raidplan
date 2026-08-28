@@ -18,6 +18,7 @@
     "e2e:debuff": "node scripts/e2e-debuff.mjs",
     "e2e:glide": "node scripts/e2e-glide.mjs",
     "e2e:history": "node scripts/e2e-history.mjs",
+    "e2e:inheritance": "node scripts/e2e-variant-inheritance.mjs",
     "e2e:groups": "node scripts/e2e-groups.mjs",
     "e2e:hitbox": "node scripts/e2e-hitbox.mjs",
     "e2e:keys": "node scripts/e2e-keys.mjs",

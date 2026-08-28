@@ -86,8 +86,13 @@ export function zoneCovers(zone: ZoneEntity, px: number, py: number): boolean {
 }
 
 /** The players a zone catches in this step, in party order. */
-export function playersHit(plan: Plan, stepId: string | undefined, zoneId: string): Entity[] {
-  const drawn = entitiesForStep(plan, stepId);
+export function playersHit(
+  plan: Plan,
+  stepId: string | undefined,
+  zoneId: string,
+  shown?: Record<string, string>
+): Entity[] {
+  const drawn = entitiesForStep(plan, stepId, undefined, shown);
   const zone = drawn.find((e) => e.id === zoneId);
   if (!zone || zone.type !== "zone") return [];
   return drawn.filter((e) => e.type === "player" && zoneCovers(zone, e.x, e.y));

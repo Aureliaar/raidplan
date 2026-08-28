@@ -60,7 +60,6 @@ function summarize(op: Op | Op[]): string {
     case "apply_encounter": return "Applied encounter setup";
     case "add_party": return "Added party";
     case "arrange_party": return "Arranged party";
-    case "replace_plan": return "Replaced plan contents";
   }
 }
 
@@ -115,9 +114,18 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
   }
 
   /** Apply one or more ops atomically; returns the new plan and each op's value. */
-  async apply(op: Op | Op[], actor?: HistoryActor): Promise<{ plan: Plan; values: (PropBag | null)[] }> {
+  async apply(
+    op: Op | Op[],
+    actor?: HistoryActor,
+    expectedRev?: number
+  ): Promise<{ plan: Plan; values: (PropBag | null)[]; conflict?: boolean }> {
     if (!this.state?.id) throw new Error("Plan not initialised");
     const index = await this.ensureHistory(this.plan);
+    // Validation and ownership happen against expectedRev. Re-check it here,
+    // immediately before the synchronous mutation, so another request cannot
+    // change what the addressed entity/variant means in between.
+    if (expectedRev !== undefined && this.plan.rev !== expectedRev)
+      return { plan: this.plan, values: [], conflict: true };
     const list = Array.isArray(op) ? op : [op];
     let plan = this.plan;
     const values: (PropBag | null)[] = [];
@@ -126,6 +134,9 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
       plan = res.plan;
       values.push((res.value ?? null) as PropBag | null);
     }
+    // The op boundary is strict, and this is the final invariant before a
+    // document becomes durable state. No malformed internal result is stored.
+    plan = hydratePlan(PlanSchema.parse(plan));
     this.setState(plan);
     await this.recordRevision(index, plan, summarize(op), actor);
     return { plan, values };
@@ -177,12 +188,12 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
   }
 
   private restored(snapshot: Plan): Plan {
-    return hydratePlan({
+    return hydratePlan(PlanSchema.parse({
       ...structuredClone(snapshot),
       id: this.plan.id,
       ownerId: this.plan.ownerId,
       rev: this.plan.rev + 1,
-    });
+    }));
   }
 
   private publicHistory(index: HistoryIndex): PlanHistory {
@@ -307,7 +318,11 @@ export interface PlanStub {
   getPlan(): Promise<Plan>;
   replace(doc: unknown, keep: { id: string; ownerId: string }, actor?: HistoryActor): Promise<Plan>;
   exists(): Promise<boolean>;
-  apply(op: Op | Op[], actor?: HistoryActor): Promise<{ plan: Plan; values: (PropBag | null)[] }>;
+  apply(
+    op: Op | Op[],
+    actor?: HistoryActor,
+    expectedRev?: number
+  ): Promise<{ plan: Plan; values: (PropBag | null)[]; conflict?: boolean }>;
   history(): Promise<PlanHistory>;
   undo(): Promise<HistoryResult>;
   redo(): Promise<HistoryResult>;
