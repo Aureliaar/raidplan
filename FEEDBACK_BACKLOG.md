@@ -105,10 +105,10 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 
 ### 2.6 — Scope variants to a Beat
 
-- Status: done
-- Implementation baseline: `4a930e9` on `origin/master`.
-- Issue: Variants currently belong to an entire timeline sequence, but authors need alternatives for one timed item within that sequence.
-- Agreed direction: A Variant belongs to one Beat, not to the whole Mechanic. Use one timeline card per Beat, independent per-Beat preview choices, contextual authoring in the selected Beat inspector, and separate per-Step copy-on-write domains for Beat content and sparse player movement. See `BEAT_VARIANTS_UX_PLAN.md`.
+- Status: invalid
+- Issue: This implementation inverted the requested containment model by making a Variant a child of one Beat.
+- Resolution: Retire this path. It is preserved only as rejected design history in `BEAT_VARIANTS_UX_PLAN.md`.
+- Superseded by: 2.7.
 - Resolution: Beat-local mutually exclusive boxes are persistent child containers inside each varying timeline Beat; the inspector remains the detailed contextual surface. Fresh boxes visibly follow Shared state; detached boxes show their Part count and movement state. Content and movement detach independently on first edit. On a selected Beat, A/D selects the next exclusive box for both preview and editing; without a selected Beat it remains a viewer-safe preview shortcut. Routes, deterministic conflict handling, deep duplication, independent resets, and an owner-only “Collapse Variants” path are included.
 - Production cutover: Mechanic-wide Variants are retired. The only two plans retained as valuable were migrated in place, preserving their IDs, owners and ACLs: Aureon's Jury (`plan_c2b9xZyc`) rev 583 → 584 with 10 Beat Variants and 4 Routes, and Aerelion's Dark & Light (`plan_mMW41ylx`) rev 3018 → 3019 with 26 Beat Variants and 2 Routes. Both have zero Mechanic Variants and zero legacy `variantScenes`. Exact source archives remain owner-recoverable. See `JURY_PORT_AUDIT.md` and `DARK_LIGHT_PORT_AUDIT.md`.
 - Retirement behavior: Other old documents hydrate directly into the Beat model with their shared canonical state; old Mechanic Variant branches are discarded. The legacy UI, public operations, MCP tools, conversion workflow and compatibility reader are removed.
@@ -116,6 +116,16 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 - Verification: `npm run check`; production build; all three Beat Variant regression suites; exhaustive migration comparisons (Jury 48/48 Route × Step, Dark & Light 38/38); live asset and public-plan verification.
 - Jury semantic repair: The generic port had represented circles, healer stacks, donuts and DPS stacks as four separately varying Beats with empty opposite branches. Rev 586 merges them into one `Jury baits` Beat: Light owns circles + healer stacks; Dark owns donuts + DPS stacks. Beam and tethers remain Shared. The repair matched all 48 prior Route × Step scenes and reduced four duplicate compatibility Routes to Light/Dark.
 - Commit/deployment: `e1bf88a` (`Make Variant cycling select one box`) on top of `20fd7d3`; production version `496c2735-0aca-4336-9a41-96583172de6f`.
+
+### 2.7 — Step-owned Variant boxes containing Beats
+
+- Status: in progress
+- Issue: A Variant split belongs to a Step and each mutually exclusive box must contain one or more whole Beats. Shared Beats sit outside the boxes.
+- Agreed direction: Use `Mechanic → Step → (Shared Beats | Variant boxes containing Beats) → Parts`. A/D cycles boxes for an active Step split. Each box optionally owns sparse per-timeline-Step actor movement. Routes map declaring Step IDs to box IDs. See `STEP_VARIANTS_UX_PLAN.md`.
+- Migration safety: Restart from immutable pre-port sources, not the destructive Beat-Variant ports: Jury rev 583 SHA-256 `757422201d25b1f597866cc8853037faa254840a666798fbbf9e2829c6088dfc`; Dark & Light rev 3018 SHA-256 `c8596852ea01f748a8e961a1984b2d3c02bdb89bc9d00c96de283939179ea0f6`.
+- Current implementation: additive Step Variant schema/ops/resolver; timeline outer split boxes with sibling children; Shared Beat cards outside; explicit Beat Location control; new Beats inherit the selected box destination; actor drags write sparse Step Variant movement; final canvas resolution filters unselected boxes before anchors resolve.
+- Open question: None for the ownership model. Visual polish follows functional equivalence and authoring verification.
+- Deployment: not deployed. The production plans must not be rewritten until the immutable-source candidates pass exhaustive comparison.
 
 ## 3 — Timeline, lifetimes, and structure
 

@@ -1,4 +1,8 @@
-# Beat-scoped Variants — UI/UX and State Plan
+# Beat-scoped Variants — superseded design
+
+Status: superseded on 2026-08-29 by `STEP_VARIANTS_UX_PLAN.md`. The shipped Beat-owned model inverted the intended containment relationship and is being retired, not retained as a legacy product path.
+
+The authoritative hierarchy is `Mechanic → Step → Shared Beats / exclusive Variant boxes → Beats → Parts`. This file remains only as a record of the rejected implementation.
 
 Status: implemented and deployed in `304adae` (production version `0e8749c1-c4ee-49a4-8b6e-5140ec0dd8aa`).
 
