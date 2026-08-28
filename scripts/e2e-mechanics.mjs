@@ -65,7 +65,7 @@ async function dragOnto(from, to) {
 
 /** The step row the rail has selected, which is the step the canvas draws. */
 const selectedRow = () =>
-  page.locator('nav button[data-step][class*="text-white"]').first().innerText();
+  page.locator('nav button[data-step][aria-current="step"]').first().innerText();
 const stepsOf = (doc, mechanicId) => doc.steps.filter((s) => s.mechanic === mechanicId);
 
 await page.goto(base + "/p/" + planId);
@@ -233,6 +233,37 @@ else {
     fail("dragging down inside the section did not carry the explosion to its second step");
   else console.log("dragging the box down the section's rows stretched the cast to step 2");
 }
+
+/* --- filling follows the cast's inclusive span, then closes --------------- */
+
+await page.locator(`[data-mech="${mechId}"]`).click();
+await page.waitForTimeout(200);
+if (!(await page.getByRole("button", { name: "done filling" }).count()))
+  fail("selecting the cast did not open it for filling");
+
+await page.getByRole("button", { name: "2. Step 2" }).click();
+await page.waitForTimeout(200);
+if (!(await page.getByRole("button", { name: "done filling" }).count()))
+  fail("the cast was unselected on its explosion boundary step");
+
+await page.getByRole("button", { name: "1. Step 1" }).click();
+await page.waitForTimeout(200);
+if (!(await page.getByRole("button", { name: "done filling" }).count()))
+  fail("the cast was unselected on its snapshot boundary step");
+
+await page.keyboard.press("w");
+await page.waitForTimeout(200);
+if (!(await selectedRow()).includes("Pull"))
+  fail("W did not navigate to the preceding step outside the cast's span");
+else if (await page.getByRole("button", { name: "done filling" }).count())
+  fail("the cast stayed selected after navigating outside its span");
+else console.log("filling stays open on both boundary steps and closes outside the cast's span");
+
+// Return to the cast's section for the remaining reading and timing checks.
+await page.keyboard.press("s");
+await page.waitForTimeout(200);
+if (await page.getByRole("button", { name: "done filling" }).count())
+  fail("the cast became selected again after returning to its span");
 
 /* --- a cast is what a reading owns ---------------------------------------- */
 

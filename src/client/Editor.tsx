@@ -453,12 +453,29 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     return () => window.removeEventListener("keydown", onKey);
   }, [plan, stepIndex]);
 
+  /**
+   * Filling only applies while the selected mech is on the current step. Its
+   * existing snapshot-to-explosion span is inclusive, so either boundary stays
+   * selected; walking beyond it finishes filling instead of filing new drops
+   * into a mech that is no longer on screen.
+   */
+  const selectedMech = plan?.mechs.find((candidate) => candidate.id === mech) ?? null;
+  const selectedMechIsHere = !!(
+    plan &&
+    step &&
+    selectedMech &&
+    mechSpan(plan, selectedMech).includes(step.id)
+  );
+  useEffect(() => {
+    if (mech && plan && step && !selectedMechIsHere) setMech(null);
+  }, [mech, plan, step, selectedMechIsHere]);
+
   if (error && !plan) return <div className="p-8 text-red-400">{error}</div>;
   if (!plan || !step) return <div className="p-8 text-ink-400">Loading plan…</div>;
 
   const selectedEntity = plan.entities.find((e) => e.id === selected) ?? null;
-  /** The mech slot currently open, if the one that was open still exists. */
-  const openMech = plan.mechs.find((m) => m.id === mech) ?? null;
+  /** The mech slot currently open, if it exists and covers this step. */
+  const openMech = selectedMechIsHere ? selectedMech : null;
   /** The debuff deal open in the popup, if that mech still exists. */
   const debuffMech = plan.mechs.find((m) => m.id === debuffFor) ?? null;
   /** What the party wears in this step, if a debuff mech is on the floor. */
