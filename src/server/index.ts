@@ -145,8 +145,9 @@ app.post("/api/plans", async (c) => {
     name?: string;
     encounter?: string;
     withParty?: boolean;
+    variantModel?: "beat";
   };
-  const plan = createPlan({ name: body.name, encounter: body.encounter, ownerId: user.id });
+  const plan = createPlan({ name: body.name, encounter: body.encounter, ownerId: user.id, variantModel: body.variantModel });
   const stub = await planStub(c.env, plan.id);
   await stub.init({
     id: plan.id,
@@ -154,6 +155,7 @@ app.post("/api/plans", async (c) => {
     encounter: body.encounter,
     ownerId: user.id,
     withParty: body.withParty ?? true,
+    variantModel: body.variantModel,
   });
   await registry(c.env).registerPlan({
     id: plan.id,

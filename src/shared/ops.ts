@@ -63,6 +63,7 @@ export function createPlan(opts: {
   ownerId?: string;
   arena?: Partial<Arena>;
   withParty?: boolean;
+  variantModel?: "beat";
 }): Plan {
   const stepId = newId("step");
   const mechanicId = newId("mechanic");
@@ -78,6 +79,7 @@ export function createPlan(opts: {
     mechanics: [{ id: mechanicId, name: "", variants: [] }],
     steps: [{ id: stepId, name: "Step 1", notes: "", mechanic: mechanicId }],
     entities: [],
+    ...(opts.variantModel === "beat" ? { variantModel: "beat", variantRoutes: [] } : {}),
     createdAt: now,
     updatedAt: now,
     rev: 0,

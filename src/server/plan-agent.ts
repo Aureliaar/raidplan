@@ -88,7 +88,7 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
   initialState = EMPTY;
 
   /** Create the document if this is a fresh instance. Idempotent. */
-  async init(input: { id: string; name?: string; encounter?: string; ownerId: string; withParty?: boolean }) {
+  async init(input: { id: string; name?: string; encounter?: string; ownerId: string; withParty?: boolean; variantModel?: "beat" }) {
     if (this.state?.id) return this.state;
     const plan = createPlan({ ...input, withParty: input.withParty ?? true });
     this.setState(plan);
@@ -329,6 +329,7 @@ export interface PlanStub {
     encounter?: string;
     ownerId: string;
     withParty?: boolean;
+    variantModel?: "beat";
   }): Promise<Plan>;
   getPlan(): Promise<Plan>;
   replace(doc: unknown, keep: { id: string; ownerId: string }, actor?: HistoryActor): Promise<Plan>;

@@ -22,7 +22,13 @@ import type {
 } from "../shared/schema";
 import {
   EntitySchema,
+  activeBeatVariants,
   authoredEntitiesForStep,
+  beatVariantContentEdited,
+  beatVariantLabel,
+  beatVariantMovement,
+  composeBeatVariantEntities,
+  defaultBeatVariantSelections,
   entitiesForStep,
   hydratePlan,
   mechLabel,
@@ -138,6 +144,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * which is what makes a mech a thing you author rather than a thing you tag.
    */
   const [mech, setMech] = useState<string | null>(null);
+  /** Explicit edit destination inside the selected Beat; preview is separate. */
+  const [editingBeatVariant, setEditingBeatVariant] = useState<string | null>(null);
+  /** Last preview chip focused; A/D may use it without changing edit destination. */
+  const [focusedBeat, setFocusedBeat] = useState<string | null>(null);
   /** The debuff mech whose deal is open in the popup, if any. */
   const [debuffFor, setDebuffFor] = useState<string | null>(null);
   const stageBox = useRef<HTMLDivElement>(null);
@@ -193,6 +203,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               visible.steps.some((step) =>
                 Object.values(step.variantScenes ?? {}).some((scene) =>
                   scene.some((entity) => entity.id === op.spec.id)
+                ) || Object.values(step.beatVariantContent ?? {}).some((content) =>
+                  content.parts.some((entity) => entity.id === op.spec.id)
                 )
               ))
           ) continue;
@@ -259,12 +271,35 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         const viewedMechanic = viewedStep?.mechanic
           ? current?.mechanics.find((candidate) => candidate.id === viewedStep.mechanic)
           : undefined;
-        const viewedVariant = viewedMechanic?.variants.length
-          ? (viewedMechanic.variants.find((variant) => variant.id === shown[viewedMechanic.id]) ??
-              viewedMechanic.variants[0]).id
+        const viewedBeat = current?.variantModel === "beat"
+          ? current.mechs.find((candidate) => candidate.id === mech)
           : undefined;
-        const activeStepId = scope === "step" ? viewedStepId : undefined;
-        const activeVariant = scope === "step" ? viewedVariant : undefined;
+        const beatEdit =
+          viewedStepId &&
+          viewedBeat?.variants.some((variant) => variant.id === editingBeatVariant) &&
+          mechSpan(current!, viewedBeat).includes(viewedStepId)
+            ? editingBeatVariant ?? undefined
+            : undefined;
+        const viewedVariant = current?.variantModel === "beat"
+          ? beatEdit
+          : viewedMechanic?.variants.length
+            ? (viewedMechanic.variants.find((variant) => variant.id === shown[viewedMechanic.id]) ??
+                viewedMechanic.variants[0]).id
+            : undefined;
+        // Beat Variant content is explicitly Step-scoped even if the shared
+        // editor scope says every Step. Selecting the Beat tab edits Shared.
+        const activeStepId =
+          current?.variantModel === "beat" && viewedVariant
+            ? viewedStepId
+            : scope === "step"
+              ? viewedStepId
+              : undefined;
+        const activeVariant =
+          current?.variantModel === "beat"
+            ? viewedVariant
+            : scope === "step"
+              ? viewedVariant
+              : undefined;
         const sceneOps = new Set([
           "add_entity",
           "update_entity",
@@ -281,7 +316,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         const baseIds = new Set(current?.entities.map((entity) => entity.id));
         const localOnlyIds = new Set(
           current && viewedStepId && viewedVariant
-            ? authoredEntitiesForStep(current, viewedStepId, viewedVariant)
+            ? (current.variantModel === "beat"
+                ? composeBeatVariantEntities(
+                    current,
+                    viewedStepId,
+                    viewedBeat ? { ...shown, [viewedBeat.id]: viewedVariant } : shown
+                  ).entities
+                : authoredEntitiesForStep(current, viewedStepId, viewedVariant))
                 .filter((entity) => !baseIds.has(entity.id))
                 .map((entity) => entity.id)
             : []
@@ -334,11 +375,14 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           current && contextualScene
             ? {
                 ...current,
-                entities: authoredEntitiesForStep(
-                  current,
-                  contextualScene.stepId,
-                  contextualScene.variant
-                ),
+                entities:
+                  current.variantModel === "beat"
+                    ? composeBeatVariantEntities(current, contextualScene.stepId, shown).entities
+                    : authoredEntitiesForStep(
+                        current,
+                        contextualScene.stepId,
+                        contextualScene.variant
+                      ),
               }
             : current;
         const currentRevision = historyRef.current?.currentId;
@@ -428,7 +472,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         throw e;
       }
     },
-    [planId, scope, symmetryCount, symmetryKind, shown, step?.id, showServerPlan]
+    [planId, scope, symmetryCount, symmetryKind, shown, step?.id, showServerPlan, mech, editingBeatVariant]
   );
 
   const travelHistory = useCallback(
@@ -533,12 +577,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         const currentMechanic = currentStep?.mechanic
           ? plan?.mechanics.find((candidate) => candidate.id === currentStep.mechanic)
           : undefined;
-        const currentVariant = currentMechanic?.variants.length
-          ? (currentMechanic.variants.find((variant) => variant.id === shown[currentMechanic.id]) ??
-              currentMechanic.variants[0]).id
-          : undefined;
+        const currentVariant = plan?.variantModel === "beat"
+          ? editingBeatVariant ?? undefined
+          : currentMechanic?.variants.length
+            ? (currentMechanic.variants.find((variant) => variant.id === shown[currentMechanic.id]) ??
+                currentMechanic.variants[0]).id
+            : undefined;
         const e = plan && step
-          ? authoredEntitiesForStep(plan, step.id, currentVariant).find((entity) => entity.id === selected)
+          ? (plan.variantModel === "beat"
+              ? composeBeatVariantEntities(plan, step.id, shown).entities
+              : authoredEntitiesForStep(plan, step.id, currentVariant)
+            ).find((entity) => entity.id === selected)
           : plan?.entities.find((entity) => entity.id === selected);
         if (!e) return;
         const { id: _id, overrides: _o, ...rest } = e;
@@ -566,7 +615,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editable, selected, selection, plan, run, travelHistory]);
+  }, [editable, selected, selection, plan, run, travelHistory, shown, editingBeatVariant, step, mech]);
 
   /**
    * Walking the fight from the keyboard, on the rail's own two axes: W and S
@@ -591,9 +640,32 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         setStepIndex(Math.max(0, Math.min(plan.steps.length - 1, here + (key === "s" ? 1 : -1))));
         return;
       }
-      // Sideways is the readings of the mechanic this step belongs to. Its
-      // steps are shared by all of them, so you stay on the step you are on
-      // and watch it go the other way.
+      if (plan.variantModel === "beat") {
+        const active = activeBeatVariants(plan, plan.steps[here].id, shown);
+        const target =
+          active.find(({ beat }) => beat.id === mech)?.beat ??
+          active.find(({ beat }) => beat.id === focusedBeat)?.beat ??
+          (active.length === 1 ? active[0].beat : undefined);
+        if (!target) {
+          if (active.length > 1) setNote("Choose a varying Beat before using A/D");
+          return;
+        }
+        ev.preventDefault();
+        setGlide((n) => n + 1);
+        setOnward(false);
+        setFocusedBeat(target.id);
+        setShown((was) => {
+          const currentSelection = active.find(({ beat }) => beat.id === target.id)?.variant.id;
+          const at = target.variants.findIndex(
+            (variant) => variant.id === (was[target.id] ?? currentSelection)
+          );
+          const from = at < 0 ? 0 : at;
+          const to = (from + (key === "d" ? 1 : -1) + target.variants.length) % target.variants.length;
+          return { ...was, [target.id]: target.variants[to].id };
+        });
+        return;
+      }
+      // Legacy sideways preview remains on the Mechanic-wide reader.
       const mechanic = plan.mechanics.find((m) => m.id === plan.steps[here].mechanic);
       if (!mechanic || mechanic.variants.length < 2) return;
       ev.preventDefault();
@@ -611,7 +683,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [plan, stepIndex]);
+  }, [plan, stepIndex, shown, mech, focusedBeat]);
 
   /**
    * Filling only applies while the selected mech is on the current step. Its
@@ -627,7 +699,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     mechSpan(plan, selectedMech).includes(step.id)
   );
   useEffect(() => {
-    if (mech && plan && step && !selectedMechIsHere) setMech(null);
+    if (mech && plan && step && !selectedMechIsHere) {
+      setMech(null);
+      setEditingBeatVariant(null);
+    }
   }, [mech, plan, step, selectedMechIsHere]);
 
   if (error && !plan) return <div className="p-8 text-red-400">{error}</div>;
@@ -646,12 +721,24 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * a drag on this step lands.
    */
   const stepMechanic = plan.mechanics.find((m) => m.id === step.mechanic) ?? null;
-  const playing = stepMechanic?.variants.length
+  const playing = plan.variantModel !== "beat" && stepMechanic?.variants.length
     ? (stepMechanic.variants.find((v) => v.id === shown[stepMechanic.id]) ?? stepMechanic.variants[0])
         .id
     : undefined;
-  const authoredScene = authoredEntitiesForStep(plan, step.id, playing);
+  const authoredScene =
+    plan.variantModel === "beat"
+      ? composeBeatVariantEntities(plan, step.id, shown).entities
+      : authoredEntitiesForStep(plan, step.id, playing);
   const selectedEntity = authoredScene.find((entity) => entity.id === selected) ?? null;
+  const activeBeatPreviews = activeBeatVariants(plan, step.id, shown);
+  const movementConflicts =
+    plan.variantModel === "beat"
+      ? composeBeatVariantEntities(plan, step.id, shown).conflicts
+      : [];
+  const editingVariant =
+    plan.variantModel === "beat" && openMech?.variants.some((variant) => variant.id === editingBeatVariant)
+      ? editingBeatVariant ?? undefined
+      : undefined;
 
   /** Pointer position, in arena units, from a point over the stage. */
   function arenaPointAt(clientX: number, clientY: number): { x: number; y: number } {
@@ -1010,7 +1097,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           // The same bargain as dragging one person: a move belongs to the step
           // you are on, and to the reading you are looking at.
           stepId: scope === "step" ? step!.id : undefined,
-          variant: scope === "step" ? playing : undefined,
+          variant:
+            plan!.variantModel === "beat"
+              ? editingVariant
+              : scope === "step"
+                ? playing
+                : undefined,
         };
       })
     );
@@ -1272,6 +1364,58 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         </div>
       </header>
 
+      {plan.variantModel === "beat" && (
+        <div className="panel flex flex-wrap items-center gap-2 border-x-0 border-t-0 px-3 py-1.5 text-xs">
+          <span className="label">Preview</span>
+          {activeBeatPreviews.length ? (
+            activeBeatPreviews.map(({ beat, variant }) => (
+              <label
+                key={beat.id}
+                className={`flex items-center gap-1 rounded border px-2 py-1 ${movementConflicts.some((conflict) => conflict.beatIds.includes(beat.id)) ? "border-amber-400 bg-amber-950/50" : focusedBeat === beat.id ? "border-blue-400 bg-blue-950/40" : "border-ink-600 bg-ink-800"}`}
+              >
+                <span>{mechLabel(plan, beat)}:</span>
+                <select
+                  data-preview-beat={beat.id}
+                  className="bg-transparent text-blue-100 outline-none"
+                  value={variant.id}
+                  onFocus={() => setFocusedBeat(beat.id)}
+                  onChange={(event) => {
+                    setFocusedBeat(beat.id);
+                    setShown((current) => ({ ...current, [beat.id]: event.target.value }));
+                  }}
+                >
+                  {beat.variants.map((choice) => (
+                    <option key={choice.id} value={choice.id} className="bg-ink-900">
+                      {beatVariantLabel(beat, choice.id)}
+                    </option>
+                  ))}
+                </select>
+                {movementConflicts.some((conflict) => conflict.beatIds.includes(beat.id)) && (
+                  <span className="text-amber-300" title="This preview has an explicit same-actor movement conflict">⚠</span>
+                )}
+              </label>
+            ))
+          ) : (
+            <span className="text-ink-400">No varying Beats active in this Step</span>
+          )}
+          <span className="ml-auto text-ink-300" data-edit-destination>
+            {editable
+              ? editingVariant && openMech
+                ? `Editing: ${mechLabel(plan, openMech)} › ${beatVariantLabel(openMech, editingVariant)} › ${step.name || "Step"}`
+                : openMech
+                  ? `Editing: ${mechLabel(plan, openMech)} shared Parts`
+                  : `Editing: ${step.name || "Step"} shared scene`
+              : "Viewer preview"}
+          </span>
+        </div>
+      )}
+
+      {plan.variantModel === "beat" && movementConflicts.length > 0 && (
+        <div className="bg-amber-950 px-3 py-1.5 text-center text-xs text-amber-200" role="alert" data-movement-conflict>
+          Movement conflict: {movementConflicts.map((conflict) => authoredScene.find((entity) => entity.id === conflict.actorId)?.name || conflict.actorId).join(", ")} is moved by more than one active Beat. Shared Step positions are shown until the conflict is resolved.
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1">
         <StepRail
           plan={plan}
@@ -1279,12 +1423,19 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           editable={editable}
           me={user?.id ?? null}
           openMech={openMech}
+          editingBeatVariant={editingBeatVariant}
           shown={shown}
           onShow={setShown}
           onSelect={setStepIndex}
           run={run}
           setIndex={setStepIndex}
-          onOpenMech={setMech}
+          onOpenMech={(id) => {
+            if (id !== mech) setEditingBeatVariant(null);
+            setMech(id);
+            if (id) setFocusedBeat(id);
+          }}
+          onEditBeatVariant={setEditingBeatVariant}
+          onFocusBeat={setFocusedBeat}
           onDebuffs={setDebuffFor}
           onHighlight={setHighlight}
         />
@@ -1355,7 +1506,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                   className="pointer-events-none absolute inset-x-0 top-0 z-10 px-2 py-1 text-center text-xs text-white"
                   style={{ background: tint(mechColor(plan, openMech), 0.35) }}
                 >
-                  Filling “{mechLabel(plan, openMech)}” — what you drop goes in it
+                  {plan.variantModel === "beat"
+                    ? editingVariant
+                      ? `Editing: ${mechLabel(plan, openMech)} › ${beatVariantLabel(openMech, editingVariant)} › ${step.name || "Step"}`
+                      : `Editing: ${mechLabel(plan, openMech)} shared Parts`
+                    : `Filling “${mechLabel(plan, openMech)}” — what you drop goes in it`}
                 </div>
               )}
               {pendingTether && (
@@ -1388,21 +1543,45 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 }}
                 onSelect={setSelection}
                 onResize={resize}
-                onMove={(moves) =>
-                  run(
+                onMove={(moves) => {
+                  if (
+                    plan.variantModel === "beat" &&
+                    openMech &&
+                    editingVariant &&
+                    moves.some(({ id }) => !beatVariantMovement(plan, step.id, editingVariant)[id])
+                  ) {
+                    const first = moves.find(({ id }) =>
+                      !beatVariantMovement(plan, step.id, editingVariant)[id]
+                    );
+                    const actor = authoredScene.find((entity) => entity.id === first?.id);
+                    setNote(
+                      `${actor?.name || first?.id || "Actor"}'s movement now belongs to ${mechLabel(plan, openMech)} › ${beatVariantLabel(openMech, editingVariant)} at ${step.name || "this Step"}. Undo`
+                    );
+                  }
+                  void run(
                     moves.map(({ id, x, y }) => ({
                       op: "update_entity" as const,
                       id,
                       patch: { x, y },
-                      stepId: scope === "step" ? step.id : undefined,
+                      stepId:
+                        plan.variantModel === "beat" && editingVariant
+                          ? step.id
+                          : scope === "step"
+                            ? step.id
+                            : undefined,
                       // In a mechanic that goes two ways, a move belongs to the
                       // reading you are playing. Nothing has to be said about it:
                       // you moved somebody while looking at this reading.
-                      variant: scope === "step" ? playing : undefined,
+                      variant:
+                        plan.variantModel === "beat"
+                          ? editingVariant
+                          : scope === "step"
+                            ? playing
+                            : undefined,
                     })),
                     false
-                  )
-                }
+                  );
+                }}
               />
             </div>
           )}
@@ -1580,7 +1759,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 run({
                   op: "arrange_party",
                   stepId: scope === "step" ? step.id : undefined,
-                  variant: scope === "step" ? playing : undefined,
+                  variant:
+                    plan.variantModel === "beat"
+                      ? editingVariant
+                      : scope === "step"
+                        ? playing
+                        : undefined,
                 })
               }
             >
@@ -1643,7 +1827,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             entity={selectedEntity}
             stepId={step.id}
             scope={scope}
-            variant={playing}
+            variant={editingVariant ?? playing}
             shown={shown}
             editable={editable}
             run={run}
@@ -1866,12 +2050,15 @@ function StepRail({
   editable,
   me,
   openMech,
+  editingBeatVariant,
   shown,
   onShow,
   onSelect,
   run,
   setIndex,
   onOpenMech,
+  onEditBeatVariant,
+  onFocusBeat,
   onDebuffs,
   onHighlight,
 }: {
@@ -1881,12 +2068,15 @@ function StepRail({
   /** Who is looking, so a reading can say whether it is yours. */
   me: string | null;
   openMech: Mech | null;
+  editingBeatVariant: string | null;
   shown: Record<string, string>;
   onShow: Dispatch<SetStateAction<Record<string, string>>>;
   onSelect(i: number): void;
   run(ops: Op | Op[]): Promise<{ values: unknown[]; plan: Plan }>;
   setIndex(i: number): void;
   onOpenMech(id: string | null): void;
+  onEditBeatVariant(id: string | null): void;
+  onFocusBeat(id: string): void;
   onDebuffs(id: string): void;
   onHighlight(id: string | null): void;
 }) {
@@ -2376,6 +2566,13 @@ function StepRail({
           ]).size;
           const box = { gridColumn: lane + 2, gridRow: `${lo + 1 + head} / ${hi + 2 + head}` };
           const color = mechColor(plan, mech);
+          const beatPreview =
+            plan.variantModel === "beat" && mech.variants.length
+              ? (mech.variants.find(
+                  (variant) =>
+                    variant.id === (shown[mech.id] ?? defaultBeatVariantSelections(plan)[mech.id])
+                ) ?? mech.variants[0])
+              : undefined;
           // Mid-drag the box says what letting go would do, reading and all.
           const gate = drag?.id === mech.id && drag.gate ? drag.gate.to : mech.variant;
           const skipped = !!gate && gate !== showing;
@@ -2416,6 +2613,7 @@ function StepRail({
               // bottom edge is where it goes off, so dragging them is saying so.
               onPointerDown={(e) => {
                 if (!editable) return;
+                if (plan.variantModel === "beat") onFocusBeat(mech.id);
                 const r = e.currentTarget.getBoundingClientRect();
                 e.currentTarget.setPointerCapture(e.pointerId);
                 setDrag({
@@ -2472,6 +2670,14 @@ function StepRail({
               {/* Which reading a cast is for is the area it sits in, so the box
                   itself does not repeat it. */}
               <span className="w-full truncate text-center">{label}</span>
+              {beatPreview && (
+                <span
+                  className="mt-0.5 max-w-full truncate rounded bg-black/20 px-1 text-[9px] text-blue-100"
+                  title={`${mech.variants.length} mutually exclusive Variants; previewing ${beatVariantLabel(mech, beatPreview.id)}`}
+                >
+                  ◇{mech.variants.length} · {beatVariantLabel(mech, beatPreview.id)}
+                </span>
+              )}
               {shapes > 0 && <span className="text-ink-400">×{shapes}</span>}
               {/* The bottom edge is where it goes off, and says so. */}
               <span className="mt-auto -mb-1 w-full border-b-4 border-amber-400/80 pb-0.5 text-center text-[9px] uppercase tracking-wide text-amber-300/90">
@@ -2490,7 +2696,19 @@ function StepRail({
   function controls() {
     return (
       <>
-        <MechBox plan={plan} open={openMech} stepId={current.id} run={run} onOpen={onOpenMech} onDebuffs={onDebuffs} />
+        <MechBox
+          plan={plan}
+          open={openMech}
+          stepId={current.id}
+          shown={shown}
+          editingVariant={editingBeatVariant}
+          run={run}
+          onOpen={onOpenMech}
+          onShow={setShown}
+          onEditVariant={onEditBeatVariant}
+          onFocusBeat={onFocusBeat}
+          onDebuffs={onDebuffs}
+        />
         <div className="mt-4">
           <div className="label mb-1">Step notes</div>
           {/* Uncontrolled + keyed: local typing stays smooth, remote edits reset it. */}
@@ -2780,33 +2998,57 @@ function MechBox({
   plan,
   open,
   stepId,
+  shown,
+  editingVariant,
   run,
   onOpen,
+  onShow,
+  onEditVariant,
+  onFocusBeat,
   onDebuffs,
 }: {
   plan: Plan;
   open: Mech | null;
   stepId: string;
-  run(ops: Op | Op[]): Promise<{ values: unknown[] }>;
+  shown: Record<string, string>;
+  editingVariant: string | null;
+  run(ops: Op | Op[]): Promise<{ values: unknown[]; plan: Plan }>;
   onOpen(id: string | null): void;
+  onShow: Dispatch<SetStateAction<Record<string, string>>>;
+  onEditVariant(id: string | null): void;
+  onFocusBeat(id: string): void;
   onDebuffs(id: string): void;
 }) {
+  const previewed = open?.variants.length
+    ? (open.variants.find(
+        (variant) =>
+          variant.id === (shown[open.id] ?? defaultBeatVariantSelections(plan)[open.id])
+      ) ?? open.variants[0])
+    : undefined;
+  const editing = open?.variants.find((variant) => variant.id === editingVariant);
+  const contentEdited = !!(editing && beatVariantContentEdited(plan, stepId, editing.id));
+  const movement = editing ? beatVariantMovement(plan, stepId, editing.id) : {};
+  const conflicts = open
+    ? composeBeatVariantEntities(plan, stepId, shown).conflicts.filter((conflict) =>
+        conflict.beatIds.includes(open.id)
+      )
+    : [];
   return (
     <div className="mt-2">
       <button
         className="btn w-full"
-        title="A new mech snapshotting in the step you are on. Say where it goes off, then drop its shapes in."
+        title="A new Beat snapshotting in the Step you are on. Say where it resolves, then drop its Parts in."
         onClick={async () => {
           const res = await run({ op: "add_mech", snap: stepId });
           const made = res.values[0] as { id: string } | null;
           if (made) onOpen(made.id);
         }}
       >
-        New mech here
+        New Beat here
       </button>
       <button
         className="btn mt-1 w-full"
-        title="A mech that deals the fight's debuffs onto role pools. While it is on the floor, the party's tokens wear the deal."
+        title="A Beat that deals the fight's debuffs onto role pools. While it is active, the party's tokens wear the deal."
         onClick={async () => {
           const res = await run({ op: "add_mech", snap: stepId });
           const made = res.values[0] as { id: string } | null;
@@ -2815,7 +3057,7 @@ function MechBox({
           onDebuffs(made.id);
         }}
       >
-        New debuff mech here
+        New debuff Beat here
       </button>
       {open && (
         <div
@@ -2826,7 +3068,7 @@ function MechBox({
             <span className="min-w-0 flex-1 truncate font-semibold">{mechLabel(plan, open)}</span>
             <button
               className="text-ink-400 hover:text-red-300"
-              title="Delete this mech and everything in it"
+              title="Delete this Beat and everything in it"
               onClick={() => {
                 onOpen(null);
                 void run({ op: "delete_mech", mechId: open.id });
@@ -2835,6 +3077,150 @@ function MechBox({
               ✕
             </button>
           </div>
+          {plan.variantModel === "beat" && (
+            <div className="mt-2 border-t border-ink-600 pt-2" data-beat-variants={open.id}>
+              <div className="label mb-1">Variants</div>
+              <div className="flex flex-wrap gap-1" role="tablist" aria-label={`${mechLabel(plan, open)} edit destination`}>
+                <button
+                  className={`rounded px-2 py-1 text-[11px] ${!editing ? "bg-blue-500/30 text-blue-100" : "bg-ink-800 text-ink-300"}`}
+                  role="tab"
+                  aria-selected={!editing}
+                  onClick={() => {
+                    onFocusBeat(open.id);
+                    onEditVariant(null);
+                  }}
+                >
+                  Beat
+                </button>
+                {open.variants.map((variant) => (
+                  <button
+                    key={variant.id}
+                    data-beat-variant={variant.id}
+                    className={`rounded px-2 py-1 text-[11px] ${editing?.id === variant.id ? "bg-blue-500/30 text-blue-100" : previewed?.id === variant.id ? "bg-ink-600 text-white" : "bg-ink-800 text-ink-300"}`}
+                    role="tab"
+                    aria-selected={editing?.id === variant.id}
+                    title="Preview this mutually exclusive Variant and make it the explicit edit destination"
+                    onClick={() => {
+                      onFocusBeat(open.id);
+                      onShow((current) => ({ ...current, [open.id]: variant.id }));
+                      onEditVariant(variant.id);
+                    }}
+                  >
+                    {beatVariantLabel(open, variant.id)}
+                  </button>
+                ))}
+                <button
+                  className="rounded bg-ink-800 px-2 py-1 text-[11px] text-ink-300 hover:bg-ink-700"
+                  title="Variants change only this Beat. Content and player movement remain shared until you edit them."
+                  onClick={async () => {
+                    const result = await run({ op: "add_beat_variant", beatId: open.id });
+                    const made = result.values[0] as { id: string } | null;
+                    if (!made) return;
+                    onShow((current) => ({ ...current, [open.id]: made.id }));
+                    onEditVariant(made.id);
+                  }}
+                >
+                  {open.variants.length ? "+" : "+ Variant"}
+                </button>
+              </div>
+              <div className="mt-2 space-y-1 rounded bg-ink-900/50 p-2 text-[11px]">
+                <div>
+                  <span className="text-ink-400">Previewing:</span>{" "}
+                  {previewed ? beatVariantLabel(open, previewed.id) : "Beat only"}
+                </div>
+                <div>
+                  <span className="text-ink-400">Editing:</span>{" "}
+                  {editing ? `${mechLabel(plan, open)} › ${beatVariantLabel(open, editing.id)} › ${plan.steps.find((step) => step.id === stepId)?.name || "Step"}` : `${mechLabel(plan, open)} shared Parts`}
+                </div>
+                {editing && (
+                  <>
+                    <div className="flex items-center gap-2">
+                      <span className="text-ink-400">Content</span>
+                      <span>{contentEdited ? "Edited independently" : "Following shared"}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-ink-400">Movement</span>
+                      <span className={conflicts.length ? "text-amber-300" : undefined}>
+                        {conflicts.length
+                          ? "Movement conflict"
+                          : Object.keys(movement).length
+                            ? `Overrides ${Object.keys(movement).length === 1 ? authoredEntitiesForStep(plan, stepId).find((entity) => entity.id === Object.keys(movement)[0])?.name || "1 actor" : `${Object.keys(movement).length} actors`}`
+                            : "Uses Step positions"}
+                      </span>
+                    </div>
+                    {contentEdited && (
+                      <button
+                        className="btn h-6 w-full py-0 text-[11px]"
+                        title="Your content edits on this Step will be discarded."
+                        onClick={() => {
+                          if (window.confirm("Your content edits on this Step will be discarded."))
+                            void run({ op: "resume_beat_variant_content", stepId, variantId: editing.id });
+                        }}
+                      >
+                        Resume shared content
+                      </button>
+                    )}
+                    {!!Object.keys(movement).length && (
+                      <button
+                        className="btn h-6 w-full py-0 text-[11px]"
+                        title="Player movement owned by this Variant on this Step will be discarded."
+                        onClick={() => {
+                          if (window.confirm("Player movement owned by this Variant on this Step will be discarded."))
+                            void run({ op: "clear_beat_variant_movement", stepId, variantId: editing.id });
+                        }}
+                      >
+                        Clear Variant movement
+                      </button>
+                    )}
+                    {(contentEdited || Object.keys(movement).length > 0) && (
+                      <button
+                        className="btn h-6 w-full py-0 text-[11px]"
+                        onClick={() => {
+                          if (window.confirm("Reset both content and movement for this Variant Step?"))
+                            void run({ op: "reset_beat_variant_step", stepId, variantId: editing.id });
+                        }}
+                      >
+                        Reset this Variant Step…
+                      </button>
+                    )}
+                    <div className="flex gap-1">
+                      <button
+                        className="btn h-6 flex-1 py-0 text-[10px]"
+                        onClick={() => {
+                          const name = window.prompt("Variant name", editing.name);
+                          if (name !== null)
+                            void run({ op: "update_beat_variant", beatId: open.id, variantId: editing.id, patch: { name } });
+                        }}
+                      >
+                        Rename
+                      </button>
+                      <button
+                        className="btn h-6 flex-1 py-0 text-[10px]"
+                        onClick={async () => {
+                          const result = await run({ op: "duplicate_beat_variant", beatId: open.id, variantId: editing.id });
+                          const made = result.values[0] as { id: string } | null;
+                          if (made) {
+                            onShow((current) => ({ ...current, [open.id]: made.id }));
+                            onEditVariant(made.id);
+                          }
+                        }}
+                      >
+                        Duplicate
+                      </button>
+                      <button
+                        className="btn h-6 flex-1 py-0 text-[10px]"
+                        disabled={open.variants.length <= 2}
+                        title={open.variants.length <= 2 ? "Use the deliberate Collapse Variants flow for the final pair" : "Delete this Variant"}
+                        onClick={() => void run({ op: "delete_beat_variant", beatId: open.id, variantId: editing.id })}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
           {/* Its colour is what tells its shapes apart from the next cast's. */}
           <div className="mt-2 flex gap-1">
             {MECH_COLORS.map((c) => (
@@ -2844,14 +3230,20 @@ function MechBox({
                   mechColor(plan, open) === c ? "ring-2 ring-white" : "hover:ring-1 hover:ring-white/60"
                 }`}
                 style={{ background: c }}
-                title={`Draw it in ${c}`}
-                onClick={() => void run({ op: "update_mech", mechId: open.id, patch: { color: c } })}
+                title={`Draw this Beat in ${c}`}
+                onClick={() =>
+                  void run(
+                    plan.variantModel === "beat" && editing
+                      ? { op: "update_beat_variant_content", stepId, variantId: editing.id, patch: { color: c } }
+                      : { op: "update_mech", mechId: open.id, patch: { color: c } }
+                  )
+                }
               />
             ))}
           </div>
           <p className="mt-1 text-ink-400">
-            Drag the top half of its box beside the steps to move the snapshot, the bottom
-            half to move where it goes off. F2 renames it.
+            Drag the top half of its Beat card beside the Steps to move the snapshot, the bottom
+            half to move where it resolves. F2 renames it.
           </p>
           <button
             className="btn mt-2 h-6 w-full py-0 text-[11px]"
@@ -2861,7 +3253,7 @@ function MechBox({
             {open.debuffs ? "edit the debuff deal" : "deal debuffs…"}
           </button>
           <button className="btn mt-1 h-6 w-full py-0 text-[11px]" onClick={() => onOpen(null)}>
-            done filling
+            done editing Beat
           </button>
         </div>
       )}

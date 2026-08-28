@@ -25,7 +25,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
-import { authoredEntitiesForStep, entitiesForStep } from "../../shared/schema";
+import { authoredEntitiesForStep, composeBeatVariantEntities, entitiesForStep } from "../../shared/schema";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
 import { assetUrl, enemyIconKey, jobIconKey, waymarkIconKey } from "../../shared/assets";
@@ -337,7 +337,10 @@ export function Scene({
     const variant = mechanic?.variants.length
       ? (mechanic.variants.find((candidate) => candidate.id === requested) ?? mechanic.variants[0]).id
       : undefined;
-    const authoredScene = authoredEntitiesForStep(plan, stepId, variant);
+    const authoredScene =
+      plan.variantModel === "beat"
+        ? composeBeatVariantEntities(plan, stepId, shown).entities
+        : authoredEntitiesForStep(plan, stepId, variant);
     for (const e of committed) {
       if (!e.anchor) continue;
       const authored = authoredScene.find((b) => b.id === e.id);

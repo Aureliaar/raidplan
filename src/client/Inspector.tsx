@@ -6,6 +6,7 @@ import {
   anchorTarget,
   anchoredPose,
   authoredEntitiesForStep,
+  composeBeatVariantEntities,
   entitiesForStep,
   mechLabel,
   mechColor,
@@ -96,10 +97,14 @@ function BaitTarget({
 
   const resolved = entitiesForStep(plan, stepId, undefined, shown);
   const now = anchorTarget({ ...entity, anchor } as Entity, new Map(resolved.map((e) => [e.id, e])));
-  const candidates = authoredEntitiesForStep(plan, stepId, variant).filter(
+  const candidates = (plan.variantModel === "beat"
+    ? composeBeatVariantEntities(plan, stepId, shown).entities
+    : authoredEntitiesForStep(plan, stepId, variant)).filter(
     (e) => !e.anchor && e.type !== "tether" && e.id !== entity.id
   );
-  const nudged = resolveEntityForStep(plan, entity, stepId, variant);
+  const nudged = plan.variantModel === "beat"
+    ? entity
+    : resolveEntityForStep(plan, entity, stepId, variant);
 
   return (
     <div className="mb-3 rounded bg-ink-800 p-2 text-xs">
@@ -225,6 +230,7 @@ function BaitPanel({
   stepId,
   scope,
   variant,
+  shown,
   editable,
   run,
 }: {
@@ -239,7 +245,9 @@ function BaitPanel({
   editable: boolean;
   run(ops: Op | Op[]): Promise<unknown>;
 }) {
-  const sources = authoredEntitiesForStep(plan, stepId, variant).filter(
+  const sources = (plan.variantModel === "beat"
+    ? composeBeatVariantEntities(plan, stepId, shown).entities
+    : authoredEntitiesForStep(plan, stepId, variant)).filter(
     (e) => e.id !== target.id && e.type !== "tether" && !e.anchor
   );
   const [kind, setKind] = useState<BaitKind>("beam");
@@ -384,9 +392,13 @@ export function Inspector({
   }
 
   const mechOf = entity.mech ? plan.mechs.find((m) => m.id === entity.mech) : undefined;
-  const shown = resolveEntityForStep(plan, entity, stepId, variant);
+  const shownEntity = plan.variantModel === "beat"
+    ? entity
+    : resolveEntityForStep(plan, entity, stepId, variant);
   const physicalCalibration = arenaCalibration(plan);
-  const authoredScene = authoredEntitiesForStep(plan, stepId, variant);
+  const authoredScene = plan.variantModel === "beat"
+    ? composeBeatVariantEntities(plan, stepId, playing).entities
+    : authoredEntitiesForStep(plan, stepId, variant);
   const variantOnly = !plan.entities.some((candidate) => candidate.id === entity.id);
   const detached = !!variant && variantStepEdited(plan, stepId, variant);
   const players = authoredScene.filter((candidate) => candidate.type === "player");
@@ -409,7 +421,7 @@ export function Inspector({
   const num = (key: string, label: string, step = 1) => (
     <Field label={label} key={key}>
       <NumberInput
-        value={Math.round(((shown as unknown as Record<string, number>)[key] ?? 0) * 100) / 100}
+        value={Math.round(((shownEntity as unknown as Record<string, number>)[key] ?? 0) * 100) / 100}
         step={step}
         disabled={!editable}
         onCommit={(value) => patch({ [key]: value })}
@@ -457,16 +469,17 @@ export function Inspector({
           stepId={stepId}
           scope={scope}
           variant={variant}
+          shown={playing}
           editable={editable}
           run={run}
         />
       )}
 
-      {shown.anchor && (
+      {shownEntity.anchor && (
         <BaitTarget
           plan={plan}
           entity={entity}
-          anchor={shown.anchor}
+          anchor={shownEntity.anchor}
           stepId={stepId}
           scope={scope}
           variant={variant}
@@ -481,12 +494,12 @@ export function Inspector({
           <input
             className="field"
             disabled={!editable}
-            value={shown.name ?? ""}
+            value={shownEntity.name ?? ""}
             onChange={(e) => patch({ name: e.target.value })}
           />
         </Field>
-        {num("x", shown.anchor ? "offset x" : "x")}
-        {num("y", shown.anchor ? "offset y" : "y")}
+        {num("x", shownEntity.anchor ? "offset x" : "x")}
+        {num("y", shownEntity.anchor ? "offset y" : "y")}
         {num("rotation", "rotation°", 15)}
         {num("scale", "scale", 0.1)}
 
@@ -495,7 +508,7 @@ export function Inspector({
             <select
               className="field"
               disabled={!editable}
-              value={(shown as { job: string }).job}
+              value={(shownEntity as { job: string }).job}
               onChange={(e) => patch({ job: e.target.value })}
             >
               {ROLES.map((r) => (
@@ -517,7 +530,7 @@ export function Inspector({
             <select
               className="field"
               disabled={!editable}
-              value={(shown as { icon?: string }).icon ?? ""}
+              value={(shownEntity as { icon?: string }).icon ?? ""}
               onChange={(e) => patch({ icon: e.target.value || undefined })}
             >
               <option value="">auto ({entity.type === "player" ? "from job" : "from size"})</option>
@@ -536,7 +549,7 @@ export function Inspector({
             <select
               className="field"
               disabled={!editable}
-              value={(shown as { marker: string }).marker}
+              value={(shownEntity as { marker: string }).marker}
               onChange={(e) => patch({ marker: e.target.value })}
             >
               {MARKER_IDS.map((m) => (
@@ -553,7 +566,7 @@ export function Inspector({
               <select
                 className="field"
                 disabled={!editable}
-                value={(shown as { shape: string }).shape}
+                value={(shownEntity as { shape: string }).shape}
                 onChange={(e) => patch({ shape: e.target.value })}
               >
                 {ZONE_SHAPES.map((s) => (
@@ -577,7 +590,7 @@ export function Inspector({
               <select
                 className="field"
                 disabled={!editable}
-                value={(shown as { src: string }).src}
+                value={(shownEntity as { src: string }).src}
                 onChange={(e) => patch({ src: e.target.value })}
               >
                 {[...MARKER_KEYS, ...ACTOR_KEYS].map((k) => (
@@ -596,7 +609,7 @@ export function Inspector({
             <input
               className="field"
               disabled={!editable}
-              value={(shown as { text: string }).text}
+              value={(shownEntity as { text: string }).text}
               onChange={(e) => patch({ text: e.target.value })}
             />
           </Field>
@@ -609,7 +622,7 @@ export function Inspector({
               <select
                 className="field"
                 disabled={!editable}
-                value={(shown as Extract<Entity, { type: "tether" }>).from}
+                value={(shownEntity as Extract<Entity, { type: "tether" }>).from}
                 onChange={(e) => patch({ from: e.target.value })}
               >
                 {players.map((player) => (
@@ -623,7 +636,7 @@ export function Inspector({
               <select
                 className="field"
                 disabled={!editable}
-                value={(shown as Extract<Entity, { type: "tether" }>).to}
+                value={(shownEntity as Extract<Entity, { type: "tether" }>).to}
                 onChange={(e) => patch({ to: e.target.value })}
               >
                 {players.map((player) => (
@@ -637,7 +650,7 @@ export function Inspector({
               <select
                 className="field"
                 disabled={!editable}
-                value={(shown as { style: string }).style}
+                value={(shownEntity as { style: string }).style}
                 onChange={(e) => patchTetherSet({ style: e.target.value })}
               >
                 <option value="close">together</option>
@@ -650,15 +663,15 @@ export function Inspector({
             <Field label="required range" span>
               <select
                 className="field"
-                disabled={!editable || ((shown as { style: string }).style !== "close" && (shown as { style: string }).style !== "far")}
-                value={(shown as { range?: number }).range ?? ""}
+                disabled={!editable || ((shownEntity as { style: string }).style !== "close" && (shownEntity as { style: string }).style !== "far")}
+                value={(shownEntity as { range?: number }).range ?? ""}
                 onChange={(e) => {
                   if (e.target.value) void patchTetherSet({ range: Number(e.target.value) });
                 }}
               >
                 <option value="" disabled>not configured</option>
                 {(() => {
-                  const current = (shown as { range?: number }).range;
+                  const current = (shownEntity as { range?: number }).range;
                   const presets = [5, 8, 10, 12, 15, 20, 25, 30].map((yalms) => ({
                     yalms,
                     range: yalmsToArenaUnits(plan.arena, yalms, physicalCalibration.widthYalms),
@@ -680,7 +693,7 @@ export function Inspector({
               </select>
             </Field>
             {(() => {
-              const tether = shown as Extract<Entity, { type: "tether" }>;
+              const tether = shownEntity as Extract<Entity, { type: "tether" }>;
               const resolved = entitiesForStep(plan, stepId, undefined, playing);
               const byId = new Map(resolved.map((e) => [e.id, e]));
               const from = byId.get(tether.from);
@@ -706,7 +719,7 @@ export function Inspector({
             className="field h-8 p-0"
             type="color"
             disabled={!editable}
-            value={shown.color ?? "#ff7043"}
+            value={shownEntity.color ?? "#ff7043"}
             onChange={(e) => patch({ color: e.target.value })}
           />
         </Field>
@@ -718,7 +731,7 @@ export function Inspector({
             max={1}
             step={0.05}
             disabled={!editable}
-            value={shown.opacity}
+            value={shownEntity.opacity}
             onChange={(e) => patch({ opacity: Number(e.target.value) })}
           />
         </Field>

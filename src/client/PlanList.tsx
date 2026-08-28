@@ -17,7 +17,7 @@ export function PlanList({ user }: { user: User }) {
   async function create(e: React.FormEvent) {
     e.preventDefault();
     try {
-      const { id } = await api.createPlan({ name: name || "Untitled plan" });
+      const { id } = await api.createPlan({ name: name || "Untitled plan", variantModel: "beat" });
       navigate(`/p/${id}`);
     } catch (err) {
       setError((err as Error).message);

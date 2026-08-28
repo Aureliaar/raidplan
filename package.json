@@ -13,6 +13,7 @@
     "e2e:access": "node scripts/e2e-access.mjs",
     "e2e:bait": "node scripts/e2e-bait.mjs",
     "e2e:beat-variants": "node scripts/e2e-beat-variants.mjs",
+    "e2e:beat-variant-ui": "node scripts/e2e-beat-variant-ui.mjs",
     "e2e:background": "node scripts/e2e-background.mjs",
     "e2e:calibration": "node scripts/e2e-calibration.mjs",
     "e2e:click": "node scripts/e2e-click.mjs",
