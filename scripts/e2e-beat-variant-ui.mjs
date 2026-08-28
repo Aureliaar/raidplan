@@ -44,10 +44,12 @@ const [orbsA] = plan.mechs.find((beat) => beat.id === orbs).variants.map((varian
 
 await page.goto(base + "/p/" + id);
 check(await page.getByRole("button", { name: "+ variant", exact: true }).count() === 0, "Beat plans hide Mechanic-level Variant control");
+await page.locator("[data-timeline-variants]").first().waitFor();
+check(await page.locator("[data-timeline-variants]").count() === 2, "Variant boxes are persistent inside Beats");
 await page.locator(`[data-mech="${explosion}"]`).click();
 const timelineBoxes = page.locator(`[data-timeline-variants="${explosion}"] [data-timeline-variant]`);
 check((await timelineBoxes.allTextContents()).join("|").includes("A") && (await timelineBoxes.allTextContents()).join("|").includes("B"), "selected Beat exposes boxes on timeline", (await timelineBoxes.allTextContents()).join("|") );
-check((await timelineBoxes.allTextContents()).every((text) => text.includes("Shared")), "fresh Variant boxes flag Shared inheritance");
+check((await timelineBoxes.evaluateAll((nodes) => nodes.map((node) => node.getAttribute("aria-label") || ""))).every((label) => label.includes("Shared")), "fresh Variant boxes flag Shared inheritance");
 const tabs = page.locator(`[data-beat-variants="${explosion}"] [role=tab]`);
 check((await tabs.allTextContents()).join("|").includes("Beat|A|B"), "inspector mirrors Beat destinations", (await tabs.allTextContents()).join("|"));
 

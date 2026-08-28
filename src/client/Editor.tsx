@@ -2585,6 +2585,9 @@ function StepRail({
                   variant.id,
                   {
                     content: !!current.beatVariantContent?.[variant.id],
+                    parts: current.beatVariantContent?.[variant.id]?.active
+                      ? current.beatVariantContent[variant.id].parts.length
+                      : 0,
                     movement: Object.keys(current.beatVariantMovement?.[variant.id] ?? {}).length,
                   },
                 ])
@@ -2594,7 +2597,7 @@ function StepRail({
             <div
               key={mech.id}
               style={box}
-              className={`relative min-h-0 ${active && mech.variants.length ? "z-20" : ""}`}
+              className="relative min-h-0"
             >
             <button
               data-mech={mech.id}
@@ -2669,28 +2672,24 @@ function StepRail({
               {/* Which reading a cast is for is the area it sits in, so the box
                   itself does not repeat it. */}
               <span className="w-full truncate text-center">{label}</span>
-              {beatPreview && (
-                <span
-                  className="mt-0.5 max-w-full truncate rounded bg-black/20 px-1 text-[9px] text-blue-100"
-                  title={`${mech.variants.length} mutually exclusive Variants; previewing ${beatVariantLabel(mech, beatPreview.id)}`}
-                >
-                  ◇{mech.variants.length} · {beatVariantLabel(mech, beatPreview.id)}
+              {shapes > 0 && (
+                <span className={mech.variants.length ? "text-[9px] text-ink-400" : "text-ink-400"}>
+                  ×{shapes}
                 </span>
               )}
-              {shapes > 0 && <span className="text-ink-400">×{shapes}</span>}
               {/* The bottom edge is where it goes off, and says so. */}
               <span className="mt-auto -mb-1 w-full border-b-4 border-amber-400/80 pb-0.5 text-center text-[9px] uppercase tracking-wide text-amber-300/90">
                 boom
               </span>
             </button>
-            {active && mech.variants.length > 0 && (
+            {mech.variants.length > 0 && (
               <div
                 data-timeline-variants={mech.id}
-                className="absolute left-full top-0 ml-1 flex min-w-max flex-col gap-1 rounded-md border border-ink-600 bg-ink-900/95 p-1 shadow-xl"
+                className="absolute inset-x-1 top-[29px] bottom-[17px] z-10 flex min-h-0 flex-col gap-0.5"
                 aria-label={`${label} Variants`}
               >
                 {mech.variants.map((variant) => {
-                  const state = stepVariantState[variant.id] ?? { content: false, movement: 0 };
+                  const state = stepVariantState[variant.id] ?? { content: false, parts: 0, movement: 0 };
                   const previewing = beatPreview?.id === variant.id;
                   const editing = editingBeatVariant === variant.id;
                   const inherited = !state.content && state.movement === 0;
@@ -2700,12 +2699,15 @@ function StepRail({
                       type="button"
                       data-timeline-variant={variant.id}
                       aria-pressed={editing}
-                      className={`flex w-28 items-center gap-1 rounded border px-1.5 py-1 text-left text-[10px] leading-tight ${
+                      aria-label={`${beatVariantLabel(mech, variant.id)}, ${
+                        inherited ? "Shared" : "edited independently"
+                      }`}
+                      className={`flex min-h-[14px] flex-1 items-center gap-0.5 overflow-hidden rounded border px-1 text-left text-[8px] leading-none ${
                         editing
-                          ? "border-blue-300 bg-blue-500/25 text-white"
+                          ? "border-blue-200 bg-blue-500/35 text-white ring-1 ring-blue-300/40"
                           : previewing
-                            ? "border-ink-400 bg-ink-700 text-white"
-                            : "border-ink-700 bg-ink-800 text-ink-200 hover:border-ink-500"
+                            ? "border-blue-400/70 bg-blue-950/70 text-blue-50"
+                            : "border-ink-500/80 bg-ink-900/65 text-ink-200 hover:border-ink-300"
                       }`}
                       title={`${beatVariantLabel(mech, variant.id)} — ${
                         inherited
@@ -2723,14 +2725,16 @@ function StepRail({
                     >
                       <span
                         aria-hidden
-                        className={`h-2 w-2 shrink-0 rounded-sm ${
+                        className={`h-1.5 w-1.5 shrink-0 rounded-[2px] ${
                           inherited ? "border border-emerald-300 bg-emerald-400/15" : "bg-amber-300"
                         }`}
                       />
                       <span className="min-w-0 flex-1 truncate">{beatVariantLabel(mech, variant.id)}</span>
-                      <span className={inherited ? "text-emerald-300" : "text-amber-200"}>
-                        {inherited ? "Shared" : `${state.content ? "C" : ""}${state.movement ? `M${state.movement}` : ""}`}
-                      </span>
+                      {!inherited && (
+                        <span className="shrink-0 text-amber-200">
+                          {`${state.content ? `×${state.parts}` : ""}${state.movement ? ` M${state.movement}` : ""}`}
+                        </span>
+                      )}
                     </button>
                   );
                 })}
