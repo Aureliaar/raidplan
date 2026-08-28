@@ -8,6 +8,7 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 - Statuses: `open`, `in progress`, `blocked`, `done`, `not planned`, `invalid`.
 - Every implementation update should record verification and, when applicable, the commit/deployment.
 - “Agreed direction” captures decisions already made. “Open question” must be resolved before an implementation that depends on it.
+- Workflow: the primary agent performs implementation. Subagents are used only for bounded, read-only reviews/audits; implementation delegation was substantially slower for this project.
 
 ## 1 — Confirmed bugs
 
