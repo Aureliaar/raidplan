@@ -209,8 +209,8 @@ edit a plan the user only has viewer access to. `/sse` is available for older cl
 |---|---|
 | `list_plans` `create_plan` `read_plan` `get_plan_json` `set_plan_info` | plans |
 | `list_steps` `add_step` `update_step` `move_step` `delete_step` | steps |
-| `list_mechanics` `add_mechanic` `update_mechanic` `move_mechanic` `delete_mechanic` `add_variant` `update_variant` `delete_variant` | the outline: sections of the fight |
-| `list_mechs` `add_mech` `update_mech` `assign_mech` `delete_mech` | casts |
+| `list_mechanics` `add_mechanic` `update_mechanic` `move_mechanic` `delete_mechanic` | the outline: sections of the fight |
+| `list_mechs` `add_mech` `update_mech` `assign_mech` `delete_mech` `add_beat_variant` `duplicate_beat_variant` `collapse_beat_variants` | Beats and their Variants |
 | `add_player` `add_enemy` `add_marker` `add_waymarks` `add_party` `add_zone` `add_text` `add_tether` `add_icon` | create |
 | `move_entity` `update_entity` `delete_entity` `find_entities` `arrange_party` `set_arena` `list_assets` | edit |
 | `save_encounter` `apply_encounter` `list_encounters` | the fight's arena + waymarks |
@@ -237,12 +237,9 @@ npm run mcp -- call read_plan '{"plan_id":"plan_…"}'
     { "id": "step_…", "name": "Openers", "notes": "", "mechanic": "mechanic_…" },
     { "id": "step_…", "name": "Bait", "mechanic": "mechanic_…" }
   ],
-  "mechanics": [
-    { "id": "mechanic_…", "name": "Witch Hunt",
-      "variants": [{ "id": "variant_…", "name": "Near first" }] }
-  ],
+  "mechanics": [{ "id": "mechanic_…", "name": "Witch Hunt" }],
   "mechs": [{ "id": "mech_…", "name": "", "snap": "step_…", "boom": "step_…",
-              "variant": "variant_…" }],  // only goes off in that reading of its mechanic
+              "variants": [{ "id": "beat_variant_…", "name": "Near first" }] }],
   "entities": [
     {
       "id": "player_…", "type": "player", "job": "WHM", "name": "H1",
@@ -377,7 +374,7 @@ type can still be grabbed and moved (run `npm run dev` first). It exists because
 sync socket — the socket half matters because the SDK pushes state the moment a connection
 is accepted, so the ACL has to be enforced in the Worker, before routing.
 
-## Mechanics and variants
+## Mechanics, Beats and Variants
 
 A fight is not a list of steps, it is a list of *mechanics* — Witch Hunt, Electrope Edge 1,
 the enrage — each of which takes a few steps to draw. So the left panel is an outline:
@@ -385,8 +382,7 @@ the enrage — each of which takes a few steps to draw. So the left panel is an 
 ```
 Encounter
   › Openers                            2
-  ⌄ Jury Overruling      Light / Dark   4
-      Playing  [Light] ✕  [Dark]  [+]
+  ⌄ Jury Overruling                     4
       1. Boss centres              ┌ Beam ┐
       2. Cast goes up              │ boom │
       3. Everyone in     ┌ Stack ┐ └──────┘
@@ -413,45 +409,11 @@ with one section holding their first step. An unnamed section goes by its place 
 holding the selected step, so clicking a heading opens it by selecting the first step in it.
 There is no second piece of state to disagree with the canvas.
 
-A **variant** is one way a mechanic goes: near first or far first, light or dark. **A variant
-does not own steps.** The steps are the mechanic's, in one order, played whichever way it
-goes — a fight that forks is not twice as long, and nobody has to name the same moment twice.
-What a reading owns is *what happens in* those steps:
-
-- **The casts.** A cast can belong to one reading: carry its box in the rail onto that
-  reading's pill and it only goes off that way — its shapes are simply not on the floor in
-  the other one. The box says which reading it is and greys out when you are playing the
-  other; the pills become drop targets while a box is in your hand, including a **both** one
-  that puts it back in every reading. Two readings of the same moment are usually exactly
-  this: the same three steps, a different cast landing in them.
-- **Where the party stands**, quietly. A pose is filed under the step and, when the mechanic
-  goes more than one way, under the reading being played (`overrides["step_…@variant_…"]`,
-  resolved base → step → reading). Drag a token while Light is playing and Light is where
-  the move lands; flip to Dark and the party is where Dark left them. There is no switch for
-  it and nothing to remember: you moved somebody while looking at this reading.
-
-The first **+** makes two readings at once, since one reading is not a choice, and nothing is
-copied when it does. The reading you are **playing** is what the canvas draws, and it is
-yours alone — React state, never written to the document, so nobody else's plan changes
-because you flipped to Dark. Deleting a reading deletes the casts that were only its, and the
-poses filed under it, and leaves every step alone; delete the last-but-one and the mechanic
-is plain again. A section is still its steps, so the last step out of a mechanic takes the
-mechanic.
-
-**F2** renames the variant pill or the heading your keyboard is on, else the open mech, else
-the selected step; a double-click renames whatever you double-clicked. A variant emptied of
-its name goes back to being A, B, C. The
-✕ on an open heading takes the mechanic and its steps, the one beside the shown pill takes
-the variant. `npm run e2e:mechanics` walks the whole thing.
-
-Over MCP it is `list_mechanics`, `add_mechanic`, `update_mechanic`, `move_mechanic`,
-`delete_mechanic` (`keep_steps` merges its steps into the neighbouring section instead —
-the one before it, or the one after if it was first, flattening any variants it had),
-`add_variant`, `update_variant`,
-`delete_variant` and `gate_mech {mech, variant}` (leave `variant` out to put the cast back in
-every reading). `move_entity` and `update_entity` take a `variant`
-alongside `step`, which is how a model authors one party layout per reading. `read_plan`
-prints the outline as headings above the steps.
+A **Variant belongs to one Beat**, never to the whole Mechanic. Sibling boxes are mutually
+exclusive at Steps covered by that Beat. Until edited, each box follows the Beat's Shared
+Parts and normal Step movement. Content edits and sparse actor movement detach independently
+at one `Beat × Variant × Step`; A/D changes only the local preview. Saved Routes coordinate
+several Beat choices without owning their Parts. Mechanic-wide Variants are retired.
 
 ## Mechs
 

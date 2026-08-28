@@ -706,31 +706,33 @@ export interface User {
  * socket rather than from an op.
  */
 export function hydratePlan(plan: Plan): Plan {
+  // Mechanic-wide Variants were retired after the two retained production
+  // plans were migrated in place. Any other old document is intentionally
+  // flattened to its shared canonical state on read; there is no legacy
+  // preview, authoring or copy-on-write runtime left to opt into.
+  const retired = plan.variantModel === "beat"
+    ? plan
+    : {
+        ...plan,
+        variantModel: "beat" as const,
+        variantRoutes: [],
+        mechanics: (plan.mechanics ?? []).map((mechanic) => ({ ...mechanic, variants: [] })),
+        mechs: (plan.mechs ?? []).map((beat) => ({ ...beat, variant: undefined, variants: [] })),
+        steps: plan.steps.map((step) => ({ ...step, variantScenes: undefined })),
+        entities: plan.entities.map((entity) => ({
+          ...entity,
+          overrides: Object.fromEntries(
+            Object.entries(entity.overrides ?? {}).filter(([key]) => !key.includes("@")),
+          ),
+        })) as Entity[],
+      };
   const filled = {
-    ...plan,
-    mechs: (plan.mechs ?? []).map((beat) => ({ ...beat, variants: beat.variants ?? [] })),
-    mechanics: plan.mechanics ?? [],
-    ...(plan.variantModel === "beat" ? { variantRoutes: plan.variantRoutes ?? [] } : {}),
+    ...retired,
+    mechs: (retired.mechs ?? []).map((beat) => ({ ...beat, variants: beat.variants ?? [] })),
+    mechanics: retired.mechanics ?? [],
+    variantRoutes: retired.variantRoutes ?? [],
   };
-  let hydrated = groupLooseSteps(filled);
-
-  // Before variantScenes existed, the presence of any variant override was
-  // the only evidence that this reading had been authored. Preserve the exact
-  // state those documents currently resolve to, then opt them into the new
-  // whole-step copy-on-write model. Untouched variants have no such override
-  // and remain live views of shared state.
-  for (const step of hydrated.steps) {
-    const mechanic = hydrated.mechanics.find((candidate) => candidate.id === step.mechanic);
-    for (const variant of mechanic?.variants ?? []) {
-      if (variantStepEdited(hydrated, step.id, variant.id)) continue;
-      const key = poseKey(step.id, variant.id);
-      const legacyEdit = hydrated.entities.some((entity) =>
-        Object.prototype.hasOwnProperty.call(entity.overrides ?? {}, key)
-      );
-      if (legacyEdit) hydrated = materializeVariantStep(hydrated, step.id, variant.id);
-    }
-  }
-  return hydrated;
+  return groupLooseSteps(filled);
 }
 
 /**

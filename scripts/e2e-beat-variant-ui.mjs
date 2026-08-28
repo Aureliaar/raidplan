@@ -43,6 +43,7 @@ const [explosionA, explosionB] = plan.mechs.find((beat) => beat.id === explosion
 const [orbsA] = plan.mechs.find((beat) => beat.id === orbs).variants.map((variant) => variant.id);
 
 await page.goto(base + "/p/" + id);
+check(await page.getByRole("button", { name: "+ variant", exact: true }).count() === 0, "Beat plans hide Mechanic-level Variant control");
 await page.locator(`[data-mech="${explosion}"]`).click();
 const timelineBoxes = page.locator(`[data-timeline-variants="${explosion}"] [data-timeline-variant]`);
 check((await timelineBoxes.allTextContents()).join("|").includes("A") && (await timelineBoxes.allTextContents()).join("|").includes("B"), "selected Beat exposes boxes on timeline", (await timelineBoxes.allTextContents()).join("|") );

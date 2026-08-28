@@ -41,7 +41,6 @@ export type Op =
   | { op: "gate_mech"; mechId: string; variant?: string }
   | { op: "update_variant"; mechanicId: string; variantId: string; patch: { name?: string } }
   | { op: "delete_variant"; mechanicId: string; variantId: string }
-  | { op: "enable_beat_variants" }
   | { op: "add_beat_variant"; beatId: string; name?: string; createdBy?: string; createdByName?: string }
   | { op: "update_beat_variant"; beatId: string; variantId: string; patch: { name?: string } }
   | { op: "duplicate_beat_variant"; beatId: string; variantId: string; name?: string; createdBy?: string; createdByName?: string }
@@ -118,6 +117,10 @@ export function validateOpContext(plan: Plan, op: Op): void {
 
 export function applyOp(plan: Plan, op: Op): OpResult {
   validateOpContext(plan, op);
+  if (
+    ["add_variant", "update_variant", "delete_variant", "gate_mech"].includes(op.op)
+  )
+    throw new Error("Mechanic-level Variants are retired; add Variants to a Beat");
   switch (op.op) {
     case "set_meta":
       return {
@@ -186,8 +189,6 @@ export function applyOp(plan: Plan, op: Op): OpResult {
       return { plan: ops.updateVariant(plan, op.mechanicId, op.variantId, op.patch) };
     case "delete_variant":
       return { plan: ops.deleteVariant(plan, op.mechanicId, op.variantId), value: [op.variantId] };
-    case "enable_beat_variants":
-      return { plan: ops.enableBeatVariants(plan) };
     case "add_beat_variant": {
       const r = ops.addBeatVariant(plan, op.beatId, {
         name: op.name,

@@ -1146,23 +1146,6 @@ export function moveMechanic(plan: Plan, mechanicId: string, index: number): Pla
 
 /* ----------------------------------------------------------- Beat Variants */
 
-/**
- * Opt an unvaried document into the additive Beat model. Legacy branch data is
- * never guessed or rewritten here; those plans must use the explicit converter
- * in a later migration slice.
- */
-export function enableBeatVariants(plan: Plan): Plan {
-  if (plan.variantModel === "beat") return plan;
-  const legacy =
-    plan.mechanics.some((mechanic) => mechanic.variants.length) ||
-    plan.mechs.some((beat) => !!beat.variant) ||
-    plan.steps.some((step) => Object.keys(step.variantScenes ?? {}).length) ||
-    plan.entities.some((entity) => Object.keys(entity.overrides ?? {}).some((key) => key.includes("@")));
-  if (legacy)
-    throw new Error("This plan has legacy Mechanic Variants; run the explicit conversion dry-run first");
-  return touch({ ...plan, variantModel: "beat", variantRoutes: [] });
-}
-
 /** First use makes two mutually exclusive child boxes; later uses add one. */
 export function addBeatVariant(
   plan: Plan,

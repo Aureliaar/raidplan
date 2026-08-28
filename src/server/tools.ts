@@ -38,7 +38,6 @@ import {
   variantLabel,
   type Plan,
 } from "../shared/schema";
-import { convertLegacyPlan } from "../shared/beat-variant-conversion";
 import { JOB_IDS } from "../shared/jobs";
 import { ACTOR_KEYS, ARENA_BACKGROUNDS, ASSETS, MARKER_KEYS, MECHANIC_KEYS } from "../shared/assets";
 
@@ -224,14 +223,9 @@ async function edit(ctx: ToolContext, planId: string, make: (plan: Plan) => Op |
 const planUrl = (ctx: ToolContext, id: string) => `${ctx.appUrl}/p/${id}`;
 const idOf = (v: unknown) => (v as { id: string }).id;
 
-async function sha256(payload: string): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(payload));
-  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 function requireBeatModel(plan: Plan): void {
   if (plan.variantModel !== "beat")
-    throw new Error("This is a legacy plan. Convert it to a copy before authoring Beat Variants.");
+    throw new Error("This plan has not been hydrated into the Beat model");
 }
 
 function resolvedBeatSelections(plan: Plan, selections: Record<string, string>): Record<string, string> {
@@ -426,81 +420,6 @@ export const TOOLS: ToolDef[] = [
   }),
 
   def({
-    name: "inspect_legacy_variant_conversion",
-    description:
-      "Owner-only dry run for converting legacy Mechanic-wide Variants into Beat Variant boxes. Returns a checksum, compatibility Route counts and exact visual-equivalence results without writing anything.",
-    schema: { plan_id: z.string() },
-    async run(ctx, a) {
-      const { plan } = await load(ctx, a.plan_id, "own");
-      const payload = JSON.stringify(plan);
-      const checksum = await sha256(payload);
-      const report = convertLegacyPlan(plan).report;
-      return JSON.stringify({ checksum, report }, null, 2);
-    },
-  }),
-
-  def({
-    name: "convert_legacy_variants_to_copy",
-    description:
-      "Owner-only commit of a clean legacy conversion report into a fresh Beat Variant plan. The source is never changed; its exact payload and checksum are pinned in the copy.",
-    schema: {
-      plan_id: z.string(),
-      expected_rev: z.number().int().nonnegative().describe("sourceRev returned by inspect_legacy_variant_conversion"),
-      expected_checksum: z.string().length(64).describe("checksum returned by inspect_legacy_variant_conversion"),
-    },
-    async run(ctx, a) {
-      const { plan: source } = await load(ctx, a.plan_id, "own");
-      if (source.rev !== a.expected_rev)
-        throw new Error(`The source changed from rev ${a.expected_rev} to rev ${source.rev}; inspect it again`);
-      const payload = JSON.stringify(source);
-      const checksum = await sha256(payload);
-      if (checksum !== a.expected_checksum)
-        throw new Error("The source checksum changed; inspect it again");
-      const copyId = newId("plan");
-      const result = convertLegacyPlan(source, {
-        id: copyId,
-        ownerId: ctx.userId,
-        archive: { payload, sha256: checksum, convertedAt: Date.now() },
-      });
-      if (!result.plan)
-        throw new Error(`Conversion is not lossless: ${result.report.errors.join("; ")}`);
-      const me = await registry(ctx.env).getUser(ctx.userId);
-      const copy = await planStub(ctx.env, copyId);
-      await copy.init({
-        id: copyId,
-        name: result.plan.name,
-        encounter: result.plan.encounter,
-        ownerId: ctx.userId,
-        withParty: false,
-        variantModel: "beat",
-      });
-      const plan = await copy.replaceConverted(
-        result.plan,
-        { id: copyId, ownerId: ctx.userId },
-        {
-          sourcePlanId: source.id,
-          sourceRev: source.rev,
-          payload,
-          sha256: checksum,
-          convertedAt: result.plan.conversionArchive!.convertedAt,
-        },
-        {
-          actorId: ctx.userId,
-          actorName: me?.name,
-          source: "migration",
-        }
-      );
-      await registry(ctx.env).registerPlan({
-        id: copyId,
-        name: plan.name,
-        encounter: plan.encounter,
-        ownerId: ctx.userId,
-      });
-      return `Converted copy ${copyId} created from ${a.plan_id} rev ${source.rev}; source unchanged — ${planUrl(ctx, copyId)}`;
-    },
-  }),
-
-  def({
     name: "set_plan_info",
     description: "Rename a plan or change its description/encounter.",
     schema: {
@@ -608,43 +527,6 @@ export const TOOLS: ToolDef[] = [
       if (a.copy_from && a.notes)
         await edit(ctx, a.plan_id, () => ({ op: "update_step", stepId: step.id, patch: { notes: a.notes! } }));
       return `Added step "${step.name}" [${step.id}]`;
-    },
-  }),
-
-  def({
-    name: "gate_mech",
-    description:
-      "Say which reading of its mechanic a cast belongs to. Gated, the cast only goes off that way and its shapes are not on the floor in the other reading — which is how two readings of the same moment differ when the steps themselves are shared. Without `variant` it goes off whichever way the mechanic goes.",
-    schema: {
-      plan_id: z.string(),
-      mech: z.string().describe("Cast id or name"),
-      variant: z
-        .string()
-        .optional()
-        .describe("Variant id, 1-based index or name. Leave it out to put it back in both."),
-    },
-    async run(ctx, a) {
-      const res = await edit(ctx, a.plan_id, (plan) => {
-        const mech =
-          plan.mechs.find((m) => m.id === a.mech) ??
-          plan.mechs.find((m) => mechLabel(plan, m).toLowerCase() === a.mech.toLowerCase());
-        if (!mech) throw new Error(`No cast "${a.mech}"`);
-        const step = plan.steps.find((s) => s.id === (mech.snap || mech.boom));
-        return {
-          op: "gate_mech",
-          mechId: mech.id,
-          variant:
-            a.variant && step?.mechanic ? variantIdOf(plan, step.mechanic, a.variant) : undefined,
-        };
-      });
-      const mech = res.plan.mechs.find(
-        (m) => m.id === a.mech || mechLabel(res.plan, m).toLowerCase() === a.mech.toLowerCase()
-      )!;
-      const step = res.plan.steps.find((s) => s.id === (mech.snap || mech.boom));
-      const mechanic = res.plan.mechanics.find((m) => m.id === step?.mechanic);
-      return mech.variant && mechanic
-        ? `${mechLabel(res.plan, mech)} only goes off in ${variantLabel(mechanic, mech.variant)}.`
-        : `${mechLabel(res.plan, mech)} goes off whichever way the mechanic goes.`;
     },
   }),
 
@@ -809,62 +691,6 @@ export const TOOLS: ToolDef[] = [
         "The fight now goes: " +
         res.plan.mechanics.map((m, i) => `${i + 1}. ${mechanicLabel(res.plan, m)}`).join(", ")
       );
-    },
-  }),
-
-  def({
-    name: "add_variant",
-    description:
-      "Give a mechanic another way of going — 'Near first' against 'Far first'. Nothing is copied: the mechanic keeps its one run of steps, shared by every reading, and you gate the steps that differ with `gate_step`. The first call makes two readings, since one reading is not a choice.",
-    schema: {
-      plan_id: z.string(),
-      mechanic: z.string(),
-      name: z.string().optional().describe("Defaults to the next letter"),
-    },
-    async run(ctx, a) {
-      let mechanicId = "";
-      const res = await edit(ctx, a.plan_id, (plan) => {
-        mechanicId = mechanicIdOf(plan, a.mechanic);
-        return { op: "add_variant", mechanicId, name: a.name };
-      });
-      const m = res.plan.mechanics.find((x) => x.id === mechanicId)!;
-      return `${mechanicLabel(res.plan, m)} now goes ${m.variants.map((v) => `${variantLabel(m, v.id)} [${v.id}]`).join(" / ")}. All ${mechanicSteps(res.plan, mechanicId).length} of its steps are shared until you gate some.`;
-    },
-  }),
-
-  def({
-    name: "update_variant",
-    description: "Rename one reading of a mechanic.",
-    schema: { plan_id: z.string(), mechanic: z.string(), variant: z.string(), name: z.string() },
-    async run(ctx, a) {
-      await edit(ctx, a.plan_id, (plan) => {
-        const mechanicId = mechanicIdOf(plan, a.mechanic);
-        return {
-          op: "update_variant",
-          mechanicId,
-          variantId: variantIdOf(plan, mechanicId, a.variant),
-          patch: { name: a.name },
-        };
-      });
-      return "Variant updated.";
-    },
-  }),
-
-  def({
-    name: "delete_variant",
-    description:
-      "Delete one reading of a mechanic, and the steps that are it. Take the last-but-one and the mechanic is plain again.",
-    schema: { plan_id: z.string(), mechanic: z.string(), variant: z.string() },
-    async run(ctx, a) {
-      await edit(ctx, a.plan_id, (plan) => {
-        const mechanicId = mechanicIdOf(plan, a.mechanic);
-        return {
-          op: "delete_variant",
-          mechanicId,
-          variantId: variantIdOf(plan, mechanicId, a.variant),
-        };
-      });
-      return "Variant deleted with its steps.";
     },
   }),
 
@@ -1854,6 +1680,6 @@ A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degr
 Arena distances are yalms: a manual arena.widthYalms wins, supported encounters use known dimensions, and unknown fights default to 40 yalms across. Calibration never changes stored coordinates.
 Entities live in a plan and may appear in one step or all steps; per-step position overrides are how movement is expressed.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
-A Beat is one timed card/frame. Its child Variant boxes are mutually exclusive and contain only divergent Beat Parts plus optional sparse actor movement. Shared Parts stay directly on the Beat. Preview choices and edit destinations are separate: passing beat + variant explicitly chooses where an edit is stored, never a saved preview. Saved Routes are non-owning complete Beat-selection maps and cannot contain movement conflicts. New plans use this Beat Variant model; legacy Mechanic-wide Variants are read-only until their owner runs inspect_legacy_variant_conversion and converts to a copy.
+A Beat is one timed card/frame. Its child Variant boxes are mutually exclusive and contain only divergent Beat Parts plus optional sparse actor movement. Shared Parts stay directly on the Beat. Preview choices and edit destinations are separate: passing beat + variant explicitly chooses where an edit is stored, never a saved preview. Saved Routes are non-owning complete Beat-selection maps and cannot contain movement conflicts. Variants exist only on Beats; Mechanic-wide Variants are retired.
 A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest" (plus "count"), which re-targets itself as the party moves. Either way it holds in every step with no overrides to redo.
 Real FFXIV art is bundled: job/role tokens, waymarks A-D and 1-4, field markers (attack1-8, bind, ignore, limit cut, tankbuster) and arena backdrops. Call list_assets to browse it.`;

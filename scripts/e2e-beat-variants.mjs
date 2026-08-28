@@ -59,7 +59,6 @@ const step1 = plan.steps[0].id;
 const mt = plan.entities.find((entity) => entity.name === "MT").id;
 const ot = plan.entities.find((entity) => entity.name === "OT").id;
 await ops([
-  { op: "enable_beat_variants" },
   { op: "add_step", name: "Resolve", mechanic: section },
 ]);
 plan = await load();
@@ -134,6 +133,11 @@ let state = await inspect();
 check(state.plan.variantModel === "beat", "explicit v2 model enabled");
 check(!Object.keys(state.content).length, "new Variants follow shared content");
 check(!Object.keys(state.movement).length, "new Variants use shared Step poses");
+const mechanicVariantAttempt = await ops(
+  { op: "add_variant", mechanicId: section },
+  true
+);
+check(mechanicVariantAttempt.status === 400, "Beat plans reject Mechanic-level Variants", `HTTP ${mechanicVariantAttempt.status}`);
 
 // A Part edit snapshots only its owning Beat and never movement or another Beat.
 await ops({
@@ -298,23 +302,28 @@ const collapsed = await inspect({ [beatTwo]: twoB }, step2);
 check(collapsed.ids.includes("private_a") && collapsed.ids.includes("private_tether"), "chosen Variant Parts become Shared");
 same({ x: collapsed.ot.x, y: collapsed.ot.y }, { x: 909, y: 910 }, "chosen Variant movement becomes shared Step movement");
 
-// Legacy reader stays explicit and cannot be silently opted in.
-const legacyCreated = await api("/api/plans", {
+// Retired documents have no compatibility runtime: old branch fields flatten
+// to the shared canonical plan as they enter the current model.
+const retiredCreated = await api("/api/plans", {
   method: "POST",
-  body: JSON.stringify({ name: "legacy guard", withParty: false }),
+  body: JSON.stringify({ name: "retired Mechanic Variants", withParty: false }),
 });
-const legacyId = (legacyCreated.body.plan ?? legacyCreated.body).id;
-const legacyPlan = await api("/api/plans/" + legacyId).then(({ body }) => body.plan ?? body);
-await api("/api/plans/" + legacyId + "/ops", {
+const retiredId = retiredCreated.body.id;
+const retiredSource = await api("/api/plans/" + retiredId).then(({ body }) => body.plan);
+delete retiredSource.variantModel;
+retiredSource.mechanics[0].variants = [
+  { id: "old_a", name: "A" },
+  { id: "old_b", name: "B" },
+];
+retiredSource.steps[0].variantScenes = { old_a: [], old_b: [] };
+await api("/api/plans/" + retiredId + "/import", {
   method: "POST",
-  body: JSON.stringify({ ops: [{ op: "add_variant", mechanicId: legacyPlan.mechanics[0].id }] }),
+  body: JSON.stringify({ plan: retiredSource }),
 });
-const silentUpgrade = await api(
-  "/api/plans/" + legacyId + "/ops",
-  { method: "POST", body: JSON.stringify({ ops: [{ op: "enable_beat_variants" }] }) },
-  true
-);
-check(silentUpgrade.status === 400, "legacy branches require explicit conversion", `HTTP ${silentUpgrade.status}`);
+const retired = await api("/api/plans/" + retiredId).then(({ body }) => body.plan);
+check(retired.variantModel === "beat", "old documents hydrate directly into Beat model");
+check(retired.mechanics.every((mechanic) => mechanic.variants.length === 0), "Mechanic Variant data is discarded");
+check(retired.steps.every((candidate) => !candidate.variantScenes), "Mechanic Variant scenes are discarded");
 
 await browser.close();
 console.log(failed ? `${failed} Beat Variant check(s) failed` : "Beat Variant model checks pass");

@@ -1,5 +1,4 @@
-/** Beat Variant MCP parity: authoring, COW domains, conflicts, Routes and conversion. */
-import { readFile } from "node:fs/promises";
+/** Beat Variant MCP parity: authoring, COW domains, conflicts and Routes. */
 import { chromium } from "playwright";
 
 const base = (process.argv[2] ?? "http://localhost:5173").replace(/\/$/, "");
@@ -70,9 +69,8 @@ for (const name of [
   "collapse_beat_variants",
   "reset_beat_variant_step",
   "save_beat_variant_route",
-  "inspect_legacy_variant_conversion",
-  "convert_legacy_variants_to_copy",
 ]) check(names.has(name), `MCP advertises ${name}`);
+check(!names.has("add_variant") && !names.has("convert_legacy_variants_to_copy"), "MCP has no Mechanic Variant or legacy conversion tools");
 
 const createdText = (await tool("create_plan", { name: "MCP Beat Variants", with_party: true })).text;
 const planId = createdText.match(/plan_[A-Za-z0-9_-]+/)?.[0];
@@ -182,26 +180,6 @@ const read = await tool("read_plan", {
   variant: oneA,
 });
 check(read.text.includes("321") || read.text.includes("444"), "MCP read resolves selected Beat Variant");
-
-const legacyMade = (await api("/api/plans", {
-  method: "POST",
-  body: JSON.stringify({ name: "MCP conversion source", withParty: false }),
-})).body.id;
-const fixture = JSON.parse(await readFile(new URL("./fixtures/dark-light-legacy-rev3018.json", import.meta.url), "utf8"));
-await api(`/api/plans/${legacyMade}/import`, {
-  method: "POST",
-  body: JSON.stringify({ plan: fixture }),
-});
-const inspection = JSON.parse((await tool("inspect_legacy_variant_conversion", { plan_id: legacyMade })).text);
-check(inspection.report.convertible && inspection.report.mismatches.length === 0, "MCP dry-run reports frozen fixture equivalent");
-const converted = await tool("convert_legacy_variants_to_copy", {
-  plan_id: legacyMade,
-  expected_rev: inspection.report.sourceRev,
-  expected_checksum: inspection.checksum,
-});
-const convertedId = converted.text.match(/plan_[A-Za-z0-9_-]+/)?.[0];
-check(converted.text.includes("source unchanged") && !!convertedId, "MCP converts legacy plan to a fresh copy");
-check((await load(convertedId)).variantModel === "beat", "MCP converted copy uses Beat model");
 
 await browser.close();
 if (failures) {

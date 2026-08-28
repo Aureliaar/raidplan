@@ -9,7 +9,6 @@ import { Inspector } from "./Inspector";
 import { ChatPanel } from "./ChatPanel";
 import { applyOp, type Op } from "../shared/apply";
 import type { PlanHistory, PlanRevision } from "../shared/history";
-import type { LegacyConversionReport } from "../shared/beat-variant-conversion";
 import type {
   Entity,
   Mech,
@@ -114,7 +113,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const historyPlans = useRef(new Map<string, Plan>());
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
-  const [conversionOpen, setConversionOpen] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
   /** What is in the hand mid-drag, purely so the drop targets can light up. */
   const [carrying, setCarrying] = useState<PaletteKind | null>(null);
@@ -642,46 +640,30 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         setStepIndex(Math.max(0, Math.min(plan.steps.length - 1, here + (key === "s" ? 1 : -1))));
         return;
       }
-      if (plan.variantModel === "beat") {
-        const active = activeBeatVariants(plan, plan.steps[here].id, shown);
-        const target =
-          active.find(({ beat }) => beat.id === mech)?.beat ??
-          active.find(({ beat }) => beat.id === focusedBeat)?.beat ??
-          (active.length === 1 ? active[0].beat : undefined);
-        if (!target) {
-          if (active.length > 1) setNote("Choose a varying Beat before using A/D");
-          return;
-        }
-        ev.preventDefault();
-        setGlide((n) => n + 1);
-        setOnward(false);
-        setFocusedBeat(target.id);
-        setShown((was) => {
-          const currentSelection = active.find(({ beat }) => beat.id === target.id)?.variant.id;
-          const at = target.variants.findIndex(
-            (variant) => variant.id === (was[target.id] ?? currentSelection)
-          );
-          const from = at < 0 ? 0 : at;
-          const to = (from + (key === "d" ? 1 : -1) + target.variants.length) % target.variants.length;
-          return { ...was, [target.id]: target.variants[to].id };
-        });
+      const active = activeBeatVariants(plan, plan.steps[here].id, shown);
+      const target =
+        active.find(({ beat }) => beat.id === mech)?.beat ??
+        active.find(({ beat }) => beat.id === focusedBeat)?.beat ??
+        (active.length === 1 ? active[0].beat : undefined);
+      if (!target) {
+        if (active.length > 1) setNote("Choose a varying Beat before using A/D");
         return;
       }
-      // Legacy sideways preview remains on the Mechanic-wide reader.
-      const mechanic = plan.mechanics.find((m) => m.id === plan.steps[here].mechanic);
-      if (!mechanic || mechanic.variants.length < 2) return;
       ev.preventDefault();
       setGlide((n) => n + 1);
-      // Sideways is not the fight going on: the other reading is the same
-      // moment, so nothing in this one resolves.
       setOnward(false);
+      setFocusedBeat(target.id);
       setShown((was) => {
-        const at = mechanic.variants.findIndex((v) => v.id === was[mechanic.id]);
+        const currentSelection = active.find(({ beat }) => beat.id === target.id)?.variant.id;
+        const at = target.variants.findIndex(
+          (variant) => variant.id === (was[target.id] ?? currentSelection)
+        );
         const from = at < 0 ? 0 : at;
-        const n = mechanic.variants.length;
-        const to = (from + (key === "d" ? 1 : n - 1)) % n;
-        return { ...was, [mechanic.id]: mechanic.variants[to].id };
+        const to =
+          (from + (key === "d" ? 1 : -1) + target.variants.length) % target.variants.length;
+        return { ...was, [target.id]: target.variants[to].id };
       });
+      return;
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -1268,11 +1250,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             </button>
           </div>
         )}
-        {role === "owner" && plan.variantModel !== "beat" && plan.mechanics.some((section) => section.variants.length >= 2) && (
-          <button className="btn" onClick={() => setConversionOpen(true)}>
-            Convert Variants to Beats…
-          </button>
-        )}
         <div className="ml-auto flex shrink-0 items-center gap-2">
           {editable && (
             <>
@@ -1370,13 +1347,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           </span>
         </div>
       </header>
-
-      {conversionOpen && (
-        <BeatVariantConversionDialog
-          planId={planId}
-          onClose={() => setConversionOpen(false)}
-        />
-      )}
 
       {plan.variantModel === "beat" && (
         <div className="panel flex flex-wrap items-center gap-2 border-x-0 border-t-0 px-3 py-1.5 text-xs">
@@ -2809,130 +2779,6 @@ function StepRail({
     );
   }
 
-  /**
-   * The pills that choose which reading of a mechanic you are looking at.
-   * A mechanic that goes one way has no pills — only the "+" that would give
-   * it a second way, and nothing at all until you open the section.
-   */
-  function variantRow(mechanic: Mechanic) {
-    const showing = shownIn(mechanic);
-    return (
-      <div className="mb-1 flex flex-wrap items-center gap-1 px-1">
-        {mechanic.variants.length > 0 && <span className="label">Playing</span>}
-        {mechanic.variants.map((v) =>
-          renaming === v.id ? (
-            <Rename
-              key={v.id}
-              title="Rename variant"
-              value={v.name}
-              placeholder={variantLabel(mechanic, v.id)}
-              onDone={(name) => {
-                setRenaming(null);
-                if (name !== v.name)
-                  void run({
-                    op: "update_variant",
-                    mechanicId: mechanic.id,
-                    variantId: v.id,
-                    patch: { name },
-                  });
-              }}
-            />
-          ) : (
-            <Fragment key={v.id}>
-              <button
-                ref={(el) => {
-                  pillRefs.current.set(v.id, el);
-                }}
-                className={`rounded px-2 py-0.5 text-xs ${
-                  v.id === showing ? "text-white" : "text-ink-200 hover:bg-ink-700"
-                } ${drag?.gate?.to === v.id ? "ring-1 ring-white/80" : ""}`}
-                style={{
-                  background:
-                    v.id === showing || drag?.gate?.to === v.id
-                      ? tint(variantColor(mechanic, v.id), 0.5)
-                      : undefined,
-                }}
-                data-variant={v.id}
-                data-owner={v.ownerId ?? ""}
-                aria-pressed={v.id === showing}
-                title={`${
-                  v.ownerId
-                    ? v.ownerId === me
-                      ? "Your reading — yours to change, and nobody else's. "
-                      : `${v.ownerName || v.ownerId}'s reading — theirs to change; add your own to say it differently. `
-                    : "The plan's own reading, open to anyone who can edit it. "
-                }The reading on screen — what the canvas draws, and where a cast dropped on it belongs. A and D move between readings. Double-click or F2 to rename`}
-                onClick={() => showVariant(mechanic, v.id)}
-                onDoubleClick={() => editable && setRenaming(v.id)}
-              >
-                {variantLabel(mechanic, v.id)}
-                {/* Whose answer to the mechanic this is, when it is somebody's. */}
-                {v.ownerId && v.ownerId !== me && (
-                  <span className="ml-1 text-[10px] text-ink-400">
-                    {(v.ownerName || v.ownerId).split(/[:\s]/).pop()}
-                  </span>
-                )}
-              </button>
-              {v.id === showing && editable && (
-                <button
-                  className="px-0.5 text-ink-400 hover:text-red-300"
-                  title="Delete this reading and the casts only it has"
-                  onClick={async () => {
-                    const res = await run({
-                      op: "delete_variant",
-                      mechanicId: mechanic.id,
-                      variantId: v.id,
-                    });
-                    const i = res.plan.steps.findIndex((s) => s.mechanic === mechanic.id);
-                    setIndex(Math.max(0, i));
-                  }}
-                >
-                  ✕
-                </button>
-              )}
-            </Fragment>
-          )
-        )}
-        {/* While a cast is in the hand the readings are drop targets, and this
-            is the one that means "it happens either way". */}
-        {drag && mechanic.variants.length > 0 && (
-          <button
-            ref={(el) => {
-              pillRefs.current.set("", el);
-            }}
-            className={`rounded px-2 py-0.5 text-xs text-ink-200 ${
-              drag.gate && !drag.gate.to ? "bg-ink-600 ring-1 ring-white/80" : "bg-ink-800"
-            }`}
-            title="Drop a cast here and it goes off whichever way the mechanic goes"
-          >
-            both
-          </button>
-        )}
-        {editable && (
-          <button
-            className="rounded bg-ink-800 px-2 py-0.5 text-xs text-ink-200 hover:bg-ink-700"
-            title="Another way this mechanic goes. The steps are the same either way — what changes is which casts land and where the party stands"
-            onClick={() => addVariant(mechanic)}
-          >
-            {mechanic.variants.length ? "+" : "+ variant"}
-          </button>
-        )}
-      </div>
-    );
-  }
-
-  /**
-   * Another reading of a mechanic. Nothing is copied: the steps stay one run,
-   * shared until you gate some of them. The first "+" makes two readings, since
-   * one reading is not a choice, and leaves you looking at the first.
-   */
-  async function addVariant(mechanic: Mechanic) {
-    const res = await run({ op: "add_variant", mechanicId: mechanic.id });
-    const made = res.values[0] as { id: string } | null;
-    if (!made) return;
-    setShown((s) => ({ ...s, [mechanic.id]: made.id }));
-  }
-
   return (
     <nav
       className="panel shrink-0 overflow-y-auto border-y-0 border-l-0 p-2"
@@ -2998,11 +2844,6 @@ function StepRail({
                 >
                   <Chevron open={open} />
                   <span className="min-w-0 flex-1 truncate">{mechanicLabel(plan, mechanic)}</span>
-                  {mechanic.variants.length > 0 && (
-                    <span className="shrink-0 rounded bg-ink-600 px-1 text-[10px] text-ink-200">
-                      {mechanic.variants.map((v) => variantLabel(mechanic, v.id)).join(" / ")}
-                    </span>
-                  )}
                   <span className="shrink-0 text-[11px] text-ink-400">{visible.length}</span>
                 </button>
                 {open && editable && (
@@ -3021,7 +2862,6 @@ function StepRail({
             )}
             {open && (
               <>
-                {(editable || mechanic.variants.length > 0) && variantRow(mechanic)}
                 {grid(mechanic, visibleRows, laid)}
                 {editable && controls()}
               </>
@@ -3404,110 +3244,6 @@ function Rename({
       }}
       onBlur={(e) => onDone(e.target.value)}
     />
-  );
-}
-
-function BeatVariantConversionDialog({
-  planId,
-  onClose,
-}: {
-  planId: string;
-  onClose: () => void;
-}) {
-  const [report, setReport] = useState<LegacyConversionReport | null>(null);
-  const [checksum, setChecksum] = useState("");
-  const [busy, setBusy] = useState(true);
-  const [error, setError] = useState("");
-
-  const runReport = useCallback(async () => {
-    setBusy(true);
-    setError("");
-    try {
-      const result = await api.beatVariantConversionDryRun(planId);
-      setReport(result.report);
-      setChecksum(result.checksum);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Could not inspect this plan");
-    } finally {
-      setBusy(false);
-    }
-  }, [planId]);
-
-  useEffect(() => {
-    void runReport();
-  }, [runReport]);
-
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="presentation">
-      <section
-        className="panel max-h-[90vh] w-full max-w-[620px] overflow-y-auto rounded-lg p-5 shadow-2xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="beat-conversion-title"
-      >
-        <div className="flex items-start gap-3">
-          <div>
-            <h2 id="beat-conversion-title" className="text-lg font-semibold text-white">
-              Convert legacy Variants to Beat boxes
-            </h2>
-            <p className="mt-1 text-sm text-ink-300">
-              This creates a new plan copy. The source plan stays unchanged and its exact payload is archived in the copy.
-            </p>
-          </div>
-          <button className="btn ml-auto" aria-label="Close conversion report" onClick={onClose}>✕</button>
-        </div>
-
-        {busy && <p className="mt-4 text-sm text-ink-300">Running lossless conversion report…</p>}
-        {error && <p className="mt-4 rounded border border-red-500 bg-red-950/50 p-3 text-sm text-red-200">{error}</p>}
-        {report && (
-          <div className="mt-4 space-y-3" data-conversion-report data-convertible={report.convertible ? "true" : "false"}>
-            <div className={`rounded border p-3 ${report.convertible ? "border-emerald-500 bg-emerald-950/35" : "border-amber-500 bg-amber-950/35"}`}>
-              <p className="font-semibold text-ink-100">
-                {report.convertible ? "Lossless conversion verified" : "Conversion needs attention"}
-              </p>
-              <p className="mt-1 text-xs text-ink-300">
-                {report.legacyMechanics} legacy sections · {report.legacyVariants} legacy choices · {report.varyingBeats} varying Beats · {report.movementBeats} movement Beats · {report.routes} compatibility Routes
-              </p>
-              <p className="mt-1 text-xs text-ink-300">
-                {report.comparisons} Route × Step render comparisons · {report.mismatches.length} mismatches · {report.compatibilityActorStates} pinned legacy actor-state overrides
-              </p>
-            </div>
-            {!!report.errors.length && (
-              <ul className="list-disc space-y-1 pl-5 text-sm text-red-200">
-                {report.errors.map((message, index) => <li key={`${index}:${message}`}>{message}</li>)}
-              </ul>
-            )}
-            {!!report.warnings.length && (
-              <ul className="list-disc space-y-1 pl-5 text-sm text-amber-200">
-                {report.warnings.map((message, index) => <li key={`${index}:${message}`}>{message}</li>)}
-              </ul>
-            )}
-            <p className="break-all text-[11px] text-ink-500">Source SHA-256: {checksum}</p>
-          </div>
-        )}
-
-        <div className="mt-5 flex justify-end gap-2">
-          <button className="btn" disabled={busy} onClick={() => void runReport()}>Run report again</button>
-          <button
-            className="btn btn-primary"
-            disabled={busy || !report?.convertible || !checksum}
-            onClick={async () => {
-              setBusy(true);
-              setError("");
-              try {
-                const result = await api.convertBeatVariantsToCopy(planId, report!.sourceRev, checksum);
-                navigate(`/p/${result.id}`);
-              } catch (reason) {
-                setError(reason instanceof Error ? reason.message : "Could not create the converted copy");
-                setBusy(false);
-              }
-            }}
-          >
-            {busy ? "Checking…" : "Convert to copy"}
-          </button>
-        </div>
-      </section>
-    </div>
   );
 }
 

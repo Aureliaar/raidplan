@@ -61,7 +61,6 @@ function summarize(op: Op | Op[]): string {
     case "gate_mech": return "Changed a cast reading";
     case "update_variant": return "Updated a reading";
     case "delete_variant": return "Deleted a reading";
-    case "enable_beat_variants": return "Enabled Beat Variants";
     case "add_beat_variant": return "Added a Beat Variant";
     case "update_beat_variant": return "Updated a Beat Variant";
     case "duplicate_beat_variant": return "Duplicated a Beat Variant";
