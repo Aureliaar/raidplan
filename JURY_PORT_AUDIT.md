@@ -2,7 +2,7 @@
 
 Source: archived payload of `plan_c2b9xZyc`, revision 583, SHA-256 `757422201d25b1f597866cc8853037faa254840a666798fbbf9e2829c6088dfc`.
 
-Status: migrated in place to revision 584 and deployed. The plan ID, owner and ACLs are unchanged; the exact rev-583 source payload remains owner-recoverable.
+Status: migrated in place and semantically repaired at revision 586. The plan ID, owner and ACLs are unchanged; the exact rev-583 source payload remains owner-recoverable.
 
 ## 2.6.J1 — Preflight finding
 
@@ -21,4 +21,7 @@ Status: migrated in place to revision 584 and deployed. The plan ID, owner and A
 ## 2.6.J3 — Deployment
 
 - Mechanic-wide Variants were retired in `4a930e9`.
-- Production version: `f6f35c82-ad63-447e-b889-7ac1e060b20d`.
+- The first compatibility port preserved playback but produced four separately varying Jury Beats, each with an empty opposite branch. That made every card inherit the same Light/Dark Route selection and obscured the intended Variant containers.
+- The rev-586 repair merges circles + healer stacks into the Light box and donuts + DPS stacks into the Dark box of one `Jury baits` Beat. Beam and tethers remain Shared.
+- The repair matched all 48 pre-repair Route × Step scenes, reduced four duplicate Routes to Light/Dark, and left one varying Beat with two Variants.
+- Persistent child Variant boxes landed in `20fd7d3` and deployed as Cloudflare version `2c6235a2-b557-4cfe-beee-7ec6ac669e51`.
