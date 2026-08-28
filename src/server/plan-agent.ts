@@ -66,6 +66,7 @@ function summarize(op: Op | Op[]): string {
     case "update_beat_variant": return "Updated a Beat Variant";
     case "duplicate_beat_variant": return "Duplicated a Beat Variant";
     case "delete_beat_variant": return "Deleted a Beat Variant";
+    case "collapse_beat_variants": return "Collapsed Beat Variants to Shared";
     case "resume_beat_variant_content": return "Resumed shared Beat content";
     case "update_beat_variant_content": return "Updated Beat Variant content";
     case "clear_beat_variant_movement": return "Cleared Beat Variant movement";

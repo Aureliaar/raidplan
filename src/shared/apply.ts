@@ -46,6 +46,7 @@ export type Op =
   | { op: "update_beat_variant"; beatId: string; variantId: string; patch: { name?: string } }
   | { op: "duplicate_beat_variant"; beatId: string; variantId: string; name?: string; createdBy?: string; createdByName?: string }
   | { op: "delete_beat_variant"; beatId: string; variantId: string }
+  | { op: "collapse_beat_variants"; beatId: string; variantId: string }
   | { op: "resume_beat_variant_content"; stepId: string; variantId: string }
   | { op: "update_beat_variant_content"; stepId: string; variantId: string; patch: { active?: boolean; color?: string | null } }
   | { op: "clear_beat_variant_movement"; stepId: string; variantId: string }
@@ -207,6 +208,8 @@ export function applyOp(plan: Plan, op: Op): OpResult {
     }
     case "delete_beat_variant":
       return { plan: ops.deleteBeatVariant(plan, op.beatId, op.variantId), value: [op.variantId] };
+    case "collapse_beat_variants":
+      return { plan: ops.collapseBeatVariants(plan, op.beatId, op.variantId), value: [op.variantId] };
     case "resume_beat_variant_content":
       return { plan: ops.resumeBeatVariantContent(plan, op.stepId, op.variantId) };
     case "update_beat_variant_content":

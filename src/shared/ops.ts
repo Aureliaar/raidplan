@@ -1339,6 +1339,130 @@ export function deleteBeatVariant(plan: Plan, beatId: string, variantId: string)
   return touch({ ...plan, mechs, steps });
 }
 
+/**
+ * End one Beat's branching by promoting the chosen Variant to Shared.
+ *
+ * Content is resolved independently at every Step in the Beat's span, then
+ * folded back into ordinary shared Parts with explicit per-Step overrides.
+ * Sparse actor movement is promoted into the actors' ordinary Step overrides.
+ * The operation is deliberately atomic: no intermediate state can expose a
+ * half-collapsed Beat to collaborators.
+ */
+export function collapseBeatVariants(plan: Plan, beatId: string, variantId: string): Plan {
+  if (plan.variantModel !== "beat") throw new Error("This plan does not use Beat Variants");
+  const beat = plan.mechs.find((candidate) => candidate.id === beatId);
+  if (!beat?.variants.some((variant) => variant.id === variantId))
+    throw new Error(`No Beat Variant ${variantId}`);
+  if (beat.variants.length < 2) throw new Error("This Beat is not varying");
+
+  const span = mechSpan(plan, beat);
+  const siblingIds = new Set(beat.variants.map((variant) => variant.id));
+  const sharedParts = plan.entities.filter(
+    (entity) => entity.mech === beatId && isBeatPart(entity)
+  );
+
+  type ResolvedPart = { stepId: string; part: Entity };
+  const appearances = new Map<string, ResolvedPart[]>();
+  const order: string[] = [];
+  for (const stepId of span) {
+    const step = plan.steps.find((candidate) => candidate.id === stepId)!;
+    const detached = step.beatVariantContent?.[variantId];
+    const parts = detached
+      ? detached.active
+        ? detached.parts.map((part) =>
+            detached.color && !part.color ? ({ ...part, color: detached.color } as Entity) : part
+          )
+        : []
+      : sharedParts
+          .filter((part) => entityInStep(part, stepId, plan))
+          .map((part) => EntitySchema.parse({ ...resolveEntity(part, stepId), overrides: {} }));
+    for (const part of parts) {
+      if (!appearances.has(part.id)) order.push(part.id);
+      const list = appearances.get(part.id) ?? [];
+      list.push({ stepId, part });
+      appearances.set(part.id, list);
+    }
+  }
+
+  const promoted = order.map((partId) => {
+    const states = appearances.get(partId)!;
+    const first = states[0].part;
+    const byStep = new Map(states.map((state) => [state.stepId, state.part]));
+    const overrides = Object.fromEntries(
+      span.map((stepId) => {
+        const state = byStep.get(stepId);
+        if (!state) return [stepId, { hidden: true }];
+        const {
+          id: _id,
+          type: _type,
+          mech: _mech,
+          steps: _steps,
+          overrides: _overrides,
+          ...properties
+        } = state;
+        return [stepId, properties];
+      })
+    );
+    return EntitySchema.parse({
+      ...first,
+      mech: beatId,
+      steps: "all",
+      overrides,
+    });
+  });
+
+  const movementByActor = new Map<string, Record<string, unknown>>();
+  for (const stepId of span) {
+    const step = plan.steps.find((candidate) => candidate.id === stepId)!;
+    for (const [actorId, movement] of Object.entries(
+      step.beatVariantMovement?.[variantId] ?? {}
+    )) {
+      const { compatibilityState, ...pose } = movement;
+      movementByActor.set(actorId, {
+        ...(movementByActor.get(actorId) ?? {}),
+        [stepId]: { ...compatibilityState, ...pose },
+      });
+    }
+  }
+
+  const entities = [
+    ...plan.entities
+      .filter((entity) => !(entity.mech === beatId && isBeatPart(entity)))
+      .map((entity) => {
+        const promotedMovement = movementByActor.get(entity.id);
+        return promotedMovement
+          ? EntitySchema.parse({
+              ...entity,
+              overrides: { ...entity.overrides, ...promotedMovement },
+            })
+          : entity;
+      }),
+    ...promoted,
+  ];
+  const steps = plan.steps.map((step) => {
+    const content = Object.fromEntries(
+      Object.entries(step.beatVariantContent ?? {}).filter(([id]) => !siblingIds.has(id))
+    );
+    const movement = Object.fromEntries(
+      Object.entries(step.beatVariantMovement ?? {}).filter(([id]) => !siblingIds.has(id))
+    );
+    return {
+      ...step,
+      beatVariantContent: Object.keys(content).length ? content : undefined,
+      beatVariantMovement: Object.keys(movement).length ? movement : undefined,
+    };
+  });
+  const mechs = plan.mechs.map((candidate) =>
+    candidate.id === beatId ? { ...candidate, variants: [] } : candidate
+  );
+  const variantRoutes = plan.variantRoutes?.map((route) => {
+    const selections = { ...route.selections };
+    delete selections[beatId];
+    return { ...route, selections };
+  });
+  return touch({ ...plan, entities, steps, mechs, variantRoutes });
+}
+
 /** Resume live shared Parts without touching sparse movement. */
 export function resumeBeatVariantContent(plan: Plan, stepId: string, variantId: string): Plan {
   beatAddress(plan, stepId, variantId);

@@ -227,6 +227,7 @@ const PublicOpSchema = z.discriminatedUnion("op", [
   strict({ op: z.literal("update_beat_variant"), beatId: id, variantId: id, patch: strict({ name: z.string().optional() }) }),
   strict({ op: z.literal("duplicate_beat_variant"), beatId: id, variantId: id, name: z.string().optional() }),
   strict({ op: z.literal("delete_beat_variant"), beatId: id, variantId: id }),
+  strict({ op: z.literal("collapse_beat_variants"), beatId: id, variantId: id }),
   strict({ op: z.literal("resume_beat_variant_content"), stepId: id, variantId: id }),
   strict({ op: z.literal("update_beat_variant_content"), stepId: id, variantId: id, patch: strict({ active: z.boolean().optional(), color: z.string().nullable().optional() }) }),
   strict({ op: z.literal("clear_beat_variant_movement"), stepId: id, variantId: id }),

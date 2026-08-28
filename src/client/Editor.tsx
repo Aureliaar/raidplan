@@ -2609,11 +2609,26 @@ function StepRail({
                 />
               </div>
             );
+          const stepVariantState = current
+            ? Object.fromEntries(
+                mech.variants.map((variant) => [
+                  variant.id,
+                  {
+                    content: !!current.beatVariantContent?.[variant.id],
+                    movement: Object.keys(current.beatVariantMovement?.[variant.id] ?? {}).length,
+                  },
+                ])
+              )
+            : {};
           return (
-            <button
+            <div
               key={mech.id}
+              style={box}
+              className={`relative min-h-0 ${active && mech.variants.length ? "z-20" : ""}`}
+            >
+            <button
               data-mech={mech.id}
-              style={{ ...box, borderTopColor: color, background: tint(color, active ? 0.4 : 0.18) }}
+              style={{ borderTopColor: color, background: tint(color, active ? 0.4 : 0.18) }}
               title={`${label} — snapshots in step ${lo + 1}, goes off in step ${hi + 1}${
                 gate ? `, only in ${variantLabel(mechanic, gate)}` : ""
               }. ${
@@ -2675,7 +2690,7 @@ function StepRail({
               onPointerUp={() => endDrag(mech, lo, hi, visible)}
               onPointerCancel={() => setDrag(null)}
               onDoubleClick={() => editable && setRenaming(mech.id)}
-              className={`flex touch-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight ${
+              className={`flex h-full w-full touch-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight ${
                 editable ? "cursor-grab active:cursor-grabbing" : ""
               } ${active ? "text-white" : "text-ink-200"} ${
                 drag?.id === mech.id ? "ring-1 ring-white/70" : ""
@@ -2698,6 +2713,60 @@ function StepRail({
                 boom
               </span>
             </button>
+            {active && mech.variants.length > 0 && (
+              <div
+                data-timeline-variants={mech.id}
+                className="absolute left-full top-0 ml-1 flex min-w-max flex-col gap-1 rounded-md border border-ink-600 bg-ink-900/95 p-1 shadow-xl"
+                aria-label={`${label} Variants`}
+              >
+                {mech.variants.map((variant) => {
+                  const state = stepVariantState[variant.id] ?? { content: false, movement: 0 };
+                  const previewing = beatPreview?.id === variant.id;
+                  const editing = editingBeatVariant === variant.id;
+                  const inherited = !state.content && state.movement === 0;
+                  return (
+                    <button
+                      key={variant.id}
+                      type="button"
+                      data-timeline-variant={variant.id}
+                      aria-pressed={editing}
+                      className={`flex w-28 items-center gap-1 rounded border px-1.5 py-1 text-left text-[10px] leading-tight ${
+                        editing
+                          ? "border-blue-300 bg-blue-500/25 text-white"
+                          : previewing
+                            ? "border-ink-400 bg-ink-700 text-white"
+                            : "border-ink-700 bg-ink-800 text-ink-200 hover:border-ink-500"
+                      }`}
+                      title={`${beatVariantLabel(mech, variant.id)} — ${
+                        inherited
+                          ? "inheriting Shared at this Step"
+                          : `${state.content ? "content detached" : "content inherited"}; ${
+                              state.movement ? `${state.movement} movement override${state.movement === 1 ? "" : "s"}` : "movement inherited"
+                            }`
+                      }. Click to preview and edit this Variant.`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setShown((choices) => ({ ...choices, [mech.id]: variant.id }));
+                        onFocusBeat(mech.id);
+                        onEditBeatVariant(variant.id);
+                      }}
+                    >
+                      <span
+                        aria-hidden
+                        className={`h-2 w-2 shrink-0 rounded-sm ${
+                          inherited ? "border border-emerald-300 bg-emerald-400/15" : "bg-amber-300"
+                        }`}
+                      />
+                      <span className="min-w-0 flex-1 truncate">{beatVariantLabel(mech, variant.id)}</span>
+                      <span className={inherited ? "text-emerald-300" : "text-amber-200"}>
+                        {inherited ? "Shared" : `${state.content ? "C" : ""}${state.movement ? `M${state.movement}` : ""}`}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            </div>
           );
         })}
       </div>
@@ -3230,6 +3299,34 @@ function MechBox({
                         Delete
                       </button>
                     </div>
+                    {open.variants.length >= 2 && (
+                      <button
+                        className="btn h-6 w-full py-0 text-[10px] text-amber-200"
+                        title="End branching for this Beat and make this Variant the new Shared content and movement"
+                        onClick={async () => {
+                          const label = beatVariantLabel(open, editing.id);
+                          if (
+                            !window.confirm(
+                              `Collapse all ${mechLabel(plan, open)} Variants? ${label} will become Shared at every Step. The other branches will be removed. This can be undone from history.`
+                            )
+                          )
+                            return;
+                          await run({
+                            op: "collapse_beat_variants",
+                            beatId: open.id,
+                            variantId: editing.id,
+                          });
+                          onEditVariant(null);
+                          onShow((current) => {
+                            const next = { ...current };
+                            delete next[open.id];
+                            return next;
+                          });
+                        }}
+                      >
+                        Collapse Variants to {beatVariantLabel(open, editing.id)}…
+                      </button>
+                    )}
                   </>
                 )}
               </div>

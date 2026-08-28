@@ -266,6 +266,38 @@ const copiedTether = copiedParts.find((part) => part.type === "tether");
 check(copiedParts.some((part) => part.id === copiedTether.from) && copiedParts.some((part) => part.id === copiedTether.to), "Duplicate rewrites private Part references");
 same(sourceStep.beatVariantMovement[copied], sourceStep.beatVariantMovement[oneA], "Duplicate copies sparse movement across Steps");
 
+// Deliberate exit: promote one complete branch to Shared and remove its boxes.
+await page.request.post(`${base}/api/plans/${planId}/share`, {
+  data: { userId: "local:collapse-editor", role: "editor" },
+});
+const editorPage = await (await browser.newContext()).newPage();
+await editorPage.goto(base + "/auth/dev?name=collapse-editor");
+const editorCollapse = await editorPage.request.post(`${base}/api/plans/${planId}/ops`, {
+  data: { ops: [{ op: "collapse_beat_variants", beatId: beatOne, variantId: oneA }] },
+});
+check(editorCollapse.status() === 403, "only the plan owner can collapse Variants", `HTTP ${editorCollapse.status()}`);
+await editorPage.context().close();
+await ops({ op: "collapse_beat_variants", beatId: beatOne, variantId: oneA });
+plan = await load();
+check(plan.mechs.find((beat) => beat.id === beatOne).variants.length === 0, "Collapse removes all sibling boxes");
+check(
+  plan.steps.every((candidate) =>
+    [oneA, oneB, copied].every(
+      (variantId) =>
+        !candidate.beatVariantContent?.[variantId] &&
+        !candidate.beatVariantMovement?.[variantId]
+    )
+  ),
+  "Collapse clears private Step domains"
+);
+check(
+  plan.variantRoutes.every((route) => !route.selections[beatOne]),
+  "Collapse removes the Beat from saved Routes"
+);
+const collapsed = await inspect({ [beatTwo]: twoB }, step2);
+check(collapsed.ids.includes("private_a") && collapsed.ids.includes("private_tether"), "chosen Variant Parts become Shared");
+same({ x: collapsed.ot.x, y: collapsed.ot.y }, { x: 909, y: 910 }, "chosen Variant movement becomes shared Step movement");
+
 // Legacy reader stays explicit and cannot be silently opted in.
 const legacyCreated = await api("/api/plans", {
   method: "POST",

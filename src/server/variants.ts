@@ -210,6 +210,8 @@ export function guardVariants(
     return op;
   });
   for (const op of stamped) validateOpContext(plan, op);
+  if (role !== "owner" && stamped.some((op) => op.op === "collapse_beat_variants"))
+    throw deny("Only the plan owner can collapse Variants into Shared content");
   if (role === "owner") return stamped;
   for (const op of stamped)
     for (const id of variantsTouched(plan, op)) {

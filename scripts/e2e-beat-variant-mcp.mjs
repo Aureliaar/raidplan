@@ -67,6 +67,7 @@ for (const name of [
   "list_beats",
   "add_beat_variant",
   "duplicate_beat_variant",
+  "collapse_beat_variants",
   "reset_beat_variant_step",
   "save_beat_variant_route",
   "inspect_legacy_variant_conversion",

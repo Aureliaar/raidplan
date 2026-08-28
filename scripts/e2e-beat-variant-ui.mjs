@@ -44,11 +44,14 @@ const [orbsA] = plan.mechs.find((beat) => beat.id === orbs).variants.map((varian
 
 await page.goto(base + "/p/" + id);
 await page.locator(`[data-mech="${explosion}"]`).click();
+const timelineBoxes = page.locator(`[data-timeline-variants="${explosion}"] [data-timeline-variant]`);
+check((await timelineBoxes.allTextContents()).join("|").includes("A") && (await timelineBoxes.allTextContents()).join("|").includes("B"), "selected Beat exposes boxes on timeline", (await timelineBoxes.allTextContents()).join("|") );
+check((await timelineBoxes.allTextContents()).every((text) => text.includes("Shared")), "fresh Variant boxes flag Shared inheritance");
 const tabs = page.locator(`[data-beat-variants="${explosion}"] [role=tab]`);
-check((await tabs.allTextContents()).join("|").includes("Beat|A|B"), "selected Beat exposes child Variant boxes", (await tabs.allTextContents()).join("|"));
+check((await tabs.allTextContents()).join("|").includes("Beat|A|B"), "inspector mirrors Beat destinations", (await tabs.allTextContents()).join("|"));
 
-await page.locator(`[data-beat-variant="${explosionA}"]`).click();
-check((await page.locator("[data-edit-destination]").innerText()).includes("Explosion › A"), "Variant tab changes explicit edit destination");
+await page.locator(`[data-timeline-variant="${explosionA}"]`).click();
+check((await page.locator("[data-edit-destination]").innerText()).includes("Explosion › A"), "timeline box changes explicit edit destination");
 const beforeEdit = await page.locator("[data-edit-destination]").innerText();
 await page.keyboard.press("d");
 check((await page.locator(`[data-preview-beat="${explosion}"]`).inputValue()) === explosionB, "A/D changes focused Beat preview");

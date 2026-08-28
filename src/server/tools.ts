@@ -990,6 +990,25 @@ export const TOOLS: ToolDef[] = [
   }),
 
   def({
+    name: "collapse_beat_variants",
+    description:
+      "Owner-only destructive exit from one Beat's branching. Promote the chosen Variant's content and movement at every Step to Shared, then remove all sibling Variant boxes.",
+    schema: { plan_id: z.string(), beat: z.string(), variant: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        requireBeatModel(plan);
+        const beatId = mechIdOf(plan, a.beat);
+        return {
+          op: "collapse_beat_variants",
+          beatId,
+          variantId: beatVariantIdOf(plan, beatId, a.variant),
+        };
+      });
+      return "Beat Variants collapsed; the chosen branch is now Shared.";
+    },
+  }),
+
+  def({
     name: "reset_beat_variant_step",
     description:
       "Resume shared Beat content, clear sparse actor movement, or reset both independent domains for one Beat Variant at one Step.",
