@@ -2714,6 +2714,30 @@ function ShareButton({
   const [userId, setUserId] = useState("");
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
+  const shareRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (!shareRef.current?.contains(event.target as Node)) setOpen(false);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
   if (!canShare) return null;
 
   const shareLink = new URL(`/p/${encodeURIComponent(planId)}`, window.location.origin).href;
@@ -2737,7 +2761,7 @@ function ShareButton({
   }
 
   return (
-    <div className="relative flex">
+    <div ref={shareRef} className="relative flex">
       <button className="btn rounded-r-none" disabled={busy} onClick={() => void copyViewOnlyLink()}>
         {busy ? "Sharing…" : "Share"}
       </button>
@@ -2754,9 +2778,21 @@ function ShareButton({
         ▾
       </button>
       {open && (
-        <div className="panel absolute right-0 z-10 mt-1 w-[280px] rounded p-3">
+        <div
+          className="panel absolute right-0 z-10 mt-1 w-[280px] rounded p-3"
+          role="dialog"
+          aria-label="Sharing options"
+        >
+          <button
+            className="btn absolute right-2 top-2 px-2"
+            aria-label="Close sharing options"
+            title="Close"
+            onClick={() => setOpen(false)}
+          >
+            ×
+          </button>
           {feedback && <p className="mb-2 text-xs text-ink-400">{feedback}</p>}
-          <label className="mb-2 flex items-center gap-2 text-sm">
+          <label className="mb-2 mr-8 flex items-center gap-2 text-sm">
             <input
               type="checkbox"
               checked={isPublic}
