@@ -176,6 +176,13 @@ if (
 else console.log("four-way symmetry moves all four supports");
 
 // Exercise persistent symmetric creation as well: drop one circle.
+// The contextual rail shows the selected player's inspector after a drag;
+// close it to return to the palette before starting a creation gesture.
+const inspector = page.locator('[data-panel="inspector"]');
+if (await inspector.count()) {
+  await inspector.locator("button", { hasText: "✕" }).click();
+  await page.locator('[data-panel="palette"]').waitFor();
+}
 const target = { x: box.width / 2 - 190 * scale, y: box.height / 2 - 140 * scale };
 const circleChip = page.getByText("Circle", { exact: true });
 const chipBox = await circleChip.boundingBox();
