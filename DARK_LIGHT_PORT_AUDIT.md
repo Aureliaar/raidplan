@@ -1,12 +1,12 @@
 # Aerelion Dark & Light — Beat Variant Port Audit
 
-Source: immutable export of `plan_mMW41ylx`, revision 3018, checksum `91afbea639a7ca185c52614de577bf14d603c255e8e12be5e5cda490ba4aa72b`.
+Source: archived payload of `plan_mMW41ylx`, revision 3018, SHA-256 `c8596852ea01f748a8e961a1984b2d3c02bdb89bc9d00c96de283939179ea0f6`.
 
-Status: exact compatibility conversion implemented and deployed; source plan remains unmodified. Clean semantic regrouping and linked Variant Groups remain future authoring work.
+Status: migrated in place to revision 3019 and deployed. The plan ID, owner and ACLs are unchanged; the exact rev-3018 source payload remains owner-recoverable. Clean semantic regrouping and linked Variant Groups remain future authoring work.
 
 ## 2.6.P1 — Verdict
 
-- An exact, reversible A/B compatibility port can be fully automatic.
+- The exact, reversible A/B compatibility port completed successfully.
 - A clean semantic port is high-confidence for this plan but needs confirmation of grouping and movement ownership.
 - No duplicate IDs, dangling anchors/tethers, or irrecoverable source data were found.
 - This is a strong migration fixture because it exercises shared Beats, gated Beat pairs, anchors, tethers, movement, ownership, and legacy override pollution.
@@ -109,16 +109,14 @@ This coordinates related Beats without restoring Mechanic-wide Variant ownership
 - Legacy B is owned by Aerelion.
 - Conversion preserves authorship as attribution. Beat Variants use normal plan editor permissions; the plan owner retains destructive authority.
 
-## 2.6.P9 — Port sequence
+## 2.6.P9 — Completed port
 
-1. Implement the additive Beat-Variant model and compatibility reader.
-2. Convert into a new plan/copy; never mutate the only source first.
-3. Produce Routes matching legacy A and B.
-4. Render-compare every Step in legacy A/B against the corresponding new Route.
-5. Preserve the original plan/history or archival payload for recovery.
-6. Present the clean nine-Beat grouping, three movement ranges, empty Beat, ownership mapping, and alignment drift for author confirmation.
-7. Only then make the converted plan the working copy.
+1. Archived the exact rev-3018 payload and checksum.
+2. Produced Routes matching legacy A and B.
+3. Compared all 38 Route × Step states with zero mismatches.
+4. Replaced the document in place as rev 3019, retaining ID, owner and ACLs.
+5. Verified 26 Beat Variants, 2 Routes, zero Mechanic Variants and zero legacy `variantScenes` in production.
 
 ## 2.6.P10 — Repository prerequisite
 
-Resolved. Implementation was based on deployed `defc744`, landed on `origin/master` through `304adae`, and deployed as Cloudflare version `0e8749c1-c4ee-49a4-8b6e-5140ec0dd8aa`. Tracker documentation remains local and separate from the code-only deployment history.
+Resolved. Mechanic-wide Variants were retired in `4a930e9`, deployed as Cloudflare version `f6f35c82-ad63-447e-b889-7ac1e060b20d`. Tracker documentation remains local and separate from the code deployment history.

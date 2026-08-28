@@ -106,14 +106,15 @@ Canonical tracker for the Aerelion authoring-feedback pass.
 ### 2.6 — Scope variants to a Beat
 
 - Status: done
-- Implementation baseline: `defc744` on `origin/master` (minor-fixes release plus contextual palette regression update).
+- Implementation baseline: `4a930e9` on `origin/master`.
 - Issue: Variants currently belong to an entire timeline sequence, but authors need alternatives for one timed item within that sequence.
 - Agreed direction: A Variant belongs to one Beat, not to the whole Mechanic. Use one timeline card per Beat, independent per-Beat preview choices, contextual authoring in the selected Beat inspector, and separate per-Step copy-on-write domains for Beat content and sparse player movement. See `BEAT_VARIANTS_UX_PLAN.md`.
 - Resolution: Beat-local mutually exclusive boxes are exposed contextually from the selected timeline Beat. Fresh boxes visibly follow Shared state; content and movement detach independently on first edit. A/D changes preview only. Routes, deterministic conflict handling, deep duplication, independent resets, and an owner-only “Collapse Variants” path are included.
-- Port fixture: Aerelion's Dark & Light rev 3018 is pinned at checksum `91afbea639a7ca185c52614de577bf14d603c255e8e12be5e5cda490ba4aa72b` and converts losslessly into a new copy with compatibility Routes and an immutable source archive. See `DARK_LIGHT_PORT_AUDIT.md`.
+- Production cutover: Mechanic-wide Variants are retired. The only two plans retained as valuable were migrated in place, preserving their IDs, owners and ACLs: Aureon's Jury (`plan_c2b9xZyc`) rev 583 → 584 with 10 Beat Variants and 4 Routes, and Aerelion's Dark & Light (`plan_mMW41ylx`) rev 3018 → 3019 with 26 Beat Variants and 2 Routes. Both have zero Mechanic Variants and zero legacy `variantScenes`. Exact source archives remain owner-recoverable. See `JURY_PORT_AUDIT.md` and `DARK_LIGHT_PORT_AUDIT.md`.
+- Retirement behavior: Other old documents hydrate directly into the Beat model with their shared canonical state; old Mechanic Variant branches are discarded. The legacy UI, public operations, MCP tools, conversion workflow and compatibility reader are removed.
 - Open question: Optional linked Variant selection across coordinated Beats, and later authoring support for non-player actor movement.
-- Verification: `npm run check`; production build; all six legacy + Beat Variant regression suites; contextual panels, history, keyboard, Steps, Mechanics, Beats, and access E2Es; manual 1440×1000 timeline paint check; live asset verification.
-- Commit/deployment: `304adae` (`Expose Beat Variant boxes on the timeline`) on top of `3634201`, `06136ef`, and `e39a6e1`; production version `0e8749c1-c4ee-49a4-8b6e-5140ec0dd8aa`.
+- Verification: `npm run check`; production build; all three Beat Variant regression suites; exhaustive migration comparisons (Jury 48/48 Route × Step, Dark & Light 38/38); live asset and public-plan verification.
+- Commit/deployment: `4a930e9` (`Retire Mechanic-wide Variants`) on top of `304adae`; production version `f6f35c82-ad63-447e-b889-7ac1e060b20d`.
 
 ## 3 — Timeline, lifetimes, and structure
 

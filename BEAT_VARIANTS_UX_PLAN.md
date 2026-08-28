@@ -216,11 +216,9 @@ Important invariants:
 
 Persistence fields may temporarily retain current internal names while UI and TypeScript terminology move to Beat. A destructive schema rename should be a later migration.
 
-## 2.6.11 — Legacy-plan migration
+## 2.6.11 — Completed production cutover
 
-Old Mechanic-wide branches cannot be safely guessed into one Beat.
-
-Lossless conversion:
+Mechanic-wide Variants are retired rather than maintained as a second product path. Two valuable production plans were converted in place after exhaustive visual-state comparison:
 
 - Convert ungated old timed items into shared/non-varying Beats.
 - Give each gated/differing old item local Beat Variants representing its old branch content.
@@ -228,17 +226,22 @@ Lossless conversion:
 - Create Routes corresponding to old whole-Mechanic A/B paths so legacy playback remains exact.
 - Preserve the formerly selected/first old path as the default Route.
 - Compare every old branch at every Step against its converted Route before committing migration.
-- Refuse conversion with a clear report if content cannot be attributed safely; never guess and discard it.
+- Refuse the one-off migration if content cannot be attributed safely; never guess and discard it.
 
-Rollout should initially use a compatibility reader and an explicit, undoable `Convert Variants to Beats` action. Do not silently rewrite all existing plans on load.
+Completed results:
+
+- Aureon's Jury (`plan_c2b9xZyc`): rev 583 → 584, 48/48 Route × Step comparisons, 10 Beat Variants, 4 Routes. Four leaked Dark & Light tethers were isolated into a one-Step `Tethers` Beat before conversion.
+- Aerelion's Dark & Light (`plan_mMW41ylx`): rev 3018 → 3019, 38/38 Route × Step comparisons, 26 Beat Variants, 2 Routes.
+- Both retain exact owner-only source archives and their original plan IDs, owners and ACLs.
+- Every other old document is flattened to its shared canonical state at hydration. There is no legacy reader, authoring UI, public operation, MCP tool or conversion workflow.
 
 ## 2.6.12 — Implementation phases
 
-### Phase A — Terminology and additive model
+### Phase A — Terminology and additive model (complete)
 
 - Expose Beat terminology and internal aliases.
-- Add Beat-local Variant structures and resolver behind a feature flag.
-- Keep legacy plans on the legacy reader.
+- Add Beat-local Variant structures and resolver.
+- Retire the legacy reader after the two production ports.
 
 Acceptance:
 
@@ -246,7 +249,7 @@ Acceptance:
 - No visible UI calls a Beat a Mechanic.
 - One Mechanic can contain shared and independently varying Beats.
 
-### Phase B — Timeline, inspector, and preview
+### Phase B — Timeline, inspector, and preview (complete)
 
 - Replace whole-Mechanic Variant columns with one-card-per-Beat timeline.
 - Add inspector tabs, explicit preview/edit separation, breadcrumb, and independent preview strip.
@@ -257,7 +260,7 @@ Acceptance:
 - Timeline width does not grow when a Variant is added.
 - The author can always identify the destination of the next edit.
 
-### Phase C — Copy-on-write and movement
+### Phase C — Copy-on-write and movement (complete)
 
 - Implement separate per-Step content and sparse movement COW.
 - Add contextual statuses, reset actions, first-drag toast, conflict detection, and undo.
@@ -270,15 +273,15 @@ Acceptance:
 - Content and movement can be reset independently.
 - No same-player movement collision is silent.
 
-### Phase D — Migration and playback polish
+### Phase D — Migration and playback polish (cutover complete; polish ongoing)
 
-- Add lossless explicit conversion and legacy Routes.
+- Perform the two audited in-place conversions and remove the temporary cutover path.
 - Add keyboard/accessibility behavior, optional named Routes, bulk reset, and guided cleanup.
 
 Acceptance:
 
 - Every converted old Route visually matches its old branch at every Step.
-- Migration is idempotent and undoable.
+- Each migrated plan retains its exact source archive for owner recovery.
 - No old Part, pose, ownership record, or branch is discarded.
 - Viewer playback and author preview use the same Beat selection map.
 
