@@ -332,6 +332,32 @@ export const ENTITY_TYPES: EntityType[] = [
   "icon",
 ];
 
+/**
+ * One Beat Variant's detached content for one Step.
+ *
+ * This deliberately contains only Parts owned by the Beat. Actors, waymarks,
+ * Step structure and the Beat's timing stay in their shared document layers.
+ * Absence from `Step.beatVariantContent` means the Variant still follows the
+ * live shared Parts for that Beat at that Step.
+ */
+export const BeatVariantContentSchema = z.object({
+  /** A detached Variant may say that this Beat does not happen in this Step. */
+  active: z.boolean().default(true),
+  /** Beat colour/style at the copy-on-write boundary. */
+  color: z.string().optional(),
+  /** Ordered Parts for this Beat only. */
+  parts: z.array(EntitySchema).default([]),
+});
+export type BeatVariantContent = z.infer<typeof BeatVariantContentSchema>;
+
+/** A sparse absolute actor pose owned by one Beat Variant at one Step. */
+export const BeatVariantPoseSchema = z.object({
+  x: z.number(),
+  y: z.number(),
+  rotation: z.number(),
+});
+export type BeatVariantPose = z.infer<typeof BeatVariantPoseSchema>;
+
 export const StepSchema = z.object({
   id: z.string(),
   name: z.string().default(""),
@@ -351,6 +377,16 @@ export const StepSchema = z.object({
    * copy-on-write snapshot. Waymarks remain plan-wide and are not stored here.
    */
   variantScenes: z.record(z.string(), z.array(EntitySchema)).optional(),
+
+  /**
+   * Additive Beat-scoped copy-on-write domains. Keys are globally unique
+   * Beat Variant ids. These fields are read only when `Plan.variantModel` is
+   * `beat`; legacy Mechanic-wide scenes remain untouched beside them.
+   */
+  beatVariantContent: z.record(z.string(), BeatVariantContentSchema).optional(),
+  beatVariantMovement: z
+    .record(z.string(), z.record(z.string(), BeatVariantPoseSchema))
+    .optional(),
 
 });
 export type Step = z.infer<typeof StepSchema>;
@@ -373,8 +409,23 @@ export const VariantSchema = z.object({
   ownerId: z.string().optional(),
   /** Their name as it read when they claimed it, so the pill can say whose it is. */
   ownerName: z.string().optional(),
+  /** Beat Variant attribution only; normal plan editor permissions govern it. */
+  createdBy: z.string().optional(),
+  createdByName: z.string().optional(),
 });
 export type Variant = z.infer<typeof VariantSchema>;
+
+/**
+ * A non-owning preset of mutually exclusive Beat choices. Compatibility
+ * Routes are produced by legacy conversion; Routes never own Parts or poses.
+ */
+export const BeatVariantRouteSchema = z.object({
+  id: z.string(),
+  name: z.string().default("Route"),
+  selections: z.record(z.string(), z.string()).default({}),
+  compatibility: z.boolean().default(false),
+});
+export type BeatVariantRoute = z.infer<typeof BeatVariantRouteSchema>;
 
 /**
  * A section of the encounter — "Witch Hunt", "Electrope Edge 1" — owning an
@@ -456,6 +507,11 @@ export const MechSchema = z.object({
    * — and, quietly, where the party stands.
    */
   variant: z.string().optional(),
+  /**
+   * Mutually exclusive child boxes of this timed Beat. Kept on persisted
+   * `mech` for now so the wire format can evolve additively.
+   */
+  variants: z.array(VariantSchema).default([]),
   /** Set when this cast is a debuff deal: pools of statuses on role groups. */
   debuffs: MechDebuffsSchema.nullish(),
 });
@@ -536,6 +592,15 @@ export const PlanSchema = z.object({
   mechanics: z.array(MechanicSchema).default([]),
   /** The casts, each spanning a run of steps. */
   mechs: z.array(MechSchema).default([]),
+  /**
+   * Explicit feature/version gate. Missing means the legacy Mechanic-wide
+   * Variant reader; `beat` opts the document into Beat-owned Variants.
+   */
+  variantModel: z.literal("beat").optional(),
+  /** Document-owned presets; browser preview overrides remain session-only. */
+  variantRoutes: z.array(BeatVariantRouteSchema).optional(),
+  /** Route used when a viewer has not made local preview choices. */
+  defaultVariantRoute: z.string().optional(),
   /** Draw order: later entities render on top. */
   entities: z.array(EntitySchema).default([]),
   ownerId: z.string().default(""),
@@ -607,10 +672,12 @@ export interface User {
  * socket rather than from an op.
  */
 export function hydratePlan(plan: Plan): Plan {
-  const filled =
-    plan.mechs && plan.mechanics
-      ? plan
-      : { ...plan, mechs: plan.mechs ?? [], mechanics: plan.mechanics ?? [] };
+  const filled = {
+    ...plan,
+    mechs: (plan.mechs ?? []).map((beat) => ({ ...beat, variants: beat.variants ?? [] })),
+    mechanics: plan.mechanics ?? [],
+    ...(plan.variantModel === "beat" ? { variantRoutes: plan.variantRoutes ?? [] } : {}),
+  };
   let hydrated = groupLooseSteps(filled);
 
   // Before variantScenes existed, the presence of any variant override was
@@ -720,6 +787,7 @@ export function poseStep(key: string): string {
 
 /** Has this reading stopped following the shared entity state in this step? */
 export function variantStepEdited(plan: Plan, stepId: string, variantId: string): boolean {
+  if (plan.variantModel === "beat") return beatVariantContentEdited(plan, stepId, variantId);
   const scenes = plan.steps.find((step) => step.id === stepId)?.variantScenes;
   return !!scenes && Object.prototype.hasOwnProperty.call(scenes, variantId);
 }
@@ -827,6 +895,220 @@ export function authoredEntitiesForStep(
       return !mech?.variant || mech.variant === variantId;
     })
     .map((entity) => resolveEntity(entity, stepId, variantId));
+}
+
+/** Actors and waymarks never enter a Beat content snapshot. */
+export function isBeatPart(entity: Entity): boolean {
+  return entity.type !== "marker" && entity.type !== "player" && entity.type !== "enemy";
+}
+
+/** The owning Beat and local Variant for a globally unique Variant id. */
+export function beatVariantOwner(
+  plan: Plan,
+  variantId: string,
+): { beat: Mech; variant: Variant } | undefined {
+  for (const beat of plan.mechs) {
+    const variant = beat.variants.find((candidate) => candidate.id === variantId);
+    if (variant) return { beat, variant };
+  }
+  return undefined;
+}
+
+/** What a Beat-local Variant is called: its name or stable A/B/C fallback. */
+export function beatVariantLabel(beat: Mech, variantId: string): string {
+  const index = beat.variants.findIndex((candidate) => candidate.id === variantId);
+  if (index < 0) return "?";
+  return beat.variants[index].name || String.fromCharCode(65 + index);
+}
+
+/** Has this Beat Variant detached its content domain at this Step? */
+export function beatVariantContentEdited(plan: Plan, stepId: string, variantId: string): boolean {
+  const content = plan.steps.find((step) => step.id === stepId)?.beatVariantContent;
+  return !!content && Object.prototype.hasOwnProperty.call(content, variantId);
+}
+
+/** Sparse movement owned by this Beat Variant at this Step. */
+export function beatVariantMovement(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+): Record<string, BeatVariantPose> {
+  return plan.steps.find((step) => step.id === stepId)?.beatVariantMovement?.[variantId] ?? {};
+}
+
+/**
+ * Copy-on-write boundary for one Beat's content domain only.
+ *
+ * The snapshot is deliberately restricted to Parts assigned to this Beat.
+ * Moving an actor never calls this function, and materializing it never copies
+ * actors or their Step poses.
+ */
+export function materializeBeatVariantContent(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+): Plan {
+  if (plan.variantModel !== "beat") throw new Error("This plan does not use Beat Variants");
+  const step = plan.steps.find((candidate) => candidate.id === stepId);
+  if (!step) throw new Error(`No step ${stepId}`);
+  const owner = beatVariantOwner(plan, variantId);
+  if (!owner) throw new Error(`No Beat Variant ${variantId}`);
+  if (!mechSpan(plan, owner.beat).includes(stepId))
+    throw new Error(`Beat Variant ${variantId} is not active in step ${stepId}`);
+  if (beatVariantContentEdited(plan, stepId, variantId)) return plan;
+
+  const parts = plan.entities
+    .filter((entity) => entity.mech === owner.beat.id && isBeatPart(entity) && entityInStep(entity, stepId, plan))
+    .map((entity) => EntitySchema.parse({ ...resolveEntity(entity, stepId), overrides: {} }));
+  const content: BeatVariantContent = {
+    active: true,
+    ...(owner.beat.color ? { color: owner.beat.color } : {}),
+    parts,
+  };
+  return {
+    ...plan,
+    steps: plan.steps.map((candidate) =>
+      candidate.id === stepId
+        ? {
+            ...candidate,
+            beatVariantContent: { ...candidate.beatVariantContent, [variantId]: content },
+          }
+        : candidate
+    ),
+  };
+}
+
+export interface BeatMovementConflict {
+  actorId: string;
+  beatIds: string[];
+  variantIds: string[];
+}
+
+export interface BeatVariantComposition {
+  entities: Entity[];
+  conflicts: BeatMovementConflict[];
+}
+
+/** The document-owned default beneath this browser's session-only choices. */
+export function defaultBeatVariantSelections(plan: Plan): Record<string, string> {
+  const route = plan.variantRoutes?.find((candidate) => candidate.id === plan.defaultVariantRoute);
+  return route ? route.selections : {};
+}
+
+/** Beat Variants active at one Step, each with exactly one selected sibling. */
+export function activeBeatVariants(
+  plan: Plan,
+  stepId: string,
+  shown: Record<string, string> = {},
+): { beat: Mech; variant: Variant }[] {
+  if (plan.variantModel !== "beat") return [];
+  const selected = { ...defaultBeatVariantSelections(plan), ...shown };
+  return plan.mechs.flatMap((beat) => {
+    if (beat.variants.length < 2 || !mechSpan(plan, beat).includes(stepId)) return [];
+    const requested = selected[beat.id];
+    const variant = beat.variants.find((candidate) => candidate.id === requested) ?? beat.variants[0];
+    return variant ? [{ beat, variant }] : [];
+  });
+}
+
+/**
+ * Compose independent Beat content and sparse movement domains before anchors
+ * are solved. If two active Beats move the same actor, shared movement is the
+ * safe preview; while authoring one of those Beats, its pose is shown instead.
+ * Either result carries an explicit conflict record for the UI.
+ */
+export function composeBeatVariantEntities(
+  plan: Plan,
+  stepId: string | undefined,
+  shown: Record<string, string> = {},
+): BeatVariantComposition {
+  const base = authoredEntitiesForStep(plan, stepId);
+  if (plan.variantModel !== "beat" || !stepId)
+    return { entities: base, conflicts: [] };
+
+  const active = activeBeatVariants(plan, stepId, shown);
+  const detachedByBeat = new Map<string, BeatVariantContent>();
+  for (const { beat, variant } of active) {
+    const content = plan.steps.find((step) => step.id === stepId)?.beatVariantContent?.[variant.id];
+    if (content) detachedByBeat.set(beat.id, content);
+  }
+
+  // Shared scene layers (actors, waymarks and untimed Parts) keep their order.
+  // Timed Parts then follow stable Beat order, with each Beat preserving its
+  // own authored Part order. Variant count can therefore never create hidden
+  // cross-Beat last-write ordering.
+  const knownBeats = new Set(plan.mechs.map((beat) => beat.id));
+  const entities: Entity[] = base.filter(
+    (entity) => !isBeatPart(entity) || !entity.mech || !knownBeats.has(entity.mech)
+  );
+  for (const beat of plan.mechs) {
+    if (!mechSpan(plan, beat).includes(stepId)) continue;
+    const content = detachedByBeat.get(beat.id);
+    const parts = content
+      ? content.active
+        ? content.parts
+        : []
+      : base.filter((entity) => entity.mech === beat.id && isBeatPart(entity));
+    entities.push(
+      ...parts.map((part) =>
+        content?.color && !part.color ? ({ ...part, color: content.color } as Entity) : part
+      )
+    );
+  }
+
+  const movesByActor = new Map<
+    string,
+    { beatId: string; variantId: string; pose: BeatVariantPose }[]
+  >();
+  for (const { beat, variant } of active) {
+    for (const [actorId, pose] of Object.entries(beatVariantMovement(plan, stepId, variant.id))) {
+      const list = movesByActor.get(actorId) ?? [];
+      list.push({ beatId: beat.id, variantId: variant.id, pose });
+      movesByActor.set(actorId, list);
+    }
+  }
+
+  const conflicts: BeatMovementConflict[] = [];
+  const composed = entities.map((entity) => {
+    const moves = movesByActor.get(entity.id);
+    if (!moves?.length) return entity;
+    if (moves.length === 1) return { ...entity, ...moves[0].pose } as Entity;
+    conflicts.push({
+      actorId: entity.id,
+      beatIds: moves.map((move) => move.beatId),
+      variantIds: moves.map((move) => move.variantId),
+    });
+    // Ambiguous movement never wins by order or editor focus. Shared Step pose
+    // is the deterministic safe preview until the author resolves the clash.
+    return entity;
+  });
+  return { entities: composed, conflicts };
+}
+
+/** Validate a complete saved Route without mutating preview state. */
+export function validateBeatVariantSelections(
+  plan: Plan,
+  selections: Record<string, string>,
+): string[] {
+  const errors: string[] = [];
+  if (plan.variantModel !== "beat") return ["This plan does not use Beat Variants"];
+  const varying = plan.mechs.filter((beat) => beat.variants.length >= 2);
+  if (!varying.length) return ["This plan has no varying Beats"];
+  for (const beat of varying) {
+    const selected = selections[beat.id];
+    if (!selected) errors.push(`Route is missing Beat ${mechLabel(plan, beat)}`);
+    else if (!beat.variants.some((variant) => variant.id === selected))
+      errors.push(`Route selects a Variant that does not belong to Beat ${mechLabel(plan, beat)}`);
+  }
+  for (const beatId of Object.keys(selections))
+    if (!varying.some((beat) => beat.id === beatId)) errors.push(`Route contains unknown Beat ${beatId}`);
+  if (errors.length) return errors;
+  for (const step of plan.steps) {
+    const conflicts = composeBeatVariantEntities(plan, step.id, selections).conflicts;
+    for (const conflict of conflicts)
+      errors.push(`Movement conflict for ${conflict.actorId} at ${step.name || step.id}`);
+  }
+  return errors;
 }
 
 /**
@@ -1017,7 +1299,7 @@ export function entitiesForStep(
   plan: Plan,
   stepId: string | undefined,
   live?: Map<string, { x: number; y: number }>,
-  /** Which reading of each mechanic is being played, by mechanic id. */
+  /** Legacy Mechanic or Beat Variant selections, keyed by their owner id. */
   shown?: Record<string, string>,
 ): Entity[] {
   /**
@@ -1034,7 +1316,9 @@ export function entitiesForStep(
   };
   /** Every entity as it stands in one step, before any binding is solved. */
   const posesIn = (sid: string | undefined) =>
-    authoredEntitiesForStep(plan, sid, variantOf(sid))
+    (plan.variantModel === "beat"
+      ? composeBeatVariantEntities(plan, sid, shown).entities
+      : authoredEntitiesForStep(plan, sid, variantOf(sid)))
       .map((base) => {
         // A drag in progress: the canvas hands us where the thing is *right
         // now*, before any of it has been committed, so bindings solve against

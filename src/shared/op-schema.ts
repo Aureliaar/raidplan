@@ -4,6 +4,8 @@ import {
   AnchorSchema,
   ARENA_SHAPES,
   authoredEntitiesForStep,
+  beatVariantOwner,
+  composeBeatVariantEntities,
   DEBUFF_GROUPS,
   DEBUFF_MODES,
   GRID_TYPES,
@@ -197,6 +199,7 @@ const encounterSetup = strict({
 });
 
 const context = { stepId: id.optional(), variant: id.optional() };
+const beatSelections = z.record(id, id);
 const PublicOpSchema = z.discriminatedUnion("op", [
   strict({ op: z.literal("set_meta"), name: z.string().optional(), description: z.string().optional(), encounter: z.string().optional() }),
   strict({ op: z.literal("set_arena"), patch: arenaPatch }),
@@ -219,6 +222,19 @@ const PublicOpSchema = z.discriminatedUnion("op", [
   strict({ op: z.literal("gate_mech"), mechId: id, variant: id.optional() }),
   strict({ op: z.literal("update_variant"), mechanicId: id, variantId: id, patch: strict({ name: z.string().optional() }) }),
   strict({ op: z.literal("delete_variant"), mechanicId: id, variantId: id }),
+  strict({ op: z.literal("enable_beat_variants") }),
+  strict({ op: z.literal("add_beat_variant"), beatId: id, name: z.string().optional() }),
+  strict({ op: z.literal("update_beat_variant"), beatId: id, variantId: id, patch: strict({ name: z.string().optional() }) }),
+  strict({ op: z.literal("duplicate_beat_variant"), beatId: id, variantId: id, name: z.string().optional() }),
+  strict({ op: z.literal("delete_beat_variant"), beatId: id, variantId: id }),
+  strict({ op: z.literal("resume_beat_variant_content"), stepId: id, variantId: id }),
+  strict({ op: z.literal("update_beat_variant_content"), stepId: id, variantId: id, patch: strict({ active: z.boolean().optional(), color: z.string().nullable().optional() }) }),
+  strict({ op: z.literal("clear_beat_variant_movement"), stepId: id, variantId: id }),
+  strict({ op: z.literal("reset_beat_variant_step"), stepId: id, variantId: id }),
+  strict({ op: z.literal("add_beat_variant_route"), name: z.string().optional(), selections: beatSelections, compatibility: z.boolean().optional() }),
+  strict({ op: z.literal("update_beat_variant_route"), routeId: id, patch: strict({ name: z.string().optional(), selections: beatSelections.optional() }) }),
+  strict({ op: z.literal("delete_beat_variant_route"), routeId: id }),
+  strict({ op: z.literal("set_default_beat_variant_route"), routeId: id.optional() }),
   strict({ op: z.literal("add_mech"), name: z.string().optional(), snap: id.optional(), boom: id.optional(), color: z.string().optional() }),
   strict({ op: z.literal("update_mech"), mechId: id, patch: strict({ name: z.string().optional(), snap: id.optional(), boom: id.optional(), color: z.string().optional(), debuffs: debuffs.optional() }) }),
   strict({ op: z.literal("delete_mech"), mechId: id, keepEntities: z.boolean().optional() }),
@@ -243,6 +259,16 @@ export function parsePublicOpsRequest(value: unknown): { ops: Op[]; sessionId?: 
 }
 
 function addressedEntity(plan: Plan, op: Extract<Op, { op: "update_entity" }>): Entity | undefined {
+  if (plan.variantModel === "beat" && op.stepId && op.variant) {
+    const owner = beatVariantOwner(plan, op.variant);
+    return owner
+      ? composeBeatVariantEntities(
+          plan,
+          op.stepId,
+          { [owner.beat.id]: op.variant }
+        ).entities.find((entity) => entity.id === op.id)
+      : undefined;
+  }
   return op.stepId && op.variant
     ? authoredEntitiesForStep(plan, op.stepId, op.variant).find((entity) => entity.id === op.id)
     : plan.entities.find((entity) => entity.id === op.id);
@@ -252,6 +278,8 @@ function entityIdExists(plan: Plan, entityId: string): boolean {
   return plan.entities.some((entity) => entity.id === entityId) || plan.steps.some((step) =>
     Object.values(step.variantScenes ?? {}).some((scene) =>
       scene.some((entity) => entity.id === entityId)
+    ) || Object.values(step.beatVariantContent ?? {}).some((content) =>
+      content.parts.some((entity) => entity.id === entityId)
     )
   );
 }

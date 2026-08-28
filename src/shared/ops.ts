@@ -12,6 +12,9 @@ import {
   type PropBag,
   type EncounterSetup,
   type MarkerId,
+  type BeatVariantContent,
+  type BeatVariantPose,
+  type BeatVariantRoute,
   MARKER_IDS,
   ArenaSchema,
   EncounterSetupSchema,
@@ -26,6 +29,12 @@ import {
   mechanicLabel,
   mechanicSteps,
   materializeVariantStep,
+  materializeBeatVariantContent,
+  beatVariantMovement,
+  beatVariantLabel,
+  beatVariantOwner,
+  isBeatPart,
+  validateBeatVariantSelections,
   poseKey,
   poseStep,
   resolveEntity,
@@ -165,6 +174,96 @@ function sceneForEdit(plan: Plan, stepId: string, variantId: string): { plan: Pl
   return { plan: detached, scene: variantStepScene(detached, stepId, variantId)! };
 }
 
+/** Resolve and validate a Beat-scoped address. Variant ids are globally unique. */
+function beatAddress(plan: Plan, stepId: string, variantId: string): { beat: Mech; variant: Variant } {
+  if (plan.variantModel !== "beat") throw new Error("This plan does not use Beat Variants");
+  const step = plan.steps.find((candidate) => candidate.id === stepId);
+  if (!step) throw new Error(`No step ${stepId}`);
+  const owner = beatVariantOwner(plan, variantId);
+  if (!owner) throw new Error(`No Beat Variant ${variantId}`);
+  if (!mechSpan(plan, owner.beat).includes(stepId))
+    throw new Error(`Beat Variant ${variantId} is not active in step ${stepId}`);
+  return owner;
+}
+
+/** Materialize and return this Beat's content domain, never its movement. */
+function beatContentForEdit(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+): { plan: Plan; beat: Mech; content: BeatVariantContent } {
+  const { beat } = beatAddress(plan, stepId, variantId);
+  const detached = materializeBeatVariantContent(plan, stepId, variantId);
+  return {
+    plan: detached,
+    beat,
+    content: detached.steps.find((step) => step.id === stepId)!.beatVariantContent![variantId],
+  };
+}
+
+/** Replace one already-materialized Beat content snapshot. */
+function replaceBeatContent(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+  content: BeatVariantContent,
+): Plan {
+  return {
+    ...plan,
+    steps: plan.steps.map((step) =>
+      step.id === stepId
+        ? {
+            ...step,
+            beatVariantContent: { ...step.beatVariantContent, [variantId]: content },
+          }
+        : step
+    ),
+  };
+}
+
+const ACTOR_TYPES = new Set<Entity["type"]>(["player", "enemy"]);
+const POSE_KEYS = new Set(["x", "y", "rotation"]);
+
+/** Store one sparse absolute actor pose without detaching Beat content. */
+function updateBeatMovement(
+  plan: Plan,
+  id: string,
+  patch: PropBag,
+  stepId: string,
+  variantId: string,
+): { plan: Plan; entity: Entity } {
+  beatAddress(plan, stepId, variantId);
+  const actor = plan.entities.find((candidate) => candidate.id === id);
+  if (!actor || !ACTOR_TYPES.has(actor.type)) throw new Error(`No shared actor ${id}`);
+  if (Object.keys(patch).some((key) => !POSE_KEYS.has(key)))
+    throw new Error("Beat Variant actor edits may only change movement");
+  const shared = resolveEntity(actor, stepId);
+  const current = beatVariantMovement(plan, stepId, variantId)[id] ?? {
+    x: shared.x,
+    y: shared.y,
+    rotation: shared.rotation,
+  };
+  const pose: BeatVariantPose = { ...current, ...defined(patch) };
+  const steps = plan.steps.map((step) =>
+    step.id === stepId
+      ? {
+          ...step,
+          beatVariantMovement: {
+            ...step.beatVariantMovement,
+            [variantId]: { ...step.beatVariantMovement?.[variantId], [id]: pose },
+          },
+        }
+      : step
+  );
+  const next = { ...plan, steps };
+  for (const route of next.variantRoutes ?? []) {
+    const errors = validateBeatVariantSelections(next, route.selections);
+    if (errors.length)
+      throw new Error(`Movement would make saved Route “${route.name}” unsafe: ${errors.join("; ")}`);
+  }
+  return { plan: touch(next), entity: { ...shared, ...pose } as Entity };
+}
+
 const hasAuthoredVariants = (step: Step): boolean =>
   Object.keys(step.variantScenes ?? {}).length > 0;
 
@@ -193,6 +292,17 @@ export function addEntity(
 ): { plan: Plan; entity: Entity } {
   const entity = makeEntity(spec);
   if (stepId && variantId && entity.type !== "marker") {
+    if (plan.variantModel === "beat") {
+      const detached = beatContentForEdit(plan, stepId, variantId);
+      if (!isBeatPart(entity)) throw new Error("Actors are shared; a Beat Variant may only move them");
+      if (entity.mech !== detached.beat.id)
+        throw new Error(`A Part in this Variant must belong to Beat ${detached.beat.id}`);
+      const content = { ...detached.content, parts: [...detached.content.parts, entity] };
+      return {
+        plan: touch(replaceBeatContent(detached.plan, stepId, variantId, content)),
+        entity,
+      };
+    }
     const detached = sceneForEdit(plan, stepId, variantId);
     return {
       plan: touch(replaceVariantScene(detached.plan, stepId, variantId, [...detached.scene, entity])),
@@ -235,6 +345,31 @@ export function updateEntity(
   }
 
   if (stepId && variantId) {
+    if (plan.variantModel === "beat") {
+      const global = plan.entities.find((candidate) => candidate.id === id);
+      if (global && ACTOR_TYPES.has(global.type))
+        return updateBeatMovement(plan, id, clean, stepId, variantId);
+      const detached = beatContentForEdit(plan, stepId, variantId);
+      const idx = detached.content.parts.findIndex((entity) => entity.id === id);
+      if (idx < 0) throw new Error(`No Part ${id} in this Beat Variant Step`);
+      if ("mech" in clean && clean.mech !== detached.beat.id)
+        throw new Error("A Variant Part cannot leave its owning Beat");
+      const next = EntitySchema.parse({
+        ...detached.content.parts[idx],
+        ...clean,
+        mech: detached.beat.id,
+        overrides: {},
+      });
+      if (!isBeatPart(next)) throw new Error("A Beat Variant snapshot contains Parts only");
+      const parts = [...detached.content.parts];
+      parts[idx] = next;
+      return {
+        plan: touch(
+          replaceBeatContent(detached.plan, stepId, variantId, { ...detached.content, parts })
+        ),
+        entity: next,
+      };
+    }
     const detached = sceneForEdit(plan, stepId, variantId);
     const idx = detached.scene.findIndex((entity) => entity.id === id);
     if (idx < 0) throw new Error(`No entity ${id} in this variant step`);
@@ -280,6 +415,38 @@ export function clearOverride(plan: Plan, id: string, stepId: string, variantId?
     return touch({ ...plan, entities });
   }
   if (variantId) {
+    if (plan.variantModel === "beat") {
+      const owner = beatAddress(plan, stepId, variantId);
+      const actor = plan.entities.find((entity) => entity.id === id && ACTOR_TYPES.has(entity.type));
+      if (actor) {
+        const steps = plan.steps.map((step) => {
+          if (step.id !== stepId) return step;
+          const mine = { ...step.beatVariantMovement?.[variantId] };
+          delete mine[id];
+          const movement = { ...step.beatVariantMovement };
+          if (Object.keys(mine).length) movement[variantId] = mine;
+          else delete movement[variantId];
+          return {
+            ...step,
+            beatVariantMovement: Object.keys(movement).length ? movement : undefined,
+          };
+        });
+        return touch({ ...plan, steps });
+      }
+      const detached = beatContentForEdit(plan, stepId, variantId);
+      const index = detached.content.parts.findIndex((entity) => entity.id === id);
+      if (index < 0) throw new Error(`No Part ${id} in this Beat Variant Step`);
+      const shared = plan.entities.find(
+        (entity) => entity.id === id && entity.mech === owner.beat.id && isBeatPart(entity)
+      );
+      const parts = [...detached.content.parts];
+      if (shared)
+        parts[index] = EntitySchema.parse({ ...resolveEntity(shared, stepId), overrides: {} });
+      else parts.splice(index, 1);
+      return touch(
+        replaceBeatContent(detached.plan, stepId, variantId, { ...detached.content, parts })
+      );
+    }
     const detached = sceneForEdit(plan, stepId, variantId);
     const idx = detached.scene.findIndex((entity) => entity.id === id);
     if (idx < 0) throw new Error(`No entity ${id} in this variant step`);
@@ -341,6 +508,17 @@ export function deleteEntities(plan: Plan, ids: string[], stepId?: string, varia
     };
   }
   if (stepId && variantId && sceneIds.length) {
+    if (next.variantModel === "beat") {
+      const detached = beatContentForEdit(next, stepId, variantId);
+      const partIds = new Set(detached.content.parts.map((entity) => entity.id));
+      for (const id of sceneIds)
+        if (!partIds.has(id))
+          throw new Error(`Only Parts in Beat ${detached.beat.id} can be deleted from this Variant`);
+      next = replaceBeatContent(detached.plan, stepId, variantId, {
+        ...detached.content,
+        parts: withoutEntities(detached.content.parts, sceneIds),
+      });
+    } else {
     const detached = sceneForEdit(next, stepId, variantId);
     next = replaceVariantScene(
       detached.plan,
@@ -348,6 +526,7 @@ export function deleteEntities(plan: Plan, ids: string[], stepId?: string, varia
       variantId,
       withoutEntities(detached.scene, sceneIds)
     );
+    }
   } else if (sceneIds.length) {
     next = { ...next, entities: withoutEntities(next.entities, sceneIds) };
   }
@@ -372,6 +551,28 @@ export function duplicateEntity(
     return { plan: touch({ ...plan, entities: [...plan.entities, copy] }), entity: copy };
   }
   if (stepId && variantId) {
+    if (plan.variantModel === "beat") {
+      const detached = beatContentForEdit(plan, stepId, variantId);
+      const src = detached.content.parts.find((entity) => entity.id === id);
+      if (!src) throw new Error(`No Part ${id} in this Beat Variant Step`);
+      const copy = EntitySchema.parse({
+        ...src,
+        id: newId(src.type),
+        x: src.x + offset,
+        y: src.y + offset,
+        mech: detached.beat.id,
+        overrides: {},
+      });
+      return {
+        plan: touch(
+          replaceBeatContent(detached.plan, stepId, variantId, {
+            ...detached.content,
+            parts: [...detached.content.parts, copy],
+          })
+        ),
+        entity: copy,
+      };
+    }
     const detached = sceneForEdit(plan, stepId, variantId);
     const src = detached.scene.find((entity) => entity.id === id);
     if (!src) throw new Error(`No entity ${id} in this variant step`);
@@ -423,6 +624,15 @@ export function reorderEntity(
   if (global?.type === "marker")
     return touch({ ...plan, entities: reordered(plan.entities, id, where) });
   if (stepId && variantId) {
+    if (plan.variantModel === "beat") {
+      const detached = beatContentForEdit(plan, stepId, variantId);
+      return touch(
+        replaceBeatContent(detached.plan, stepId, variantId, {
+          ...detached.content,
+          parts: reordered(detached.content.parts, id, where),
+        })
+      );
+    }
     const detached = sceneForEdit(plan, stepId, variantId);
     return touch(
       replaceVariantScene(detached.plan, stepId, variantId, reordered(detached.scene, id, where))
@@ -555,9 +765,60 @@ export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan
           ),
         }
       : {}),
+    ...(src.beatVariantContent
+      ? {
+          beatVariantContent: Object.fromEntries(
+            Object.entries(src.beatVariantContent).map(([variant, content]) => [
+              variant,
+              {
+                ...content,
+                parts: content.parts.map((entity) =>
+                  EntitySchema.parse({ ...entity, overrides: {} })
+                ),
+              },
+            ])
+          ),
+        }
+      : {}),
+    ...(src.beatVariantMovement
+      ? {
+          beatVariantMovement: Object.fromEntries(
+            Object.entries(src.beatVariantMovement).map(([variant, movement]) => [
+              variant,
+              Object.fromEntries(
+                Object.entries(movement).map(([actorId, pose]) => [actorId, { ...pose }])
+              ),
+            ])
+          ),
+        }
+      : {}),
   };
-  const steps = [...plan.steps];
+  let steps = [...plan.steps];
   steps.splice(idx + 1, 0, step);
+  if (plan.variantModel === "beat") {
+    const provisional = { ...plan, steps };
+    const content = Object.fromEntries(
+      Object.entries(step.beatVariantContent ?? {}).filter(([variantId]) => {
+        const owner = beatVariantOwner(provisional, variantId);
+        return !!owner && mechSpan(provisional, owner.beat).includes(step.id);
+      })
+    );
+    const movement = Object.fromEntries(
+      Object.entries(step.beatVariantMovement ?? {}).filter(([variantId]) => {
+        const owner = beatVariantOwner(provisional, variantId);
+        return !!owner && mechSpan(provisional, owner.beat).includes(step.id);
+      })
+    );
+    steps = steps.map((candidate) =>
+      candidate.id === step.id
+        ? {
+            ...candidate,
+            beatVariantContent: Object.keys(content).length ? content : undefined,
+            beatVariantMovement: Object.keys(movement).length ? movement : undefined,
+          }
+        : candidate
+    );
+  }
 
   const entities = plan.entities.map((e) => {
     const next = { ...e } as Entity;
@@ -578,11 +839,13 @@ export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan
 export function updateStep(
   plan: Plan,
   stepId: string,
-  patch: Partial<Omit<Step, "id" | "variantScenes">>
+  patch: Partial<Omit<Step, "id" | "variantScenes" | "beatVariantContent" | "beatVariantMovement">>
 ): Plan {
-  // variantScenes is internal copy-on-write state, never a public step patch.
+  // Copy-on-write fields are internal state, never public Step patches.
   const clean = defined(patch) as PropBag;
   delete clean.variantScenes;
+  delete clean.beatVariantContent;
+  delete clean.beatVariantMovement;
   const current = plan.steps.find((step) => step.id === stepId);
   if (!current) throw new Error(`No step ${stepId}`);
   if ("mechanic" in clean && clean.mechanic !== current.mechanic && hasAuthoredVariants(current))
@@ -875,6 +1138,331 @@ export function moveMechanic(plan: Plan, mechanicId: string, index: number): Pla
   return touch(reflowSteps({ ...plan, mechanics }));
 }
 
+/* ----------------------------------------------------------- Beat Variants */
+
+/**
+ * Opt an unvaried document into the additive Beat model. Legacy branch data is
+ * never guessed or rewritten here; those plans must use the explicit converter
+ * in a later migration slice.
+ */
+export function enableBeatVariants(plan: Plan): Plan {
+  if (plan.variantModel === "beat") return plan;
+  const legacy =
+    plan.mechanics.some((mechanic) => mechanic.variants.length) ||
+    plan.mechs.some((beat) => !!beat.variant) ||
+    plan.steps.some((step) => Object.keys(step.variantScenes ?? {}).length) ||
+    plan.entities.some((entity) => Object.keys(entity.overrides ?? {}).some((key) => key.includes("@")));
+  if (legacy)
+    throw new Error("This plan has legacy Mechanic Variants; run the explicit conversion dry-run first");
+  return touch({ ...plan, variantModel: "beat", variantRoutes: [] });
+}
+
+/** First use makes two mutually exclusive child boxes; later uses add one. */
+export function addBeatVariant(
+  plan: Plan,
+  beatId: string,
+  opts: { name?: string; createdBy?: string; createdByName?: string } = {},
+): { plan: Plan; variant: Variant } {
+  if (plan.variantModel !== "beat") throw new Error("Enable Beat Variants for this plan first");
+  const beat = plan.mechs.find((candidate) => candidate.id === beatId);
+  if (!beat) throw new Error(`No Beat ${beatId}`);
+  const made: Variant[] = [];
+  let variants = beat.variants;
+  if (!variants.length) {
+    const first: Variant = { id: newId("beat_variant"), name: variantName(0) };
+    variants = [first];
+    made.push(first);
+  }
+  const variant: Variant = {
+    id: newId("beat_variant"),
+    name: opts.name ?? variantName(variants.length),
+    ...(opts.createdBy
+      ? { createdBy: opts.createdBy, createdByName: opts.createdByName }
+      : {}),
+  };
+  variants = [...variants, variant];
+  made.push(variant);
+  const mechs = plan.mechs.map((candidate) =>
+    candidate.id === beatId ? { ...candidate, variants } : candidate
+  );
+  return { plan: touch({ ...plan, mechs }), variant: made[0] };
+}
+
+export function updateBeatVariant(
+  plan: Plan,
+  beatId: string,
+  variantId: string,
+  patch: { name?: string },
+): Plan {
+  const beat = plan.mechs.find((candidate) => candidate.id === beatId);
+  if (!beat) throw new Error(`No Beat ${beatId}`);
+  if (!beat.variants.some((variant) => variant.id === variantId))
+    throw new Error(`No Beat Variant ${variantId}`);
+  const mechs = plan.mechs.map((candidate) =>
+    candidate.id === beatId
+      ? {
+          ...candidate,
+          variants: candidate.variants.map((variant) =>
+            variant.id === variantId ? { ...variant, ...defined(patch) } : variant
+          ),
+        }
+      : candidate
+  );
+  return touch({ ...plan, mechs });
+}
+
+/** Deep-copy every detached Step in both independent domains. */
+export function duplicateBeatVariant(
+  plan: Plan,
+  beatId: string,
+  variantId: string,
+  opts: { name?: string; createdBy?: string; createdByName?: string } = {},
+): { plan: Plan; variant: Variant } {
+  const owner = beatVariantOwner(plan, variantId);
+  if (!owner || owner.beat.id !== beatId) throw new Error(`No Beat Variant ${variantId}`);
+  const variant: Variant = {
+    id: newId("beat_variant"),
+    name: opts.name ?? `${owner.variant.name || beatVariantLabel(owner.beat, variantId)} copy`,
+    ...(opts.createdBy
+      ? { createdBy: opts.createdBy, createdByName: opts.createdByName }
+      : {}),
+  };
+  const sourceParts = plan.steps.flatMap(
+    (step) => step.beatVariantContent?.[variantId]?.parts ?? []
+  );
+  const partIds = new Map<string, string>();
+  const bondIds = new Map<string, string>();
+  const symmetryIds = new Map<string, string>();
+  for (const part of sourceParts) {
+    if (!partIds.has(part.id)) partIds.set(part.id, newId(part.type));
+    if (part.bond && !bondIds.has(part.bond.id)) bondIds.set(part.bond.id, newId("bond"));
+    if (part.symmetry && !symmetryIds.has(part.symmetry.id))
+      symmetryIds.set(part.symmetry.id, newId("symmetry"));
+  }
+  const clonePart = (part: Entity): Entity => {
+    const anchor = part.anchor
+      ? {
+          ...part.anchor,
+          to: partIds.get(part.anchor.to) ?? part.anchor.to,
+          ...(part.anchor.from
+            ? { from: partIds.get(part.anchor.from) ?? part.anchor.from }
+            : {}),
+          ...(part.anchor.near
+            ? { near: partIds.get(part.anchor.near) ?? part.anchor.near }
+            : {}),
+        }
+      : part.anchor;
+    const endpointPatch =
+      part.type === "tether"
+        ? {
+            from: partIds.get(part.from) ?? part.from,
+            to: partIds.get(part.to) ?? part.to,
+          }
+        : {};
+    return EntitySchema.parse({
+      ...part,
+      id: partIds.get(part.id)!,
+      anchor,
+      ...endpointPatch,
+      ...(part.bond ? { bond: { ...part.bond, id: bondIds.get(part.bond.id)! } } : {}),
+      ...(part.symmetry
+        ? { symmetry: { ...part.symmetry, id: symmetryIds.get(part.symmetry.id)! } }
+        : {}),
+      overrides: {},
+    });
+  };
+  const steps = plan.steps.map((step) => {
+    const sourceContent = step.beatVariantContent?.[variantId];
+    const sourceMovement = step.beatVariantMovement?.[variantId];
+    return {
+      ...step,
+      ...(sourceContent
+        ? {
+            beatVariantContent: {
+              ...step.beatVariantContent,
+              [variant.id]: {
+                ...sourceContent,
+                parts: sourceContent.parts.map(clonePart),
+              },
+            },
+          }
+        : {}),
+      ...(sourceMovement
+        ? {
+            beatVariantMovement: {
+              ...step.beatVariantMovement,
+              [variant.id]: Object.fromEntries(
+                Object.entries(sourceMovement).map(([actorId, pose]) => [actorId, { ...pose }])
+              ),
+            },
+          }
+        : {}),
+    };
+  });
+  const mechs = plan.mechs.map((beat) =>
+    beat.id === beatId ? { ...beat, variants: [...beat.variants, variant] } : beat
+  );
+  return { plan: touch({ ...plan, mechs, steps }), variant };
+}
+
+/** Delete one sibling while preserving the invariant that a choice has 2+. */
+export function deleteBeatVariant(plan: Plan, beatId: string, variantId: string): Plan {
+  const beat = plan.mechs.find((candidate) => candidate.id === beatId);
+  if (!beat?.variants.some((variant) => variant.id === variantId))
+    throw new Error(`No Beat Variant ${variantId}`);
+  if (beat.variants.length <= 2)
+    throw new Error("Use Collapse Variants to deliberately choose which branch becomes Shared");
+  if (plan.variantRoutes?.some((route) => route.selections[beatId] === variantId))
+    throw new Error("This Variant is used by a saved Route; update or delete that Route first");
+  const mechs = plan.mechs.map((candidate) =>
+    candidate.id === beatId
+      ? { ...candidate, variants: candidate.variants.filter((variant) => variant.id !== variantId) }
+      : candidate
+  );
+  const steps = plan.steps.map((step) => {
+    const content = { ...step.beatVariantContent };
+    const movement = { ...step.beatVariantMovement };
+    delete content[variantId];
+    delete movement[variantId];
+    return {
+      ...step,
+      beatVariantContent: Object.keys(content).length ? content : undefined,
+      beatVariantMovement: Object.keys(movement).length ? movement : undefined,
+    };
+  });
+  return touch({ ...plan, mechs, steps });
+}
+
+/** Resume live shared Parts without touching sparse movement. */
+export function resumeBeatVariantContent(plan: Plan, stepId: string, variantId: string): Plan {
+  beatAddress(plan, stepId, variantId);
+  const steps = plan.steps.map((step) => {
+    if (step.id !== stepId) return step;
+    const content = { ...step.beatVariantContent };
+    delete content[variantId];
+    return {
+      ...step,
+      beatVariantContent: Object.keys(content).length ? content : undefined,
+    };
+  });
+  return touch({ ...plan, steps });
+}
+
+/** Detach/update Beat-level content state without touching movement. */
+export function updateBeatVariantContent(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+  patch: { active?: boolean; color?: string | null },
+): Plan {
+  const detached = beatContentForEdit(plan, stepId, variantId);
+  const content: BeatVariantContent = {
+    ...detached.content,
+    ...("active" in patch && patch.active !== undefined ? { active: patch.active } : {}),
+    ...("color" in patch
+      ? patch.color
+        ? { color: patch.color }
+        : { color: undefined }
+      : {}),
+  };
+  return touch(replaceBeatContent(detached.plan, stepId, variantId, content));
+}
+
+/** Clear only movement, preserving detached content at the same address. */
+export function clearBeatVariantMovement(plan: Plan, stepId: string, variantId: string): Plan {
+  beatAddress(plan, stepId, variantId);
+  const steps = plan.steps.map((step) => {
+    if (step.id !== stepId) return step;
+    const movement = { ...step.beatVariantMovement };
+    delete movement[variantId];
+    return {
+      ...step,
+      beatVariantMovement: Object.keys(movement).length ? movement : undefined,
+    };
+  });
+  return touch({ ...plan, steps });
+}
+
+/** Clear both domains at one Beat × Variant × Step boundary. */
+export function resetBeatVariantStep(plan: Plan, stepId: string, variantId: string): Plan {
+  beatAddress(plan, stepId, variantId);
+  const steps = plan.steps.map((step) => {
+    if (step.id !== stepId) return step;
+    const content = { ...step.beatVariantContent };
+    const movement = { ...step.beatVariantMovement };
+    delete content[variantId];
+    delete movement[variantId];
+    return {
+      ...step,
+      beatVariantContent: Object.keys(content).length ? content : undefined,
+      beatVariantMovement: Object.keys(movement).length ? movement : undefined,
+    };
+  });
+  return touch({ ...plan, steps });
+}
+
+function assertRouteSelections(plan: Plan, selections: Record<string, string>): void {
+  const errors = validateBeatVariantSelections(plan, selections);
+  if (errors.length) throw new Error(errors.join("; "));
+}
+
+/** Save a non-owning, conflict-free Beat selection preset. */
+export function addBeatVariantRoute(
+  plan: Plan,
+  opts: { name?: string; selections: Record<string, string>; compatibility?: boolean },
+): { plan: Plan; route: BeatVariantRoute } {
+  assertRouteSelections(plan, opts.selections);
+  const route: BeatVariantRoute = {
+    id: newId("route"),
+    name: opts.name ?? "Route",
+    selections: { ...opts.selections },
+    compatibility: opts.compatibility ?? false,
+  };
+  return {
+    plan: touch({ ...plan, variantRoutes: [...(plan.variantRoutes ?? []), route] }),
+    route,
+  };
+}
+
+export function updateBeatVariantRoute(
+  plan: Plan,
+  routeId: string,
+  patch: { name?: string; selections?: Record<string, string> },
+): Plan {
+  const route = plan.variantRoutes?.find((candidate) => candidate.id === routeId);
+  if (!route) throw new Error(`No Route ${routeId}`);
+  if (patch.selections) assertRouteSelections(plan, patch.selections);
+  const variantRoutes = plan.variantRoutes!.map((candidate) =>
+    candidate.id === routeId
+      ? {
+          ...candidate,
+          ...defined(patch),
+          ...(patch.selections ? { selections: { ...patch.selections } } : {}),
+        }
+      : candidate
+  );
+  return touch({ ...plan, variantRoutes });
+}
+
+export function deleteBeatVariantRoute(plan: Plan, routeId: string): Plan {
+  if (!plan.variantRoutes?.some((candidate) => candidate.id === routeId))
+    throw new Error(`No Route ${routeId}`);
+  return touch({
+    ...plan,
+    variantRoutes: plan.variantRoutes.filter((candidate) => candidate.id !== routeId),
+    defaultVariantRoute: plan.defaultVariantRoute === routeId ? undefined : plan.defaultVariantRoute,
+  });
+}
+
+/** A conflicting or incomplete selection can never become document default. */
+export function setDefaultBeatVariantRoute(plan: Plan, routeId?: string): Plan {
+  if (!routeId) return touch({ ...plan, defaultVariantRoute: undefined });
+  const route = plan.variantRoutes?.find((candidate) => candidate.id === routeId);
+  if (!route) throw new Error(`No Route ${routeId}`);
+  assertRouteSelections(plan, route.selections);
+  return touch({ ...plan, defaultVariantRoute: routeId });
+}
+
 /**
  * Give a mechanic another reading.
  *
@@ -888,6 +1476,8 @@ export function addVariant(
   mechanicId: string,
   opts: { name?: string; ownerId?: string; ownerName?: string } = {}
 ): { plan: Plan; variant: Variant } {
+  if (plan.variantModel === "beat")
+    throw new Error("Whole-Mechanic Variant authoring is disabled; add a Variant to a Beat");
   const mechanic = plan.mechanics.find((m) => m.id === mechanicId);
   if (!mechanic) throw new Error(`No mechanic ${mechanicId}`);
   const made: Variant[] = [];
@@ -915,6 +1505,8 @@ export function addVariant(
 }
 
 export function gateMech(plan: Plan, mechId: string, variantId?: string): Plan {
+  if (plan.variantModel === "beat")
+    throw new Error("Whole-Beat gating is legacy authoring; use this Beat's Variant boxes");
   const mech = plan.mechs.find((m) => m.id === mechId);
   if (!mech) throw new Error(`No mech ${mechId}`);
   if (variantId) {
@@ -1024,13 +1616,33 @@ export function addMech(
     snap: here,
     boom: opts.boom ?? here,
     color,
+    variants: [],
   };
   return { plan: touch({ ...plan, mechs: [...plan.mechs, mech] }), mech };
 }
 
 export function updateMech(plan: Plan, mechId: string, patch: Partial<Omit<Mech, "id">>): Plan {
-  if (!plan.mechs.some((m) => m.id === mechId)) throw new Error(`No mech ${mechId}`);
+  const current = plan.mechs.find((m) => m.id === mechId);
+  if (!current) throw new Error(`No mech ${mechId}`);
+  if (plan.variantModel === "beat" && patch.variant)
+    throw new Error("Beat-model plans cannot gate a whole Beat to a Mechanic Variant");
   const mechs = plan.mechs.map((m) => (m.id === mechId ? { ...m, ...defined(patch) } : m));
+  if (plan.variantModel === "beat" && (patch.snap !== undefined || patch.boom !== undefined)) {
+    const next = { ...plan, mechs };
+    const moved = mechs.find((beat) => beat.id === mechId)!;
+    const inside = new Set(mechSpan(next, moved));
+    const variants = new Set(moved.variants.map((variant) => variant.id));
+    const orphan = next.steps.find(
+      (step) =>
+        !inside.has(step.id) &&
+        (Object.keys(step.beatVariantContent ?? {}).some((id) => variants.has(id)) ||
+          Object.keys(step.beatVariantMovement ?? {}).some((id) => variants.has(id)))
+    );
+    if (orphan)
+      throw new Error(
+        `Shortening this Beat would orphan Variant edits at ${orphan.name || orphan.id}; reset or move them first`
+      );
+  }
   return touch({ ...plan, mechs });
 }
 
@@ -1039,6 +1651,7 @@ export function updateMech(plan: Plan, mechId: string, patch: Partial<Omit<Mech,
  * pulling them out to keep, in which case they fall back to being plan-wide.
  */
 export function deleteMech(plan: Plan, mechId: string, keepEntities = false): Plan {
+  const deleted = plan.mechs.find((beat) => beat.id === mechId);
   const mechs = plan.mechs.filter((m) => m.id !== mechId);
   const deadBaseIds = plan.entities
     .filter((entity) => entity.mech === mechId)
@@ -1046,8 +1659,9 @@ export function deleteMech(plan: Plan, mechId: string, keepEntities = false): Pl
   const entities = keepEntities
     ? plan.entities.map((e) => (e.mech === mechId ? ({ ...e, mech: undefined } as Entity) : e))
     : withoutEntities(plan.entities, deadBaseIds);
-  const steps = plan.steps.map((step) =>
-    step.variantScenes
+  const beatVariants = new Set(deleted?.variants.map((variant) => variant.id) ?? []);
+  const steps = plan.steps.map((step) => {
+    const legacy = step.variantScenes
       ? {
           ...step,
           variantScenes: Object.fromEntries(
@@ -1066,9 +1680,26 @@ export function deleteMech(plan: Plan, mechId: string, keepEntities = false): Pl
             ])
           ),
         }
-      : step
-  );
-  return touch({ ...plan, mechs, entities, steps });
+      : step;
+    if (!beatVariants.size) return legacy;
+    const content = Object.fromEntries(
+      Object.entries(legacy.beatVariantContent ?? {}).filter(([id]) => !beatVariants.has(id))
+    );
+    const movement = Object.fromEntries(
+      Object.entries(legacy.beatVariantMovement ?? {}).filter(([id]) => !beatVariants.has(id))
+    );
+    return {
+      ...legacy,
+      beatVariantContent: Object.keys(content).length ? content : undefined,
+      beatVariantMovement: Object.keys(movement).length ? movement : undefined,
+    };
+  });
+  const variantRoutes = plan.variantRoutes?.map((route) => {
+    const selections = { ...route.selections };
+    delete selections[mechId];
+    return { ...route, selections };
+  });
+  return touch({ ...plan, mechs, entities, steps, variantRoutes });
 }
 
 /** Move existing shapes into a mech, or (with `null`) out of whatever holds them. */
@@ -1082,6 +1713,17 @@ export function assignMech(
   if (mechId && !plan.mechs.some((m) => m.id === mechId)) throw new Error(`No mech ${mechId}`);
   const want = new Set(ids);
   if (stepId && variantId) {
+    if (plan.variantModel === "beat") {
+      const detached = beatContentForEdit(plan, stepId, variantId);
+      if (mechId !== detached.beat.id)
+        throw new Error("A Variant Part cannot leave or change its owning Beat");
+      for (const id of ids)
+        if (!detached.content.parts.some((part) => part.id === id))
+          throw new Error(`No Part ${id} in this Beat Variant Step`);
+      // Already owned by this Beat; persisting the content boundary is the
+      // only meaningful effect of assigning it again.
+      return touch(detached.plan);
+    }
     const markerIds = new Set(
       plan.entities
         .filter((entity) => want.has(entity.id) && entity.type === "marker")
@@ -1270,9 +1912,14 @@ export function arrangeParty(
   stepId?: string,
   variantId?: string
 ): { plan: Plan; ids: string[] } {
+  if (stepId && variantId && plan.variantModel === "beat") beatAddress(plan, stepId, variantId);
   const wasEdited = stepId && variantId ? variantStepScene(plan, stepId, variantId) !== undefined : false;
-  if (stepId && variantId) plan = materializeVariantStep(plan, stepId, variantId);
-  const source = stepId && variantId ? variantStepScene(plan, stepId, variantId)! : plan.entities;
+  if (stepId && variantId && plan.variantModel !== "beat")
+    plan = materializeVariantStep(plan, stepId, variantId);
+  const source =
+    stepId && variantId && plan.variantModel !== "beat"
+      ? variantStepScene(plan, stepId, variantId)!
+      : plan.entities;
   const players = source.filter((entity) => entity.type === "player");
   const taken = new Map<number, Entity>();
   const spare: Entity[] = [];
@@ -1303,7 +1950,8 @@ export function arrangeParty(
   // Anyone past the eighth player keeps their position — better than stacking.
   // An empty contextual arrangement is still the variant's first authored scene
   // edit. Persist the copy-on-write boundary even when there was nothing to move.
-  if (!ids.length && stepId && variantId && !wasEdited) next = touch(next);
+  if (!ids.length && stepId && variantId && !wasEdited && plan.variantModel !== "beat")
+    next = touch(next);
   return { plan: next, ids };
 }
 

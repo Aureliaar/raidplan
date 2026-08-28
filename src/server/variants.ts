@@ -202,11 +202,13 @@ export function guardVariants(
   deny: (message: string) => Error
 ): Op[] {
   const list = Array.isArray(ops) ? ops : [ops];
-  const stamped = list.map((op) =>
-    op.op === "add_variant"
-      ? { ...op, ownerId: caller?.id, ownerName: caller?.name }
-      : op
-  );
+  const stamped = list.map((op) => {
+    if (op.op === "add_variant")
+      return { ...op, ownerId: caller?.id, ownerName: caller?.name };
+    if (op.op === "add_beat_variant" || op.op === "duplicate_beat_variant")
+      return { ...op, createdBy: caller?.id, createdByName: caller?.name };
+    return op;
+  });
   for (const op of stamped) validateOpContext(plan, op);
   if (role === "owner") return stamped;
   for (const op of stamped)

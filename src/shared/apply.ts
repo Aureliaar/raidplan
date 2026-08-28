@@ -9,7 +9,9 @@ import type {
   PropBag,
   Step,
   Variant,
+  BeatVariantRoute,
 } from "./schema";
+import { mechSpan } from "./schema";
 import * as ops from "./ops";
 
 /**
@@ -28,7 +30,7 @@ export type Op =
   | { op: "reorder_entity"; id: string; where: ops.ZOrder; stepId?: string; variant?: string }
   | { op: "add_step"; name?: string; notes?: string; index?: number; mechanic?: string }
   | { op: "duplicate_step"; stepId: string; name?: string }
-  | { op: "update_step"; stepId: string; patch: Partial<Omit<Step, "id" | "variantScenes">> }
+  | { op: "update_step"; stepId: string; patch: Partial<Omit<Step, "id" | "variantScenes" | "beatVariantContent" | "beatVariantMovement">> }
   | { op: "delete_step"; stepId: string }
   | { op: "move_step"; stepId: string; index: number }
   | { op: "add_mechanic"; name?: string; after?: string; stepIds?: string[] }
@@ -39,6 +41,19 @@ export type Op =
   | { op: "gate_mech"; mechId: string; variant?: string }
   | { op: "update_variant"; mechanicId: string; variantId: string; patch: { name?: string } }
   | { op: "delete_variant"; mechanicId: string; variantId: string }
+  | { op: "enable_beat_variants" }
+  | { op: "add_beat_variant"; beatId: string; name?: string; createdBy?: string; createdByName?: string }
+  | { op: "update_beat_variant"; beatId: string; variantId: string; patch: { name?: string } }
+  | { op: "duplicate_beat_variant"; beatId: string; variantId: string; name?: string; createdBy?: string; createdByName?: string }
+  | { op: "delete_beat_variant"; beatId: string; variantId: string }
+  | { op: "resume_beat_variant_content"; stepId: string; variantId: string }
+  | { op: "update_beat_variant_content"; stepId: string; variantId: string; patch: { active?: boolean; color?: string | null } }
+  | { op: "clear_beat_variant_movement"; stepId: string; variantId: string }
+  | { op: "reset_beat_variant_step"; stepId: string; variantId: string }
+  | { op: "add_beat_variant_route"; name?: string; selections: Record<string, string>; compatibility?: boolean }
+  | { op: "update_beat_variant_route"; routeId: string; patch: { name?: string; selections?: Record<string, string> } }
+  | { op: "delete_beat_variant_route"; routeId: string }
+  | { op: "set_default_beat_variant_route"; routeId?: string }
   | { op: "add_mech"; name?: string; snap?: string; boom?: string; color?: string }
   | { op: "update_mech"; mechId: string; patch: Partial<Omit<Mech, "id">> }
   | { op: "delete_mech"; mechId: string; keepEntities?: boolean }
@@ -51,7 +66,7 @@ export type Op =
 export interface OpResult {
   plan: Plan;
   /** Whatever the op created, for the caller to report back. */
-  value?: Entity | Step | Mech | Mechanic | Variant | string[] | null;
+  value?: Entity | Step | Mech | Mechanic | Variant | BeatVariantRoute | string[] | null;
 }
 
 /**
@@ -74,6 +89,13 @@ export function validateOpContext(plan: Plan, op: Op): void {
       stepId = op.stepId;
       variant = op.variant;
       break;
+    case "resume_beat_variant_content":
+    case "update_beat_variant_content":
+    case "clear_beat_variant_movement":
+    case "reset_beat_variant_step":
+      stepId = op.stepId;
+      variant = op.variantId;
+      break;
     default:
       return;
   }
@@ -82,9 +104,15 @@ export function validateOpContext(plan: Plan, op: Op): void {
   const step = plan.steps.find((candidate) => candidate.id === stepId);
   if (!step) throw new Error(`No step ${stepId}`);
   if (!variant) return;
-  const mechanic = plan.mechanics.find((candidate) => candidate.id === step.mechanic);
-  if (!mechanic?.variants.some((candidate) => candidate.id === variant))
-    throw new Error(`Variant ${variant} does not belong to step ${stepId}`);
+  if (plan.variantModel === "beat") {
+    const owner = plan.mechs.find((beat) => beat.variants.some((candidate) => candidate.id === variant));
+    if (!owner || !mechSpan(plan, owner).includes(stepId))
+      throw new Error(`Beat Variant ${variant} is not active in step ${stepId}`);
+  } else {
+    const mechanic = plan.mechanics.find((candidate) => candidate.id === step.mechanic);
+    if (!mechanic?.variants.some((candidate) => candidate.id === variant))
+      throw new Error(`Variant ${variant} does not belong to step ${stepId}`);
+  }
 }
 
 export function applyOp(plan: Plan, op: Op): OpResult {
@@ -157,6 +185,46 @@ export function applyOp(plan: Plan, op: Op): OpResult {
       return { plan: ops.updateVariant(plan, op.mechanicId, op.variantId, op.patch) };
     case "delete_variant":
       return { plan: ops.deleteVariant(plan, op.mechanicId, op.variantId), value: [op.variantId] };
+    case "enable_beat_variants":
+      return { plan: ops.enableBeatVariants(plan) };
+    case "add_beat_variant": {
+      const r = ops.addBeatVariant(plan, op.beatId, {
+        name: op.name,
+        createdBy: op.createdBy,
+        createdByName: op.createdByName,
+      });
+      return { plan: r.plan, value: r.variant };
+    }
+    case "update_beat_variant":
+      return { plan: ops.updateBeatVariant(plan, op.beatId, op.variantId, op.patch) };
+    case "duplicate_beat_variant": {
+      const r = ops.duplicateBeatVariant(plan, op.beatId, op.variantId, {
+        name: op.name,
+        createdBy: op.createdBy,
+        createdByName: op.createdByName,
+      });
+      return { plan: r.plan, value: r.variant };
+    }
+    case "delete_beat_variant":
+      return { plan: ops.deleteBeatVariant(plan, op.beatId, op.variantId), value: [op.variantId] };
+    case "resume_beat_variant_content":
+      return { plan: ops.resumeBeatVariantContent(plan, op.stepId, op.variantId) };
+    case "update_beat_variant_content":
+      return { plan: ops.updateBeatVariantContent(plan, op.stepId, op.variantId, op.patch) };
+    case "clear_beat_variant_movement":
+      return { plan: ops.clearBeatVariantMovement(plan, op.stepId, op.variantId) };
+    case "reset_beat_variant_step":
+      return { plan: ops.resetBeatVariantStep(plan, op.stepId, op.variantId) };
+    case "add_beat_variant_route": {
+      const r = ops.addBeatVariantRoute(plan, op);
+      return { plan: r.plan, value: r.route };
+    }
+    case "update_beat_variant_route":
+      return { plan: ops.updateBeatVariantRoute(plan, op.routeId, op.patch) };
+    case "delete_beat_variant_route":
+      return { plan: ops.deleteBeatVariantRoute(plan, op.routeId) };
+    case "set_default_beat_variant_route":
+      return { plan: ops.setDefaultBeatVariantRoute(plan, op.routeId) };
     case "add_mech": {
       const r = ops.addMech(plan, op);
       return { plan: r.plan, value: r.mech };
