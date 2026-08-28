@@ -1,6 +1,6 @@
 # Beat-scoped Variants — UI/UX and State Plan
 
-Status: proposed; no implementation committed.
+Status: implemented and deployed in `304adae` (production version `0e8749c1-c4ee-49a4-8b6e-5140ec0dd8aa`).
 
 This plan replaces whole-Mechanic variants with variants owned by one Beat. It uses the agreed lexicon:
 
@@ -14,7 +14,7 @@ This plan replaces whole-Mechanic variants with variants owned by one Beat. It u
 
 - There is no Mechanic-wide active Variant.
 - Every varying Beat independently remembers which Variant is being previewed.
-- Sibling Variant boxes inside one Beat are mutually exclusive: exactly one playable Variant contributes at a time. The Beat's direct/shared Parts always contribute alongside it.
+- Sibling Variant boxes inside one Beat are mutually exclusive: exactly one playable Variant contributes at a time. Until detached at a Step, it resolves the live direct/shared Beat Parts; after its first content edit, its Beat-local snapshot replaces only that Beat's shared result at that Step.
 - Preview choice and edit destination are separate state:
   - `Preview` determines what the canvas/playback displays.
   - `Editing` determines where the next authored change is stored.

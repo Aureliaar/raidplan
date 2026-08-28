@@ -1,8 +1,8 @@
 # Aerelion Dark & Light — Beat Variant Port Audit
 
-Source: `plan_mMW41ylx` at the deployed Raidplan site.
+Source: immutable export of `plan_mMW41ylx`, revision 3018, checksum `91afbea639a7ca185c52614de577bf14d603c255e8e12be5e5cda490ba4aa72b`.
 
-Status: read-only audit; source plan not modified.
+Status: exact compatibility conversion implemented and deployed; source plan remains unmodified. Clean semantic regrouping and linked Variant Groups remain future authoring work.
 
 ## 2.6.P1 — Verdict
 
@@ -11,7 +11,9 @@ Status: read-only audit; source plan not modified.
 - No duplicate IDs, dangling anchors/tethers, or irrecoverable source data were found.
 - This is a strong migration fixture because it exercises shared Beats, gated Beat pairs, anchors, tethers, movement, ownership, and legacy override pollution.
 
-## 2.6.P2 — Source shape
+## 2.6.P2 — Original audit shape
+
+The mutable live-plan audit below described an earlier revision. The pinned rev-3018 conversion fixture contains 2 Mechanics, 16 Beats, and 19 Steps and is the authoritative regression source.
 
 - 18 Steps.
 - 1 legacy whole-Mechanic wrapper.
@@ -105,8 +107,7 @@ This coordinates related Beats without restoring Mechanic-wide Variant ownership
 
 - Legacy A is unowned/shared.
 - Legacy B is owned by Aerelion.
-- A port must preserve this as attribution or consistently transfer ownership to every resulting local Variant.
-- Final Beat-Variant collaboration policy remains an open product decision.
+- Conversion preserves authorship as attribution. Beat Variants use normal plan editor permissions; the plan owner retains destructive authority.
 
 ## 2.6.P9 — Port sequence
 
@@ -120,4 +121,4 @@ This coordinates related Beats without restoring Mechanic-wide Variant ownership
 
 ## 2.6.P10 — Repository prerequisite
 
-The local tracker branch and deployed implementation branch currently diverge. Beat migration implementation must start from deployed/origin `99a1daf` (or its successor) and bring documentation separately; it must not be built from the older local schema that ignores `variantScenes`.
+Resolved. Implementation was based on deployed `defc744`, landed on `origin/master` through `304adae`, and deployed as Cloudflare version `0e8749c1-c4ee-49a4-8b6e-5140ec0dd8aa`. Tracker documentation remains local and separate from the code-only deployment history.
