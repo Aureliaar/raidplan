@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { routeAgentRequest } from "agents";
 import { type AppEnv, appUrl, isDevAuth, isDiscordAuth } from "./env";
-import { authRoutes, authenticate, issueToken } from "./auth";
+import { authRoutes, authenticate, constantTimeEqual, issueToken } from "./auth";
 import { registry } from "./registry";
 import { planStub } from "./plan-agent";
 import { RaidPlanMCP } from "./mcp";
@@ -359,7 +359,7 @@ app.get("/api/plans/:id/beat-variants/conversion-archive", async (c) => {
 /** Short-lived, two-document cutover. Removed immediately after both writes verify. */
 app.post("/api/internal/step-variant-cutover/:id", async (c) => {
   const expected = c.env.BOOTSTRAP_SECRET;
-  if (!expected || c.req.header("authorization") !== `Bearer ${expected}`)
+  if (!expected || !(await constantTimeEqual(c.req.header("authorization") ?? "", `Bearer ${expected}`)))
     throw new HttpError(404, "Not found");
   const id = c.req.param("id");
   const expectedSources: Record<string, { rev: number; sha256: string }> = {
@@ -378,7 +378,7 @@ app.post("/api/internal/step-variant-cutover/:id", async (c) => {
     throw new HttpError(409, `Conversion refused: ${converted.report.errors.join("; ")}`);
   const meta = await registry(c.env).getPlanMeta(id);
   if (!meta) throw new HttpError(404, "Plan not found");
-  const ownerId = (meta as unknown as { ownerId: string }).ownerId;
+  const ownerId = meta.ownerId;
   const plan = await stub.replace(converted.plan, { id, ownerId });
   await registry(c.env).registerPlan({ id, name: plan.name, encounter: plan.encounter, ownerId: plan.ownerId });
   return c.json({ ok: true, rev: plan.rev, report: converted.report });

@@ -197,9 +197,26 @@ export class Registry extends DurableObject<AppEnv> {
     this.ctx.storage.sql.exec(`DELETE FROM acl WHERE planId = ?`, id);
   }
 
-  async getPlanMeta(id: string) {
+  async getPlanMeta(id: string): Promise<{
+    id: string;
+    name: string;
+    encounter: string;
+    ownerId: string;
+    isPublic: boolean;
+    createdAt: number;
+    updatedAt: number;
+  } | null> {
     const row = [...this.ctx.storage.sql.exec(`SELECT * FROM plans WHERE id = ?`, id)][0];
-    return row ? { ...row, isPublic: !!row.isPublic } : null;
+    if (!row) return null;
+    return {
+      id: row.id as string,
+      name: row.name as string,
+      encounter: row.encounter as string,
+      ownerId: row.ownerId as string,
+      isPublic: !!row.isPublic,
+      createdAt: row.createdAt as number,
+      updatedAt: row.updatedAt as number,
+    };
   }
 
   async setPublic(id: string, isPublic: boolean): Promise<void> {

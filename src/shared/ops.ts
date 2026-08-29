@@ -42,7 +42,11 @@ import {
   variantStepScene,
   variantLabel,
 } from "./schema";
-import { stepVariantOwner, stepVariants } from "./step-variants";
+import {
+  stepVariantOwner,
+  stepVariants,
+  validateStepVariantSelections,
+} from "./step-variants";
 import { DEFAULT_PARTY, jobLabel } from "./jobs";
 import { zoneCovers } from "./hits";
 
@@ -56,6 +60,16 @@ export const newId = (prefix: string) => `${prefix}_${nanoid(8)}`;
 
 export function touch(plan: Plan): Plan {
   return { ...plan, updatedAt: Date.now(), rev: plan.rev + 1 };
+}
+
+/** Validate the one live Variant ownership model used by this document. */
+function validateVariantSelections(
+  plan: Plan,
+  selections: Record<string, string>,
+): string[] {
+  return plan.variantModel === "step"
+    ? validateStepVariantSelections(plan, selections)
+    : validateBeatVariantSelections(plan, selections);
 }
 
 export function createPlan(opts: {
@@ -261,7 +275,7 @@ function updateBeatMovement(
   );
   const next = { ...plan, steps };
   for (const route of next.variantRoutes ?? []) {
-    const errors = validateBeatVariantSelections(next, route.selections);
+    const errors = validateVariantSelections(next, route.selections);
     if (errors.length)
       throw new Error(`Movement would make saved Route “${route.name}” unsafe: ${errors.join("; ")}`);
   }
@@ -875,6 +889,14 @@ export function updateStep(
  */
 function removeSteps(plan: Plan, ids: string[]): Plan {
   const gone = new Set(ids);
+  const removedBoxes = plan.steps
+    .filter((step) => gone.has(step.id))
+    .flatMap((step) => stepVariants(step));
+  const removedVariantIds = new Set(removedBoxes.map((variant) => variant.id));
+  // A split is declared by its Step. Removing that Step removes its boxes and
+  // the complete Beats they own; silently promoting those Beats to Shared
+  // would change every surviving preview.
+  const removedBoxedBeats = new Set(removedBoxes.flatMap((variant) => variant.beats));
   let steps = plan.steps.filter((s) => !gone.has(s.id));
   // A mech that loses one end collapses onto the other; one that loses both was
   // entirely inside the steps that just went away, and goes with them.
@@ -884,7 +906,7 @@ function removeSteps(plan: Plan, ids: string[]): Plan {
       snap: gone.has(m.snap) ? "" : m.snap,
       boom: gone.has(m.boom) ? "" : m.boom,
     }))
-    .filter((m) => m.snap || m.boom)
+    .filter((m) => (m.snap || m.boom) && !removedBoxedBeats.has(m.id))
     .map((m) => ({ ...m, snap: m.snap || m.boom, boom: m.boom || m.snap }));
   const dead = new Set(plan.mechs.filter((m) => !mechs.some((k) => k.id === m.id)).map((m) => m.id));
   const entities = plan.entities
@@ -903,29 +925,45 @@ function removeSteps(plan: Plan, ids: string[]): Plan {
     // does one whose mech did.
     .filter((e) => !(e.mech && dead.has(e.mech)))
     .filter((e) => e.mech || e.steps === "all" || (e.steps as string[]).length > 0);
-  steps = steps.map((step) =>
-    step.variantScenes
-      ? {
-          ...step,
-          variantScenes: Object.fromEntries(
-            Object.entries(step.variantScenes).map(([variant, scene]) => {
-              const deadIds = scene
-                .filter((entity) => entity.mech && dead.has(entity.mech))
-                .map((entity) => entity.id);
-              return [
-                variant,
-                withoutEntities(scene, deadIds).map((entity) =>
-                  entity.declaredIn && gone.has(entity.declaredIn)
-                    ? ({ ...entity, declaredIn: undefined } as Entity)
-                    : entity
-                ),
-              ];
-            })
-          ),
-        }
-      : step
-  );
-  return { ...plan, steps, mechs, entities };
+  steps = steps.map((step) => {
+    const variantScenes = step.variantScenes
+      ? Object.fromEntries(
+          Object.entries(step.variantScenes).map(([variant, scene]) => {
+            const deadIds = scene
+              .filter((entity) => entity.mech && dead.has(entity.mech))
+              .map((entity) => entity.id);
+            return [
+              variant,
+              withoutEntities(scene, deadIds).map((entity) =>
+                entity.declaredIn && gone.has(entity.declaredIn)
+                  ? ({ ...entity, declaredIn: undefined } as Entity)
+                  : entity
+              ),
+            ];
+          })
+        )
+      : undefined;
+    const stepVariantMovement = Object.fromEntries(
+      Object.entries(step.stepVariantMovement ?? {}).filter(
+        ([variantId]) => !removedVariantIds.has(variantId),
+      ),
+    );
+    return {
+      ...step,
+      ...(variantScenes ? { variantScenes } : {}),
+      variantEnd: step.variantEnd && gone.has(step.variantEnd) ? step.id : step.variantEnd,
+      stepVariantMovement: Object.keys(stepVariantMovement).length
+        ? stepVariantMovement
+        : undefined,
+    };
+  });
+  const variantRoutes = plan.variantRoutes?.map((route) => ({
+    ...route,
+    selections: Object.fromEntries(
+      Object.entries(route.selections).filter(([ownerStepId]) => !gone.has(ownerStepId)),
+    ),
+  }));
+  return { ...plan, steps, mechs, entities, variantRoutes };
 }
 
 /**
@@ -1382,7 +1420,13 @@ export function setStepVariantMovement(
         }
       : step,
   );
-  return touch({ ...plan, steps });
+  const next = { ...plan, steps };
+  for (const route of next.variantRoutes ?? []) {
+    const errors = validateStepVariantSelections(next, route.selections);
+    if (errors.length)
+      throw new Error(`Movement would make saved Route “${route.name}” unsafe: ${errors.join("; ")}`);
+  }
+  return touch(next);
 }
 
 /** Remove one actor override, or resynchronize the whole box to Shared. */
@@ -1780,7 +1824,7 @@ export function resetBeatVariantStep(plan: Plan, stepId: string, variantId: stri
 }
 
 function assertRouteSelections(plan: Plan, selections: Record<string, string>): void {
-  const errors = validateBeatVariantSelections(plan, selections);
+  const errors = validateVariantSelections(plan, selections);
   if (errors.length) throw new Error(errors.join("; "));
 }
 

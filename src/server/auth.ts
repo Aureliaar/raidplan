@@ -241,7 +241,7 @@ authRoutes.get("/dev", async (c) => {
 authRoutes.post("/bootstrap", async (c) => {
   const expected = c.env.BOOTSTRAP_SECRET;
   if (!expected) return c.text("Bootstrap is disabled", 403);
-  if (!constantTimeEqual(c.req.header("x-bootstrap-secret") ?? "", expected))
+  if (!(await constantTimeEqual(c.req.header("x-bootstrap-secret") ?? "", expected)))
     return c.text("Bad bootstrap secret", 403);
 
   const name = c.req.query("name") || "owner";
@@ -259,10 +259,16 @@ authRoutes.post("/bootstrap", async (c) => {
   });
 });
 
-function constantTimeEqual(a: string, b: string): boolean {
-  if (a.length !== b.length) return false;
+export async function constantTimeEqual(a: string, b: string): Promise<boolean> {
+  const [left, right] = await Promise.all([
+    crypto.subtle.digest("SHA-256", enc.encode(a)),
+    crypto.subtle.digest("SHA-256", enc.encode(b)),
+  ]);
+  const leftBytes = new Uint8Array(left);
+  const rightBytes = new Uint8Array(right);
   let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  for (let index = 0; index < leftBytes.length; index++)
+    diff |= leftBytes[index] ^ rightBytes[index];
   return diff === 0;
 }
 

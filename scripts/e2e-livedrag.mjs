@@ -98,10 +98,17 @@ if (Math.abs(((autoMid.rotation - wantBearing + 540) % 360) - 180) > 6)
   fail("the autobait did not re-target to the player being dragged in: " + autoMid.rotation + "deg, want ~" + wantBearing);
 else console.log("mid-drag: autobait swung " + autoBefore.rotation + "deg -> " + autoMid.rotation + "deg (H1 is now closest)");
 
-const tetherEnds = await page.evaluate(
-  () => window.Konva.stages[0].find("Line").map((l) => l.points()).filter((p) => p && p.length === 4)
+const tetherEnds = await page.evaluate(() =>
+  window.Konva.stages[0].find(".tether-guide").flatMap((line) => {
+    const points = line.points();
+    const transform = line.getParent().getTransform();
+    return [
+      transform.point({ x: points[0], y: points[1] }),
+      transform.point({ x: points.at(-2), y: points.at(-1) }),
+    ];
+  })
 );
-if (!tetherEnds.some((p) => Math.hypot(p[2] - dropAt.x, p[3] - dropAt.y) < 20 || Math.hypot(p[0] - dropAt.x, p[1] - dropAt.y) < 20))
+if (!tetherEnds.some((p) => Math.hypot(p.x - dropAt.x, p.y - dropAt.y) < 20))
   fail("no tether endpoint followed H1 mid-drag");
 else console.log("mid-drag: the tether endpoint moved with H1 too");
 

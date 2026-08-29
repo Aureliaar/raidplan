@@ -38,6 +38,11 @@ import {
   variantLabel,
   type Plan,
 } from "../shared/schema";
+import {
+  stepVariantLabel,
+  stepVariants,
+  validateStepVariantSelections,
+} from "../shared/step-variants";
 import { JOB_IDS } from "../shared/jobs";
 import { ACTOR_KEYS, ARENA_BACKGROUNDS, ASSETS, MARKER_KEYS, MECHANIC_KEYS } from "../shared/assets";
 
@@ -236,6 +241,53 @@ function resolvedBeatSelections(plan: Plan, selections: Record<string, string>):
       return [beatId, beatVariantIdOf(plan, beatId, variantRef)];
     })
   );
+}
+
+/** Accept a Variant-box id, 1-based index, name or A/B letter on one Step split. */
+function stepVariantIdOf(plan: Plan, ownerStepId: string, variant: string): string {
+  const owner = plan.steps.find((step) => step.id === ownerStepId);
+  const variants = stepVariants(owner);
+  const byId = variants.find((candidate) => candidate.id === variant);
+  if (byId) return byId.id;
+  const n = Number(variant);
+  if (Number.isInteger(n) && n >= 1 && n <= variants.length) return variants[n - 1].id;
+  const byName = variants.find(
+    (candidate) => stepVariantLabel(owner!, candidate.id).toLowerCase() === variant.toLowerCase(),
+  );
+  if (byName) return byName.id;
+  throw new Error(
+    `No Variant box "${variant}" on ${owner?.name || ownerStepId}. Boxes: ${variants
+      .map((candidate, index) => `${index + 1}=${stepVariantLabel(owner!, candidate.id)} [${candidate.id}]`)
+      .join(", ") || "none"}`,
+  );
+}
+
+function stepVariantOwnerIdOf(plan: Plan, step: string): string {
+  const stepId = stepIdOf(plan, step)!;
+  const owner = plan.steps.find((candidate) => candidate.id === stepId)!;
+  if (stepVariants(owner).length < 2)
+    throw new Error(`${owner.name || owner.id} does not declare Variant boxes`);
+  return owner.id;
+}
+
+function resolvedRouteSelections(
+  plan: Plan,
+  selections: Record<string, string>,
+): Record<string, string> {
+  if (plan.variantModel === "beat") return resolvedBeatSelections(plan, selections);
+  if (plan.variantModel !== "step") throw new Error("This plan has no live Variant model");
+  return Object.fromEntries(
+    Object.entries(selections).map(([stepRef, variantRef]) => {
+      const ownerStepId = stepVariantOwnerIdOf(plan, stepRef);
+      return [ownerStepId, stepVariantIdOf(plan, ownerStepId, variantRef)];
+    }),
+  );
+}
+
+function routeSelectionErrors(plan: Plan, selections: Record<string, string>): string[] {
+  return plan.variantModel === "step"
+    ? validateStepVariantSelections(plan, selections)
+    : validateBeatVariantSelections(plan, selections);
 }
 
 function routeIdOf(plan: Plan, route: string): string {
@@ -727,6 +779,118 @@ export const TOOLS: ToolDef[] = [
   }),
 
   def({
+    name: "list_step_variants",
+    description: "List Step-owned mutually exclusive Variant boxes and the complete Beats inside each box.",
+    schema: { plan_id: z.string() },
+    async run(ctx, a) {
+      const { plan } = await load(ctx, a.plan_id, "view");
+      if (plan.variantModel !== "step") throw new Error("This plan does not use Step-owned Variant boxes");
+      const owners = plan.steps.filter((step) => stepVariants(step).length >= 2);
+      if (!owners.length) return "No Step Variant splits yet.";
+      return owners.map((owner) => {
+        const end = plan.steps.find((step) => step.id === (owner.variantEnd || owner.id));
+        const boxes = stepVariants(owner).map((variant) => {
+          const beats = variant.beats.map((id) => {
+            const beat = plan.mechs.find((candidate) => candidate.id === id);
+            return beat ? `${mechLabel(plan, beat)} [${id}]` : `missing Beat [${id}]`;
+          });
+          return `${stepVariantLabel(owner, variant.id)} [${variant.id}] — ${beats.join(", ") || "empty"}`;
+        });
+        return `${owner.name || owner.id} [${owner.id}] → ${end?.name || end?.id || owner.id}\n   ${boxes.join("\n   ")}`;
+      }).join("\n");
+    },
+  }),
+
+  def({
+    name: "add_step_variants",
+    description: "Split one Step into two mutually exclusive Variant boxes, initially empty.",
+    schema: { plan_id: z.string(), step: z.string(), second_name: z.string().optional() },
+    async run(ctx, a) {
+      let ownerStepId = "";
+      const result = await edit(ctx, a.plan_id, (plan) => {
+        if (plan.variantModel !== "step") throw new Error("This plan does not use Step-owned Variant boxes");
+        ownerStepId = stepIdOf(plan, a.step)!;
+        return { op: "add_step_variant", stepId: ownerStepId, name: a.second_name };
+      });
+      const owner = result.plan.steps.find((step) => step.id === ownerStepId)!;
+      return `Created Variant boxes ${stepVariants(owner).map((variant) => `${stepVariantLabel(owner, variant.id)} [${variant.id}]`).join(" / ")}.`;
+    },
+  }),
+
+  def({
+    name: "rename_step_variant",
+    description: "Rename one Step-owned Variant box.",
+    schema: { plan_id: z.string(), step: z.string(), variant: z.string(), name: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        const ownerStepId = stepVariantOwnerIdOf(plan, a.step);
+        return {
+          op: "update_step_variant",
+          stepId: ownerStepId,
+          variantId: stepVariantIdOf(plan, ownerStepId, a.variant),
+          patch: { name: a.name },
+        };
+      });
+      return "Variant box renamed.";
+    },
+  }),
+
+  def({
+    name: "assign_beats_to_step_variant",
+    description: "Move complete Beats into one Step Variant box, or back to Shared when variant is omitted.",
+    schema: {
+      plan_id: z.string(),
+      step: z.string(),
+      beats: z.array(z.string()).min(1),
+      variant: z.string().optional(),
+    },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        const ownerStepId = stepVariantOwnerIdOf(plan, a.step);
+        return {
+          op: "assign_beats_to_step_variant",
+          stepId: ownerStepId,
+          beatIds: a.beats.map((beat) => mechIdOf(plan, beat)),
+          variantId: a.variant ? stepVariantIdOf(plan, ownerStepId, a.variant) : undefined,
+        };
+      });
+      return a.variant ? "Beats moved into the Variant box." : "Beats moved back to Shared.";
+    },
+  }),
+
+  def({
+    name: "resize_step_variant",
+    description: "Move or resize a Step Variant container within its Mechanic.",
+    schema: { plan_id: z.string(), step: z.string(), start: z.string(), end: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => ({
+        op: "move_step_variant_set",
+        stepId: stepVariantOwnerIdOf(plan, a.step),
+        snap: stepIdOf(plan, a.start)!,
+        boom: stepIdOf(plan, a.end)!,
+      }));
+      return "Variant container resized.";
+    },
+  }),
+
+  def({
+    name: "collapse_step_variants",
+    description: "Owner-only: promote one Variant box to Shared and delete its sibling box and Beats.",
+    schema: { plan_id: z.string(), step: z.string(), variant: z.string() },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        const ownerStepId = stepVariantOwnerIdOf(plan, a.step);
+        return {
+          op: "collapse_step_variants",
+          stepId: ownerStepId,
+          variantId: stepVariantIdOf(plan, ownerStepId, a.variant),
+        };
+      });
+      return "Variant split collapsed; the chosen box is now Shared.";
+    },
+  }),
+
+  def({
     name: "list_beats",
     description:
       "List timed Beats, their mutually exclusive child Variant boxes, and optional Step-local content/movement state.",
@@ -869,17 +1033,20 @@ export const TOOLS: ToolDef[] = [
 
   def({
     name: "list_beat_variant_routes",
-    description: "List saved non-owning Beat-selection Routes and the document default.",
+    description: "List saved non-owning Variant-selection Routes and the document default.",
     schema: { plan_id: z.string() },
     async run(ctx, a) {
       const { plan } = await load(ctx, a.plan_id, "view");
-      requireBeatModel(plan);
       const routes = plan.variantRoutes ?? [];
-      if (!routes.length) return "No saved Beat Variant Routes.";
+      if (!routes.length) return "No saved Variant Routes.";
       return routes.map((route, index) => {
-        const choices = Object.entries(route.selections).map(([beatId, variantId]) => {
-          const beat = plan.mechs.find((candidate) => candidate.id === beatId);
-          return beat ? `${mechLabel(plan, beat)}=${beatVariantLabel(beat, variantId)}` : `${beatId}=${variantId}`;
+        const choices = Object.entries(route.selections).map(([ownerId, variantId]) => {
+          if (plan.variantModel === "step") {
+            const owner = plan.steps.find((candidate) => candidate.id === ownerId);
+            return owner ? `${owner.name || owner.id}=${stepVariantLabel(owner, variantId)}` : `${ownerId}=${variantId}`;
+          }
+          const beat = plan.mechs.find((candidate) => candidate.id === ownerId);
+          return beat ? `${mechLabel(plan, beat)}=${beatVariantLabel(beat, variantId)}` : `${ownerId}=${variantId}`;
         });
         return `${index + 1}. ${route.name} [${route.id}]${route.id === plan.defaultVariantRoute ? " (default)" : ""}${route.compatibility ? " (compatibility)" : ""} — ${choices.join(", ")}`;
       }).join("\n");
@@ -889,31 +1056,31 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "save_beat_variant_route",
     description:
-      "Save a complete conflict-free Beat preview as a non-owning Route. Keys/values accept Beat and Variant ids, indexes or names.",
+      "Save a complete conflict-free Variant preview as a non-owning Route. Step-box plans use declaring Steps as keys; Beat plans use Beats.",
     schema: { plan_id: z.string(), name: z.string().optional(), selections: z.record(z.string(), z.string()), make_default: z.boolean().optional() },
     async run(ctx, a) {
       const result = await edit(ctx, a.plan_id, (plan) => {
-        const selections = resolvedBeatSelections(plan, a.selections);
-        const errors = validateBeatVariantSelections(plan, selections);
+        const selections = resolvedRouteSelections(plan, a.selections);
+        const errors = routeSelectionErrors(plan, selections);
         if (errors.length) throw new Error(errors.join("; "));
         return { op: "add_beat_variant_route", name: a.name, selections };
       });
       const route = result.values[0] as { id: string };
       if (a.make_default)
         await edit(ctx, a.plan_id, () => ({ op: "set_default_beat_variant_route", routeId: route.id }));
-      return `Saved Beat Variant Route [${route.id}]${a.make_default ? " as the document default" : ""}.`;
+      return `Saved Variant Route [${route.id}]${a.make_default ? " as the document default" : ""}.`;
     },
   }),
 
   def({
     name: "update_beat_variant_route",
-    description: "Rename a saved Route or replace its complete conflict-free Beat selection map.",
+    description: "Rename a saved Route or replace its complete conflict-free Variant selection map.",
     schema: { plan_id: z.string(), route: z.string(), name: z.string().optional(), selections: z.record(z.string(), z.string()).optional() },
     async run(ctx, a) {
       await edit(ctx, a.plan_id, (plan) => ({
         op: "update_beat_variant_route",
         routeId: routeIdOf(plan, a.route),
-        patch: { name: a.name, selections: a.selections ? resolvedBeatSelections(plan, a.selections) : undefined },
+        patch: { name: a.name, selections: a.selections ? resolvedRouteSelections(plan, a.selections) : undefined },
       }));
       return "Beat Variant Route updated.";
     },

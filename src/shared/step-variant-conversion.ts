@@ -84,14 +84,46 @@ function materializeBeat(staging: Plan, beat: Mech, variantId: string): { beats:
     const stepColor = staging.steps.find((step) => step.id === stepId)?.beatVariantContent?.[variantId]?.color;
     const scene = composeBeatVariantEntities(staging, stepId, { [beat.id]: variantId }).entities;
     const visible = scene.filter((candidate) => candidate.mech === beat.id && isBeatPart(candidate));
+    const partIds = new Map(visible.map((entity) => [entity.id, fresh(entity.type)]));
+    const bondIds = new Map<string, string>();
+    const symmetryIds = new Map<string, string>();
+    for (const entity of visible) {
+      if (entity.bond && !bondIds.has(entity.bond.id)) bondIds.set(entity.bond.id, fresh("bond"));
+      if (entity.symmetry && !symmetryIds.has(entity.symmetry.id))
+        symmetryIds.set(entity.symmetry.id, fresh("symmetry"));
+    }
     for (const entity of visible) {
       const effectiveColor =
         stepColor ?? beat.color ?? zoneFamilyColor(staging, entity) ?? mechColor(staging, beat);
+      const anchor = entity.anchor
+        ? {
+            ...entity.anchor,
+            to: partIds.get(entity.anchor.to) ?? entity.anchor.to,
+            ...(entity.anchor.from
+              ? { from: partIds.get(entity.anchor.from) ?? entity.anchor.from }
+              : {}),
+            ...(entity.anchor.near
+              ? { near: partIds.get(entity.anchor.near) ?? entity.anchor.near }
+              : {}),
+          }
+        : entity.anchor;
+      const endpoints = entity.type === "tether"
+        ? {
+            from: partIds.get(entity.from) ?? entity.from,
+            to: partIds.get(entity.to) ?? entity.to,
+          }
+        : {};
       parts.push(EntitySchema.parse({
         ...entity,
         ...(!entity.color && effectiveColor ? { color: effectiveColor } : {}),
-        id: fresh(entity.type),
+        id: partIds.get(entity.id)!,
         mech: madeId,
+        anchor,
+        ...endpoints,
+        ...(entity.bond ? { bond: { ...entity.bond, id: bondIds.get(entity.bond.id)! } } : {}),
+        ...(entity.symmetry
+          ? { symmetry: { ...entity.symmetry, id: symmetryIds.get(entity.symmetry.id)! } }
+          : {}),
         declaredIn: stepId,
         steps: [stepId],
         overrides: {},
@@ -106,9 +138,20 @@ function materializeBeat(staging: Plan, beat: Mech, variantId: string): { beats:
   };
 }
 
-function visual(entity: Entity): Record<string, unknown> {
+function visual(entity: Entity, byId: Map<string, Entity>): Record<string, unknown> {
   const { id: _id, mech: _mech, overrides: _overrides, declaredIn: _declaredIn, steps: _steps, ...rest } = entity;
-  return rest;
+  const anchorless = { ...rest, anchor: undefined } as Record<string, unknown>;
+  if (entity.bond) anchorless.bond = { ...entity.bond, id: undefined };
+  if (entity.symmetry) anchorless.symmetry = { ...entity.symmetry, id: undefined };
+  if (entity.type === "tether") {
+    const endpoint = (id: string) => {
+      const target = byId.get(id);
+      return target ? { x: target.x, y: target.y } : null;
+    };
+    anchorless.from = endpoint(entity.from);
+    anchorless.to = endpoint(entity.to);
+  }
+  return anchorless;
 }
 
 function stable(value: unknown): unknown {
@@ -123,8 +166,10 @@ function stable(value: unknown): unknown {
 }
 
 function visualScene(plan: Plan, stepId: string, shown: Record<string, string>): string[] {
-  return entitiesForStep(plan, stepId, undefined, shown)
-    .map((entity) => JSON.stringify(stable(visual(entity))))
+  const entities = entitiesForStep(plan, stepId, undefined, shown);
+  const byId = new Map(entities.map((entity) => [entity.id, entity]));
+  return entities
+    .map((entity) => JSON.stringify(stable(visual(entity, byId))))
     .sort();
 }
 

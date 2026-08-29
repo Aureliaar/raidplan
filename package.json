@@ -38,6 +38,7 @@
     "e2e:source": "node scripts/e2e-source.mjs",
     "e2e:symmetry": "node scripts/e2e-symmetry.mjs",
     "e2e:steps": "node scripts/e2e-steps.mjs",
+    "e2e:step-variants": "node scripts/e2e-step-variants.mjs",
     "mcp": "node scripts/mcp-call.mjs",
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1",
