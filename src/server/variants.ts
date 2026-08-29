@@ -207,10 +207,15 @@ export function guardVariants(
       return { ...op, ownerId: caller?.id, ownerName: caller?.name };
     if (op.op === "add_beat_variant" || op.op === "duplicate_beat_variant")
       return { ...op, createdBy: caller?.id, createdByName: caller?.name };
+    if (op.op === "add_step_variant")
+      return { ...op, createdBy: caller?.id, createdByName: caller?.name };
     return op;
   });
   for (const op of stamped) validateOpContext(plan, op);
-  if (role !== "owner" && stamped.some((op) => op.op === "collapse_beat_variants"))
+  if (
+    role !== "owner" &&
+    stamped.some((op) => op.op === "collapse_beat_variants" || op.op === "collapse_step_variants")
+  )
     throw deny("Only the plan owner can collapse Variants into Shared content");
   if (role === "owner") return stamped;
   for (const op of stamped)

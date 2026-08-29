@@ -47,7 +47,7 @@ export const api = {
   },
 
   listPlans: () => req<PlanSummary[]>("/api/plans"),
-  createPlan: (body: { name: string; encounter?: string; withParty?: boolean; variantModel?: "beat" }) =>
+  createPlan: (body: { name: string; encounter?: string; withParty?: boolean; variantModel?: "beat" | "step" }) =>
     req<{ id: string }>("/api/plans", { method: "POST", body: JSON.stringify(body) }),
   getPlan: (id: string) =>
     req<{ plan: Plan; role: PlanRole; meta: { isPublic: boolean } | null }>(`/api/plans/${id}`),

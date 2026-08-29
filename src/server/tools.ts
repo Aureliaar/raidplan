@@ -344,7 +344,7 @@ export const TOOLS: ToolDef[] = [
       with_waymarks: z.boolean().optional().describe("Seed A-D and 1-4 waymarks (default false)"),
     },
     async run(ctx, a) {
-      const draft = createPlan({ name: a.name, encounter: a.encounter, ownerId: ctx.userId, variantModel: "beat" });
+      const draft = createPlan({ name: a.name, encounter: a.encounter, ownerId: ctx.userId, variantModel: "step" });
       const stub = await planStub(ctx.env, draft.id);
       await stub.init({
         id: draft.id,
@@ -352,7 +352,7 @@ export const TOOLS: ToolDef[] = [
         encounter: a.encounter,
         ownerId: ctx.userId,
         withParty: a.with_party ?? true,
-        variantModel: "beat",
+        variantModel: "step",
       });
       await registry(ctx.env).registerPlan({
         id: draft.id,

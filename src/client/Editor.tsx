@@ -22,7 +22,6 @@ import type {
 } from "../shared/schema";
 import {
   EntitySchema,
-  activeBeatVariants,
   authoredEntitiesForStep,
   beatVariantContentEdited,
   beatVariantLabel,
@@ -40,8 +39,18 @@ import {
   resolveEntity,
   variantColor,
   variantLabel,
+  VARIANT_COLORS,
   yalmsToArenaUnits,
 } from "../shared/schema";
+import {
+  activeStepVariants,
+  boxedBeatIds,
+  composeStepVariantEntities,
+  defaultStepVariantSelections,
+  stepVariantLabel,
+  stepVariantOwner,
+  stepVariants,
+} from "../shared/step-variants";
 import type { PaletteKind, PaletteMechanicKind, PaletteSourceKind } from "../shared/ops";
 import {
   PALETTE,
@@ -435,10 +444,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               }
             : op
         );
+        // See OPTIMISTIC_OPS for the release contract these ops follow.
         const optimistic = expanded.every(
           (op) =>
-            op.op === "update_entity" ||
-            op.op === "delete_entities" ||
+            OPTIMISTIC_OPS.has(op.op) ||
             (op.op === "add_entity" && typeof op.spec.id === "string")
         );
         if (optimistic && current) {
@@ -731,11 +740,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         setStepIndex(Math.max(0, Math.min(plan.steps.length - 1, here + (key === "s" ? 1 : -1))));
         return;
       }
-      const active = activeBeatVariants(plan, plan.steps[here].id, shown);
+      const active = activeStepVariants(plan, plan.steps[here].id, shown);
       const target =
-        active.find(({ beat }) => beat.id === mech)?.beat ??
-        active.find(({ beat }) => beat.id === focusedBeat)?.beat ??
-        (active.length === 1 ? active[0].beat : undefined);
+        active.find(({ step }) => stepVariants(step).some((variant) => variant.beats.includes(mech ?? "")))?.step ??
+        active.find(({ ownerStepId }) => ownerStepId === focusedBeat)?.step ??
+        (active.length === 1 ? active[0].step : undefined);
       if (!target) {
         if (active.length > 1) setNote("Choose a varying Beat before using A/D");
         return;
@@ -744,19 +753,22 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       setGlide((n) => n + 1);
       setOnward(false);
       setFocusedBeat(target.id);
-      const currentSelection = active.find(({ beat }) => beat.id === target.id)?.variant.id;
-      const at = target.variants.findIndex(
+      const variants = stepVariants(target);
+      const currentSelection = active.find(({ ownerStepId }) => ownerStepId === target.id)?.variant.id;
+      const at = variants.findIndex(
         (variant) => variant.id === (shown[target.id] ?? currentSelection)
       );
       const from = at < 0 ? 0 : at;
       const to =
-        (from + (key === "d" ? 1 : -1) + target.variants.length) % target.variants.length;
-      const next = target.variants[to].id;
+        (from + (key === "d" ? 1 : -1) + variants.length) % variants.length;
+      const next = variants[to].id;
       setShown((was) => ({ ...was, [target.id]: next }));
       // Once an author has selected this Beat, A/D means "select the other
       // exclusive box", not "preview elsewhere while edits stay behind".
       // With no selected Beat it remains a viewer-safe preview shortcut.
-      if (mech === target.id) setEditingBeatVariant(next);
+      setEditingBeatVariant(next);
+      const selectedBeat = plan.mechs.find((beat) => beat.id === mech);
+      if (selectedBeat && !variants[to].beats.includes(selectedBeat.id)) setMech(null);
       return;
     };
     window.addEventListener("keydown", onKey);
@@ -798,25 +810,23 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * than one way. It is what the canvas resolves positions through, and where
    * a drag on this step lands.
    */
-  const stepMechanic = plan.mechanics.find((m) => m.id === step.mechanic) ?? null;
-  const playing = plan.variantModel !== "beat" && stepMechanic?.variants.length
-    ? (stepMechanic.variants.find((v) => v.id === shown[stepMechanic.id]) ?? stepMechanic.variants[0])
-        .id
-    : undefined;
   const authoredScene =
-    plan.variantModel === "beat"
-      ? composeBeatVariantEntities(plan, step.id, shown).entities
-      : authoredEntitiesForStep(plan, step.id, playing);
+    plan.variantModel === "step"
+      ? composeStepVariantEntities(plan, step.id, shown).entities
+      : authoredEntitiesForStep(plan, step.id);
+  // Legacy scene addressing is retired. Step Variant actor movement is routed
+  // explicitly below rather than through the old whole-scene `variant` arg.
+  const playing = undefined;
   const selectedEntity = authoredScene.find((entity) => entity.id === selected) ?? null;
-  const activeBeatPreviews = activeBeatVariants(plan, step.id, shown);
+  const activeStepPreviews = activeStepVariants(plan, step.id, shown);
   const movementConflicts =
-    plan.variantModel === "beat"
-      ? composeBeatVariantEntities(plan, step.id, shown).conflicts
+    plan.variantModel === "step"
+      ? composeStepVariantEntities(plan, step.id, shown).conflicts
       : [];
-  const editingVariant =
-    plan.variantModel === "beat" && openMech?.variants.some((variant) => variant.id === editingBeatVariant)
-      ? editingBeatVariant ?? undefined
-      : undefined;
+  const editingVariantOwner = editingBeatVariant
+    ? stepVariantOwner(plan, editingBeatVariant)
+    : undefined;
+  const editingVariant = editingVariantOwner?.variant.id;
 
   /** Pointer position, in arena units, from a point over the stage. */
   function arenaPointAt(clientX: number, clientY: number): { x: number; y: number } {
@@ -1442,44 +1452,44 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         </div>
       </header>
 
-      {plan.variantModel === "beat" && (
+      {plan.variantModel === "step" && (
         <div className="panel flex flex-wrap items-center gap-2 border-x-0 border-t-0 px-3 py-1.5 text-xs">
           <span className="label">Preview</span>
-          {activeBeatPreviews.length ? (
-            activeBeatPreviews.map(({ beat, variant }) => (
+          {activeStepPreviews.length ? (
+            activeStepPreviews.map(({ step: ownerStep, ownerStepId, variant }) => (
               <label
-                key={beat.id}
-                className={`flex items-center gap-1 rounded border px-2 py-1 ${movementConflicts.some((conflict) => conflict.beatIds.includes(beat.id)) ? "border-amber-400 bg-amber-950/50" : focusedBeat === beat.id ? "border-blue-400 bg-blue-950/40" : "border-ink-600 bg-ink-800"}`}
+                key={ownerStepId}
+                className={`flex items-center gap-1 rounded border px-2 py-1 ${movementConflicts.some((conflict) => conflict.ownerStepIds.includes(ownerStepId)) ? "border-amber-400 bg-amber-950/50" : focusedBeat === ownerStepId ? "border-blue-400 bg-blue-950/40" : "border-ink-600 bg-ink-800"}`}
               >
-                <span>{mechLabel(plan, beat)}:</span>
+                <span>{ownerStep.name || "Step"}:</span>
                 <select
-                  data-preview-beat={beat.id}
+                  data-preview-step={ownerStepId}
                   className="bg-transparent text-blue-100 outline-none"
                   value={variant.id}
-                  onFocus={() => setFocusedBeat(beat.id)}
+                  onFocus={() => setFocusedBeat(ownerStepId)}
                   onChange={(event) => {
-                    setFocusedBeat(beat.id);
-                    setShown((current) => ({ ...current, [beat.id]: event.target.value }));
+                    setFocusedBeat(ownerStepId);
+                    setShown((current) => ({ ...current, [ownerStepId]: event.target.value }));
                   }}
                 >
-                  {beat.variants.map((choice) => (
+                  {stepVariants(ownerStep).map((choice) => (
                     <option key={choice.id} value={choice.id} className="bg-ink-900">
-                      {beatVariantLabel(beat, choice.id)}
+                      {stepVariantLabel(ownerStep, choice.id)}
                     </option>
                   ))}
                 </select>
-                {movementConflicts.some((conflict) => conflict.beatIds.includes(beat.id)) && (
+                {movementConflicts.some((conflict) => conflict.ownerStepIds.includes(ownerStepId)) && (
                   <span className="text-amber-300" title="This preview has an explicit same-actor movement conflict">⚠</span>
                 )}
               </label>
             ))
           ) : (
-            <span className="text-ink-400">No varying Beats active in this Step</span>
+            <span className="text-ink-400">No Variant split active in this Step</span>
           )}
           <span className="ml-auto text-ink-300" data-edit-destination>
             {editable
-              ? editingVariant && openMech
-                ? `Editing: ${mechLabel(plan, openMech)} › ${beatVariantLabel(openMech, editingVariant)} › ${step.name || "Step"}`
+              ? editingVariant && editingVariantOwner
+                ? `Editing: ${editingVariantOwner.step.name || "Step"} › ${stepVariantLabel(editingVariantOwner.step, editingVariant)}${openMech ? ` › ${mechLabel(plan, openMech)}` : ""}`
                 : openMech
                   ? `Editing: ${mechLabel(plan, openMech)} shared Parts`
                   : `Editing: ${step.name || "Step"} shared scene`
@@ -1488,9 +1498,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         </div>
       )}
 
-      {plan.variantModel === "beat" && movementConflicts.length > 0 && (
+      {plan.variantModel === "step" && movementConflicts.length > 0 && (
         <div className="bg-amber-950 px-3 py-1.5 text-center text-xs text-amber-200" role="alert" data-movement-conflict>
-          Movement conflict: {movementConflicts.map((conflict) => authoredScene.find((entity) => entity.id === conflict.actorId)?.name || conflict.actorId).join(", ")} is moved by more than one active Beat. Shared Step positions are shown until the conflict is resolved.
+          Movement conflict: {movementConflicts.map((conflict) => authoredScene.find((entity) => entity.id === conflict.actorId)?.name || conflict.actorId).join(", ")} is moved by more than one active Variant split. Shared Step positions are shown until the conflict is resolved.
         </div>
       )}
 
@@ -1613,6 +1623,22 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 onSelect={setSelection}
                 onResize={resize}
                 onMove={(moves) => {
+                  if (plan.variantModel === "step" && editingVariant) {
+                    const movementOps = moves.flatMap(({ id, x, y }): Op[] => {
+                      const entity = authoredScene.find((candidate) => candidate.id === id);
+                      return entity?.type === "player" || entity?.type === "enemy"
+                        ? [{
+                            op: "set_step_variant_movement",
+                            stepId: step.id,
+                            variantId: editingVariant,
+                            actorId: id,
+                            pose: { x, y, rotation: entity.rotation },
+                          }]
+                        : [{ op: "update_entity", id, patch: { x, y } }];
+                    });
+                    if (movementOps.length) void run(movementOps, false);
+                    return;
+                  }
                   if (
                     plan.variantModel === "beat" &&
                     openMech &&
@@ -2063,6 +2089,34 @@ function CanvasArea({ children }: { children: (size: number) => React.ReactNode 
  * holding is whichever half of the box you took hold of; from there it follows
  * the pointer in both directions, so the same grab stretches and shortens.
  */
+/**
+ * The release contract for every direct-manipulation gesture (Beat, chip,
+ * Variant edge, row and section drags):
+ *
+ * 1. Batch the whole gesture into ONE `run()` call.
+ * 2. Ops in this set are pure transforms of state the client already holds,
+ *    so `run()` applies them locally in the same paint; the server response
+ *    stays authoritative.
+ * 3. The preview state (`drag`, `variantDrag`, …) is cleared in the run's
+ *    `finally`, never before — so however the ops are applied, no frame ever
+ *    shows the old position between release and acknowledgement.
+ *
+ * NEW ops are born client-authoritative and join this set at birth: the
+ * client mints their ids and sends their context, so their result is fully
+ * predictable locally (see AGENTS.md). Only legacy ops with server-minted
+ * ids or server-side reads stay off the list, wait-for-ack.
+ */
+const OPTIMISTIC_OPS = new Set<string>([
+  "update_entity",
+  "delete_entities",
+  "update_mech",
+  "gate_mech",
+  "assign_beats_to_step_variant",
+  "move_step_variant_set",
+  "move_step",
+  "move_mechanic",
+]);
+
 interface Drag {
   id: string;
   mode: "top" | "bottom";
@@ -2078,7 +2132,19 @@ interface Drag {
    * so a plain up-and-down drag never puts a cast anywhere.
    */
   gate?: { to?: string };
+  /**
+   * The Variant half the pointer is over right now, in a Step-Variant plan:
+   * letting go there makes the Beat that Variant's. Unset with the pointer
+   * clear of every box, so letting go outside pulls the Beat back to shared.
+   */
+  into?: { stepId: string; variantId: string };
   moved: boolean;
+  /**
+   * Released, waiting for the server: the preview holds its pose, the move
+   * handlers leave it alone, and the run's settling clears it — unless a new
+   * drag has replaced it first.
+   */
+  settling?: boolean;
 }
 
 /** A row or heading being carried to another slot in its list. */
@@ -2087,6 +2153,8 @@ interface Slide {
   /** The slot it is over right now — where it would land if you let go. */
   at: number;
   moved: boolean;
+  /** Released, waiting for the server — see Drag.settling. */
+  settling?: boolean;
 }
 
 /** A list with one item lifted out and put back at `at`: the drag, previewed. */
@@ -2155,6 +2223,7 @@ function StepRail({
   const current = plan.steps[at];
 
   const [drag, setDrag] = useState<Drag | null>(null);
+  const [variantDrag, setVariantDrag] = useState<Drag | null>(null);
   /**
    * A row or a heading on its way somewhere: what is being dragged and which
    * slot it is currently over. Where a step or a section sits *is* what it
@@ -2232,7 +2301,8 @@ function StepRail({
    */
   function layout(visible: Step[], mechanic: Mechanic | null) {
     const row = new Map(visible.map((s, i) => [s.id, i]));
-    const areas: (string | undefined)[] = [undefined, ...(mechanic?.variants.map((v) => v.id) ?? [])];
+    const areas: (string | undefined)[] = [undefined];
+    const boxed = boxedBeatIds(plan);
     const split = areas.length > 1;
     type Placed = { mech: Mech; lo: number; hi: number; lane: number };
     /** The rows a cast covers as the plan has it — the drag is not in this. */
@@ -2254,6 +2324,7 @@ function StepRail({
       const mine: Placed[] = [];
       for (const mech of plan.mechs) {
         if (!row.has(mech.snap)) continue;
+        if (boxed.has(mech.id)) continue;
         if ((mech.variant ?? undefined) !== area) continue;
         const rows = span(mech);
         if (!rows) continue;
@@ -2283,15 +2354,32 @@ function StepRail({
           const i = mine.findIndex((p) => p.mech.id === held.id);
           if (i >= 0) mine.splice(i, 1);
         }
-        const mine = lanesOf[at];
-        const [lo, hi] = [drag.lo, drag.hi];
-        let lane = 0;
-        while (
-          lane < groups[at].lanes - 1 &&
-          mine.some((p) => p.lane === lane && p.lo <= hi && p.hi >= lo)
-        )
-          lane++;
-        mine.push({ mech: held, lo, hi, lane });
+        // Held over a Variant half, the Beat is that half's: the half says so
+        // with its ring and a chip preview, and no lane box doubles it. A
+        // loose Beat still keeps its lane box mounted — invisible — because
+        // it holds the pointer capture, and an unmounted element drops the
+        // release on the floor. A chip needs no double: the chip itself stays
+        // mounted in its half. Clear of every box the lane preview is the
+        // edit, as it always was.
+        if (!drag.into || !boxed.has(held.id)) {
+          const mine = lanesOf[at];
+          const [lo, hi] = [drag.lo, drag.hi];
+          // A chip pulled out of its box needs somewhere to be: rather than
+          // land on a box already there, it may open a lane of its own. The
+          // pointer is out over the rows by then, so nothing it is aiming at
+          // slides away. The legacy split keeps its no-reflow bargain.
+          const cap = plan.variantModel === "step" ? Infinity : groups[at].lanes - 1;
+          let lane = 0;
+          while (lane < cap && mine.some((p) => p.lane === lane && p.lo <= hi && p.hi >= lo))
+            lane++;
+          mine.push({ mech: held, lo, hi, lane });
+          if (lane >= groups[at].lanes) {
+            const grew = lane + 1 - groups[at].lanes;
+            groups[at].lanes = lane + 1;
+            for (let g = at + 1; g < groups.length; g++) groups[g].from += grew;
+            from += grew;
+          }
+        }
       }
     }
 
@@ -2303,7 +2391,46 @@ function StepRail({
     // where a box sits, so the list never has to be resorted — and a box that
     // kept its place in the list keeps the pointer, which is the drag itself.
     placed.sort((a, b) => plan.mechs.indexOf(a.mech) - plan.mechs.indexOf(b.mech));
-    return { placed, lanes: from, groups };
+    const boxes = visible.flatMap((owner) => {
+      const variants = stepVariants(owner);
+      if (variants.length < 2) return [];
+      const own = row.get(owner.id) ?? 0;
+      const end = row.get(owner.variantEnd || owner.id) ?? own;
+      const moving = variantDrag?.id === owner.id ? variantDrag : undefined;
+      const boxLo = moving?.lo ?? Math.min(own, end);
+      const boxHi = moving?.hi ?? Math.max(own, end);
+      // Each half packs its Beats the way the loose lanes do: two Beats over
+      // the same rows sit side by side, and the half grows a sublane for it.
+      const slots = new Map<string, { lo: number; hi: number; lane: number }>();
+      const subs = variants.map((variant) => {
+        const mine: { lo: number; hi: number; lane: number }[] = [];
+        for (const id of variant.beats) {
+          const mech = plan.mechs.find((beat) => beat.id === id);
+          const rows = mech && span(mech);
+          if (!rows) continue;
+          const [bLo, bHi] = rows;
+          let lane = 0;
+          while (mine.some((p) => p.lane === lane && p.lo <= bHi && p.hi >= bLo)) lane++;
+          const slot = { lo: bLo, hi: bHi, lane };
+          mine.push(slot);
+          slots.set(id, slot);
+        }
+        return Math.max(1, mine.reduce((n, p) => Math.max(n, p.lane + 1), 0));
+      });
+      return [{ owner, variants, lo: boxLo, hi: boxHi, lane: 0, subs, slots }];
+    });
+    // A Variant is one timeline container with sibling readings inside it.
+    // Give every reading a timeline column per sublane, as the legacy split
+    // did, while the shared colour strips and end handle span the container.
+    const laneWidths = Array(from).fill(66) as number[];
+    boxes.forEach((box) => {
+      box.lane = from;
+      from += box.variants.length;
+      // Each sublane must hold a normal 66px Beat card, plus the Variant
+      // container's own border and breathing room.
+      laneWidths.push(...box.subs.map((n) => n * 66 + 12));
+    });
+    return { placed, boxes, lanes: from, laneWidths, groups };
   }
 
   /**
@@ -2315,7 +2442,7 @@ function StepRail({
   // Only the open section draws rows, so only it can want lanes.
   const laid = openMechanic
     ? layout(visibleRows, openMechanic)
-    : { placed: [], lanes: 0, groups: [] as { variant?: string; from: number; lanes: number }[] };
+    : { placed: [], boxes: [], lanes: 0, laneWidths: [] as number[], groups: [] as { variant?: string; from: number; lanes: number }[] };
   /** The sections in the order the pointer has them, same bargain. */
   const sections = sectionDrag
     ? reordered(plan.mechanics, sectionDrag.id, sectionDrag.at)
@@ -2354,34 +2481,78 @@ function StepRail({
     return undefined;
   };
 
+  /**
+   * The Variant half under the pointer, asked of the DOM: a carried Beat is in
+   * its own lane, so whatever the pointer is over besides it is the target.
+   */
+  const variantBoxAt = (
+    clientX: number,
+    clientY: number
+  ): { stepId: string; variantId: string } | undefined => {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const set = (el as HTMLElement).closest?.("[data-step-variant-set]");
+      if (!set) continue;
+      // Anywhere on the container means one of its halves: the dividers, the
+      // colour strips and the end bar all belong to whichever is nearest, so
+      // no drop on the box itself ever slips through to "outside".
+      let best: Element | undefined;
+      let near = Infinity;
+      for (const half of set.querySelectorAll("[data-step-variant]")) {
+        const r = half.getBoundingClientRect();
+        const d = clientX < r.left ? r.left - clientX : clientX > r.right ? clientX - r.right : 0;
+        if (d < near) [best, near] = [half, d];
+      }
+      if (best)
+        return {
+          stepId: set.getAttribute("data-step-variant-set")!,
+          variantId: best.getAttribute("data-step-variant")!,
+        };
+    }
+    return undefined;
+  };
+
+  /** The Variant box a Beat lives in, if it lives in one. */
+  const beatHome = (beatId: string): { stepId: string; variantId: string } | undefined => {
+    for (const step of plan.steps)
+      for (const variant of stepVariants(step))
+        if (variant.beats.includes(beatId)) return { stepId: step.id, variantId: variant.id };
+    return undefined;
+  };
+
   /** Let go of a row: the slot it was dropped on, or a plain click if it never moved. */
   function endRowDrag() {
     const settled = rowDrag;
-    setRowDrag(null);
-    if (!settled?.moved) return;
+    if (settled?.settling) return;
+    if (!settled?.moved) return setRowDrag(null);
+    setRowDrag({ ...settled, settling: true });
     dragged.current = true;
     setTimeout(() => (dragged.current = false), 0);
     const landing = siblings[Math.max(0, Math.min(siblings.length - 1, settled.at))];
     const to = plan.steps.indexOf(landing);
-    void run({ op: "move_step", stepId: settled.id, index: to });
+    const done = () => setRowDrag((held) => (held?.settling ? null : held));
+    void run({ op: "move_step", stepId: settled.id, index: to }).then(done, done);
     setIndex(to);
   }
 
   /** The same for a heading: the whole section goes where you put it. */
   function endSectionDrag() {
     const settled = sectionDrag;
-    setSectionDrag(null);
-    if (!settled?.moved) return;
+    if (settled?.settling) return;
+    if (!settled?.moved) return setSectionDrag(null);
+    setSectionDrag({ ...settled, settling: true });
     dragged.current = true;
     setTimeout(() => (dragged.current = false), 0);
     // The selection is a place in `plan.steps`, and moving a block of them
     // changes what is at that place: hold on to the step itself instead, or
     // the open section changes under you.
     const keep = current?.id;
-    void run({ op: "move_mechanic", mechanicId: settled.id, index: settled.at }).then((res) => {
-      const i = res.plan.steps.findIndex((s) => s.id === keep);
-      if (i >= 0) setIndex(i);
-    });
+    const done = () => setSectionDrag((held) => (held?.settling ? null : held));
+    void run({ op: "move_mechanic", mechanicId: settled.id, index: settled.at })
+      .then((res) => {
+        const i = res.plan.steps.findIndex((s) => s.id === keep);
+        if (i >= 0) setIndex(i);
+      })
+      .then(done, done);
   }
 
   /**
@@ -2393,7 +2564,7 @@ function StepRail({
     if (!rowDrag) return;
     const move = (ev: PointerEvent) => {
       const to = rowAt(ev.clientY, visibleRows);
-      setRowDrag((d) => (d && d.at !== to ? { ...d, at: to, moved: true } : d));
+      setRowDrag((d) => (d && !d.settling && d.at !== to ? { ...d, at: to, moved: true } : d));
     };
     const up = () => endRowDrag();
     window.addEventListener("pointermove", move);
@@ -2408,7 +2579,7 @@ function StepRail({
     if (!sectionDrag) return;
     const move = (ev: PointerEvent) => {
       const to = slotAt(ev.clientY, headerRuler.current);
-      setSectionDrag((d) => (d && d.at !== to ? { ...d, at: to, moved: true } : d));
+      setSectionDrag((d) => (d && !d.settling && d.at !== to ? { ...d, at: to, moved: true } : d));
     };
     const up = () => endSectionDrag();
     window.addEventListener("pointermove", move);
@@ -2445,23 +2616,79 @@ function StepRail({
    * Let go of a box: the reading it was carried onto, the span it was dropped
    * on, or a plain click if it never moved.
    */
-  function endDrag(mech: Mech, lo: number, hi: number, visible: Step[]) {
+  function endDrag(
+    mech: Mech,
+    lo: number,
+    hi: number,
+    visible: Step[],
+    at?: { clientX: number; clientY: number }
+  ) {
     const settled = drag;
-    setDrag(null);
-    if (!settled) return;
-    if (!settled.moved) return onOpenMech(openMech?.id === mech.id ? null : mech.id);
+    if (!settled || settled.settling) return;
+    if (!settled.moved) {
+      setDrag(null);
+      return onOpenMech(openMech?.id === mech.id ? null : mech.id);
+    }
+    setDrag({ ...settled, settling: true });
+    // Asked where the pointer let go rather than trusted to the last move
+    // event: the settled state can be one frame stale, and whose the Beat is
+    // must not depend on that race.
+    const into =
+      plan.variantModel === "step" && at
+        ? variantBoxAt(at.clientX, at.clientY)
+        : settled.into;
     // One drag can say both: which reading it is for, and when it happens.
     const [wasLo, wasHi] = settled.from;
-    void (async () => {
-      if (settled.gate && (mech.variant ?? undefined) !== settled.gate.to)
-        await run({ op: "gate_mech", mechId: mech.id, variant: settled.gate.to });
-      if (lo !== wasLo || hi !== wasHi)
-        await run({
-          op: "update_mech",
-          mechId: mech.id,
-          patch: { snap: visible[lo].id, boom: visible[hi].id },
+    // One batch, applied optimistically in the same paint that clears the
+    // preview: the release must never show frames of the old position while
+    // the server thinks it over.
+    const settle: Op[] = [];
+    if (settled.gate && (mech.variant ?? undefined) !== settled.gate.to)
+      settle.push({ op: "gate_mech", mechId: mech.id, variant: settled.gate.to });
+    if (lo !== wasLo || hi !== wasHi)
+      settle.push({
+        op: "update_mech",
+        mechId: mech.id,
+        patch: { snap: visible[lo].id, boom: visible[hi].id },
+      });
+    // Where the Beat was let go is whose it is: on a Variant half it becomes
+    // that Variant's, clear of every box it goes back to shared.
+    if (plan.variantModel === "step") {
+      const home = beatHome(mech.id);
+      if (into && into.variantId !== home?.variantId)
+        settle.push({
+          op: "assign_beats_to_step_variant",
+          stepId: into.stepId,
+          beatIds: [mech.id],
+          variantId: into.variantId,
         });
-    })();
+      else if (!into && home)
+        settle.push({
+          op: "assign_beats_to_step_variant",
+          stepId: home.stepId,
+          beatIds: [mech.id],
+        });
+    }
+    // The preview outlives the request: it is dropped only once the round
+    // trip settles (the optimistic apply makes that the same paint), and only
+    // if no new drag has replaced it in the meantime.
+    const done = () => setDrag((held) => (held?.settling ? null : held));
+    if (settle.length) void run(settle).then(done, done);
+    else done();
+  }
+
+  function endVariantDrag(owner: Step, visible: Step[]) {
+    const settled = variantDrag;
+    if (settled?.settling) return;
+    if (!settled?.moved) return setVariantDrag(null);
+    setVariantDrag({ ...settled, settling: true });
+    const done = () => setVariantDrag((held) => (held?.settling ? null : held));
+    void run({
+      op: "move_step_variant_set",
+      stepId: owner.id,
+      snap: visible[settled.lo].id,
+      boom: visible[settled.hi].id,
+    }).then(done, done);
   }
 
   /** Select a step by its place in the whole plan, which is what the canvas follows. */
@@ -2482,6 +2709,16 @@ function StepRail({
     const action = "grid h-6 w-6 shrink-0 place-items-center rounded text-xs text-ink-300 hover:bg-ink-600 hover:text-white disabled:opacity-30";
     return (
       <div className="flex shrink-0 items-center gap-0.5" aria-label="Step actions">
+        {stepVariants(s).length === 0 && (
+          <button
+            className={action}
+            aria-label="Split this Step into Variants"
+            title="Create two Step Variant boxes that can contain Beats"
+            onClick={() => void run({ op: "add_step_variant", stepId: s.id })}
+          >
+            ◇
+          </button>
+        )}
         <button
           className={action}
           aria-label="Duplicate step"
@@ -2531,7 +2768,7 @@ function StepRail({
     return (
       <div
         className="grid gap-x-1 gap-y-1"
-        style={{ gridTemplateColumns: `minmax(0, 1fr) repeat(${l.lanes}, 66px)` }}
+        style={{ gridTemplateColumns: `minmax(0, 1fr) ${l.laneWidths.map((width) => `${width}px`).join(" ")}` }}
       >
         {split &&
           l.groups.map((g) => {
@@ -2715,7 +2952,7 @@ function StepRail({
                 });
               }}
               onPointerMove={(e) => {
-                if (drag?.id !== mech.id) return;
+                if (drag?.id !== mech.id || drag.settling) return;
                 // The pointer says both things at once: the area it is over is
                 // which reading the cast is for, the row it is on is when it
                 // happens. Carried up onto a reading pill counts as the area.
@@ -2725,6 +2962,8 @@ function StepRail({
                 const gate = mechanic.variants.length
                   ? (onPill ?? areaAt(e.clientX) ?? drag.gate)
                   : undefined;
+                const into =
+                  plan.variantModel === "step" ? variantBoxAt(e.clientX, e.clientY) : undefined;
                 const row = rowAt(e.clientY, visible);
                 const [wasLo, wasHi] = drag.from;
                 // The end you are holding cannot cross the other one: a cast
@@ -2741,18 +2980,24 @@ function StepRail({
                   next[0] === drag.lo &&
                   next[1] === drag.hi &&
                   !!gate === !!drag.gate &&
-                  gate?.to === drag.gate?.to;
+                  gate?.to === drag.gate?.to &&
+                  into?.variantId === drag.into?.variantId;
                 if (same) return;
-                setDrag({ ...drag, gate, lo: next[0], hi: next[1], moved: true });
+                setDrag({ ...drag, gate, into, lo: next[0], hi: next[1], moved: true });
               }}
-              onPointerUp={() => endDrag(mech, lo, hi, visible)}
+              onPointerUp={(e) => endDrag(mech, lo, hi, visible, e)}
               onPointerCancel={() => setDrag(null)}
               onDoubleClick={() => editable && setRenaming(mech.id)}
               className={`flex h-full w-full touch-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight ${
                 editable ? "cursor-grab active:cursor-grabbing" : ""
               } ${active ? "text-white" : "text-ink-200"} ${
                 drag?.id === mech.id ? "ring-1 ring-white/70" : ""
-              } ${skipped ? "opacity-60" : ""}`}
+              } ${skipped ? "opacity-60" : ""} ${
+                // Held over a Variant half the box goes invisible — the half's
+                // chip preview is the Beat now — but stays mounted, keeping
+                // the pointer capture that will deliver the release.
+                drag?.id === mech.id && drag.into ? "opacity-0" : ""
+              }`}
             >
               {/* Which reading a cast is for is the area it sits in, so the box
                   itself does not repeat it. */}
@@ -2827,6 +3072,272 @@ function StepRail({
             </div>
           );
         })}
+        {l.boxes.map(({ owner, variants, lo, hi, lane, subs, slots }) => {
+          const selectedId =
+            shown[owner.id] ?? defaultStepVariantSelections(plan)[owner.id] ?? variants[0]?.id;
+          return (
+            <div
+              key={`step-variants:${owner.id}`}
+              data-step-variant-set={owner.id}
+              style={{
+                gridColumn: `${lane + 2} / span ${variants.length}`,
+                gridRow: `${lo + 1 + head} / ${hi + 2 + head}`,
+              }}
+              // The container takes the gutters the Beat boxes leave alone, so
+              // for the same rows it reads a size bigger than they do.
+              className="-my-1 -ml-0.5 flex min-h-0 flex-col overflow-hidden rounded border border-ink-500/70 bg-ink-900/70"
+              onClick={() => onFocusBeat(owner.id)}
+            >
+              <div
+                className="grid min-h-0 flex-1 divide-x divide-ink-600/60"
+                style={{ gridTemplateColumns: subs.map((n) => `${n}fr`).join(" ") }}
+              >
+              {variants.map((variant, at) => {
+                const previewing = variant.id === selectedId;
+                const editing = variant.id === editingBeatVariant;
+                const color = VARIANT_COLORS[at % VARIANT_COLORS.length];
+                const beats = variant.beats
+                  .map((id) => plan.mechs.find((beat) => beat.id === id))
+                  .filter((beat): beat is Mech => !!beat);
+                const arriving =
+                  !!drag &&
+                  drag.into?.stepId === owner.id &&
+                  drag.into.variantId === variant.id &&
+                  !variant.beats.includes(drag.id);
+                return (
+                  <div
+                    key={variant.id}
+                    data-step-variant={variant.id}
+                    className={`group/half flex min-h-0 flex-col overflow-hidden text-left ${
+                      previewing ? "text-white" : "text-ink-300 opacity-60"
+                    } ${
+                      drag?.into?.variantId === variant.id ? "ring-1 ring-inset ring-white/70" : ""
+                    }`}
+                    style={{ background: previewing ? tint(color, 0.12) : undefined }}
+                    title={`${stepVariantLabel(owner, variant.id)} — ${beats.length} Beat${beats.length === 1 ? "" : "s"}. Click to preview and edit this Step Variant.`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setShown((choices) => ({ ...choices, [owner.id]: variant.id }));
+                      onFocusBeat(owner.id);
+                      onEditBeatVariant(variant.id);
+                    }}
+                    onDoubleClick={(event) => {
+                      event.stopPropagation();
+                      if (!editable) return;
+                      const name = window.prompt("Variant name", stepVariantLabel(owner, variant.id));
+                      if (name !== null)
+                        void run({ op: "update_step_variant", stepId: owner.id, variantId: variant.id, patch: { name } });
+                    }}
+                  >
+                    <button
+                      type="button"
+                      aria-pressed={previewing}
+                      aria-label={stepVariantLabel(owner, variant.id)}
+                      // The Variant's whole caption is this strip of its colour;
+                      // it is still the handle for the split's start Step.
+                      className={`h-1 shrink-0 touch-none ${editable ? "cursor-grab active:cursor-grabbing" : ""} ${
+                        editing && !previewing ? "outline outline-1 -outline-offset-1 outline-amber-300/80" : ""
+                      }`}
+                      style={{ background: color }}
+                      title={`${stepVariantLabel(owner, variant.id)} — click to preview and edit it; drag this edge to move the Variant split's start Step`}
+                      onPointerDown={(event) => {
+                        event.stopPropagation();
+                        if (!editable) return;
+                        event.currentTarget.setPointerCapture(event.pointerId);
+                        setVariantDrag({
+                          id: owner.id,
+                          mode: "top",
+                          grabbed: rowAt(event.clientY, visible),
+                          lo,
+                          hi,
+                          from: [lo, hi],
+                          moved: false,
+                        });
+                      }}
+                      onPointerMove={(event) => {
+                        if (variantDrag?.id !== owner.id || variantDrag.settling) return;
+                        const row = rowAt(event.clientY, visible);
+                        const [wasLo, wasHi] = variantDrag.from;
+                        const next: [number, number] = [Math.min(row, wasHi), wasHi];
+                        if (next[0] !== variantDrag.lo || next[1] !== variantDrag.hi)
+                          setVariantDrag({ ...variantDrag, lo: next[0], hi: next[1], moved: true });
+                      }}
+                      onPointerUp={(event) => {
+                        event.stopPropagation();
+                        endVariantDrag(owner, visible);
+                      }}
+                      onPointerCancel={() => setVariantDrag(null)}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        setShown((choices) => ({ ...choices, [owner.id]: variant.id }));
+                        onFocusBeat(owner.id);
+                        onEditBeatVariant(variant.id);
+                      }}
+                    />
+                    <div
+                      className="grid min-h-0 flex-1 gap-0.5 overflow-hidden p-0.5 text-[8px] leading-none text-ink-200"
+                      // The rows in here are the Steps themselves, so a chip
+                      // sits level with the rows it covers — and the side not
+                      // playing goes grey, contents and all. Only the
+                      // contents: the strip above keeps the Variant's colour,
+                      // dimmed, so the box stays colour-coded.
+                      style={{
+                        gridTemplateRows: `repeat(${hi - lo + 1}, minmax(0, 1fr))`,
+                        gridTemplateColumns: `repeat(${subs[at]}, minmax(0, 1fr))`,
+                        ...(previewing ? {} : { filter: "saturate(0.15)" }),
+                      }}
+                    >
+                      {beats.map((beat) => {
+                        const rows = mechSpan(plan, beat)
+                          .map((id) => visible.findIndex((step) => step.id === id))
+                          .filter((index) => index >= 0);
+                        const baseLo = rows.length ? Math.min(...rows) : lo;
+                        const baseHi = rows.length ? Math.max(...rows) : baseLo;
+                        const moving = drag?.id === beat.id ? drag : undefined;
+                        const beatLo = moving?.lo ?? baseLo;
+                        const beatHi = moving?.hi ?? baseHi;
+                        const slot = slots.get(beat.id);
+                        const rowLo = Math.min(hi, Math.max(lo, beatLo));
+                        const rowHi = Math.max(rowLo, Math.min(hi, beatHi));
+                        return (
+                          <span
+                            key={beat.id}
+                            data-variant-beat={beat.id}
+                            className={`flex min-h-0 touch-none select-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight ${
+                              editable ? "cursor-grab active:cursor-grabbing" : ""
+                            } ${drag?.id === beat.id ? "ring-1 ring-white/70" : ""} ${
+                              // Mid-pull the lane preview is the Beat; the chip
+                              // left behind only ghosts until it is let go.
+                              drag?.id === beat.id && !drag.into ? "opacity-30" : ""
+                            }`}
+                            style={{
+                              borderTopColor: mechColor(plan, beat),
+                              background: tint(mechColor(plan, beat), 0.18),
+                              gridRow: `${rowLo - lo + 1} / ${rowHi - lo + 2}`,
+                              gridColumn: (slot?.lane ?? 0) + 1,
+                            }}
+                            title={`${mechLabel(plan, beat)} — Beat inside ${stepVariantLabel(owner, variant.id)}. Drag its top/bottom half to move its timing; click to edit its Parts.`}
+                            onPointerDown={(event) => {
+                              event.stopPropagation();
+                              if (!editable) return;
+                              const rect = event.currentTarget.getBoundingClientRect();
+                              event.currentTarget.setPointerCapture(event.pointerId);
+                              setDrag({
+                                id: beat.id,
+                                mode: event.clientY - rect.top < rect.height / 2 ? "top" : "bottom",
+                                grabbed: rowAt(event.clientY, visible),
+                                lo: beatLo,
+                                hi: beatHi,
+                                from: [baseLo, baseHi],
+                                // It starts at home: only carrying it clear of
+                                // the box, or into the other half, moves it.
+                                into: { stepId: owner.id, variantId: variant.id },
+                                moved: false,
+                              });
+                            }}
+                            onPointerMove={(event) => {
+                              if (drag?.id !== beat.id || drag.settling) return;
+                              const into = variantBoxAt(event.clientX, event.clientY);
+                              const row = rowAt(event.clientY, visible);
+                              const [wasLo, wasHi] = drag.from;
+                              const next: [number, number] = drag.mode === "top"
+                                ? [Math.min(row, wasHi), wasHi]
+                                : [wasLo, Math.max(row, wasLo)];
+                              if (
+                                next[0] !== drag.lo ||
+                                next[1] !== drag.hi ||
+                                into?.variantId !== drag.into?.variantId
+                              )
+                                setDrag({ ...drag, into, lo: next[0], hi: next[1], moved: true });
+                            }}
+                            onPointerUp={(event) => {
+                              event.stopPropagation();
+                              endDrag(beat, beatLo, beatHi, visible, event);
+                            }}
+                            onPointerCancel={() => setDrag(null)}
+                            onClick={(event) => event.stopPropagation()}
+                          >
+                            <span className="w-full truncate text-center">{mechLabel(plan, beat)}</span>
+                            {/* The amber edge is the caption: in here "when it
+                                goes off" needs no word for it. */}
+                            <span aria-hidden className="mt-auto -mb-1 w-full border-b-4 border-amber-400/80" />
+                          </span>
+                        );
+                      })}
+                      {!beats.length && !arriving && (
+                        // The empty box explains itself only when asked: the
+                        // hint waits for the pointer instead of shouting — and
+                        // steps aside for an arriving Beat, or its grid-filling
+                        // cell would squeeze the preview into half the width.
+                        <span
+                          className="place-self-center text-center text-ink-400 opacity-0 transition-opacity group-hover/half:opacity-100"
+                          style={{ gridRow: "1 / -1", gridColumn: "1 / -1" }}
+                        >
+                          Drop Beats here
+                        </span>
+                      )}
+                      {arriving &&
+                        (() => {
+                          // The Beat in the hand, previewed where letting go
+                          // would put it: in this half, over its rows.
+                          const held = drag && plan.mechs.find((m) => m.id === drag.id);
+                          if (!drag || !held) return null;
+                          const rowLo = Math.min(hi, Math.max(lo, drag.lo));
+                          const rowHi = Math.max(rowLo, Math.min(hi, drag.hi));
+                          return (
+                            <span
+                              aria-hidden
+                              className="pointer-events-none flex min-h-0 select-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight opacity-80 ring-1 ring-white/70"
+                              style={{
+                                borderTopColor: mechColor(plan, held),
+                                background: tint(mechColor(plan, held), 0.18),
+                                gridRow: `${rowLo - lo + 1} / ${rowHi - lo + 2}`,
+                              }}
+                            >
+                              <span className="w-full truncate text-center">{mechLabel(plan, held)}</span>
+                              <span aria-hidden className="mt-auto -mb-1 w-full border-b-4 border-amber-400/80" />
+                            </span>
+                          );
+                        })()}
+                    </div>
+                  </div>
+                );
+              })}
+              </div>
+              <button
+                type="button"
+                aria-label="Drag the Variant container's end Step"
+                // The container ends the way a Beat does: an amber edge, no
+                // caption. It is still the handle for the split's end Step.
+                className={`h-1 shrink-0 touch-none border-t border-ink-600/60 bg-amber-400/70 ${editable ? "cursor-grab active:cursor-grabbing" : ""}`}
+                title="Drag the Variant container's end Step"
+                onPointerDown={(event) => {
+                  if (!editable) return;
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setVariantDrag({
+                    id: owner.id,
+                    mode: "bottom",
+                    grabbed: rowAt(event.clientY, visible),
+                    lo,
+                    hi,
+                    from: [lo, hi],
+                    moved: false,
+                  });
+                }}
+                onPointerMove={(event) => {
+                  if (variantDrag?.id !== owner.id || variantDrag.settling) return;
+                  const row = rowAt(event.clientY, visible);
+                  const lo = variantDrag.from[0];
+                  const hi = Math.max(row, lo);
+                  if (hi !== variantDrag.hi)
+                    setVariantDrag({ ...variantDrag, lo, hi, moved: true });
+                }}
+                onPointerUp={() => endVariantDrag(owner, visible)}
+                onPointerCancel={() => setVariantDrag(null)}
+              />
+            </div>
+          );
+        })}
       </div>
     );
   }
@@ -2870,7 +3381,7 @@ function StepRail({
   return (
     <nav
       className="panel shrink-0 overflow-y-auto border-y-0 border-l-0 p-2"
-      style={{ width: 236 + laid.lanes * 70 }}
+      style={{ width: 236 + laid.laneWidths.reduce((total, width) => total + width + 4, 0) }}
     >
       <div className="label">Encounter</div>
       <div className="mb-2 flex items-baseline gap-2">
@@ -3030,6 +3541,32 @@ function MechBox({
   onFocusBeat(id: string): void;
   onDebuffs(id: string): void;
 }) {
+  const stepVariantDestination =
+    editingVariant && plan.variantModel === "step"
+      ? stepVariantOwner(plan, editingVariant)
+      : undefined;
+  const beatLocation = open
+    ? plan.steps.flatMap((ownerStep) =>
+        stepVariants(ownerStep).flatMap((variant) =>
+          variant.beats.includes(open.id) ? [{ ownerStep, variant }] : []
+        )
+      )[0]
+    : undefined;
+  const addBeatHere = async (debuff = false) => {
+    const res = await run({ op: "add_mech", snap: stepId });
+    const made = res.values[0] as { id: string } | null;
+    if (!made) return;
+    if (stepVariantDestination) {
+      await run({
+        op: "assign_beats_to_step_variant",
+        stepId: stepVariantDestination.step.id,
+        variantId: stepVariantDestination.variant.id,
+        beatIds: [made.id],
+      });
+    }
+    onOpen(made.id);
+    if (debuff) onDebuffs(made.id);
+  };
   const previewed = open?.variants.length
     ? (open.variants.find(
         (variant) =>
@@ -3049,24 +3586,14 @@ function MechBox({
       <button
         className="btn w-full"
         title="A new Beat snapshotting in the Step you are on. Say where it resolves, then drop its Parts in."
-        onClick={async () => {
-          const res = await run({ op: "add_mech", snap: stepId });
-          const made = res.values[0] as { id: string } | null;
-          if (made) onOpen(made.id);
-        }}
+        onClick={() => void addBeatHere()}
       >
-        New Beat here
+        New Beat {stepVariantDestination ? `in ${stepVariantLabel(stepVariantDestination.step, stepVariantDestination.variant.id)}` : "here"}
       </button>
       <button
         className="btn mt-1 w-full"
         title="A Beat that deals the fight's debuffs onto role pools. While it is active, the party's tokens wear the deal."
-        onClick={async () => {
-          const res = await run({ op: "add_mech", snap: stepId });
-          const made = res.values[0] as { id: string } | null;
-          if (!made) return;
-          onOpen(made.id);
-          onDebuffs(made.id);
-        }}
+        onClick={() => void addBeatHere(true)}
       >
         New debuff Beat here
       </button>
@@ -3088,6 +3615,77 @@ function MechBox({
               ✕
             </button>
           </div>
+          {plan.variantModel === "step" && (
+            <div className="mt-2 border-t border-ink-600 pt-2">
+            <label className="block">
+              <span className="label mb-1 block">Location</span>
+              <select
+                className="field h-7 w-full py-0 text-xs"
+                value={beatLocation ? `${beatLocation.ownerStep.id}:${beatLocation.variant.id}` : "shared"}
+                onChange={(event) => {
+                  const value = event.target.value;
+                  if (value === "shared") {
+                    void run({
+                      op: "assign_beats_to_step_variant",
+                      stepId: beatLocation?.ownerStep.id ?? stepId,
+                      beatIds: [open.id],
+                    });
+                    return;
+                  }
+                  const separator = value.indexOf(":");
+                  const ownerStepId = value.slice(0, separator);
+                  const variantId = value.slice(separator + 1);
+                  onShow((current) => ({ ...current, [ownerStepId]: variantId }));
+                  onFocusBeat(ownerStepId);
+                  onEditVariant(variantId);
+                  void run({
+                    op: "assign_beats_to_step_variant",
+                    stepId: ownerStepId,
+                    variantId,
+                    beatIds: [open.id],
+                  });
+                }}
+              >
+                <option value="shared">Shared</option>
+                {plan.steps.flatMap((ownerStep) =>
+                  stepVariants(ownerStep).map((variant) => (
+                    <option key={variant.id} value={`${ownerStep.id}:${variant.id}`}>
+                      {ownerStep.name || "Step"} › {stepVariantLabel(ownerStep, variant.id)}
+                    </option>
+                  ))
+                )}
+              </select>
+              <span className="mt-1 block text-[10px] text-ink-400">
+                Shared Beats sit outside the split. Boxed Beats appear only in that exclusive Variant.
+              </span>
+            </label>
+            {stepVariantDestination && (() => {
+              const movement = plan.steps.find((candidate) => candidate.id === stepId)
+                ?.stepVariantMovement?.[stepVariantDestination.variant.id] ?? {};
+              const count = Object.keys(movement).length;
+              return (
+                <div className="mt-2 flex items-center gap-2 rounded bg-ink-900/50 px-2 py-1.5 text-[11px]">
+                  <span className={count ? "text-blue-200" : "text-ink-400"}>
+                    Movement: {count ? `${count} actor${count === 1 ? "" : "s"} initialized` : "Following Shared"}
+                  </span>
+                  {count > 0 && (
+                    <button
+                      className="btn ml-auto h-6 py-0 text-[10px]"
+                      title="Discard this box's movement at the current Step and follow Shared again"
+                      onClick={() => void run({
+                        op: "clear_step_variant_movement",
+                        stepId,
+                        variantId: stepVariantDestination.variant.id,
+                      })}
+                    >
+                      Resync
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
+            </div>
+          )}
           {plan.variantModel === "beat" && (
             <div className="mt-2 border-t border-ink-600 pt-2" data-beat-variants={open.id}>
               <div className="label mb-1">Variants</div>

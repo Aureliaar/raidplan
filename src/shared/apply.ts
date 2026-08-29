@@ -9,6 +9,8 @@ import type {
   PropBag,
   Step,
   Variant,
+  StepVariant,
+  BeatVariantPose,
   BeatVariantRoute,
 } from "./schema";
 import { mechSpan } from "./schema";
@@ -41,6 +43,14 @@ export type Op =
   | { op: "gate_mech"; mechId: string; variant?: string }
   | { op: "update_variant"; mechanicId: string; variantId: string; patch: { name?: string } }
   | { op: "delete_variant"; mechanicId: string; variantId: string }
+  | { op: "add_step_variant"; stepId: string; name?: string; createdBy?: string; createdByName?: string }
+  | { op: "update_step_variant"; stepId: string; variantId: string; patch: { name?: string } }
+  | { op: "move_step_variant_set"; stepId: string; snap: string; boom: string }
+  | { op: "assign_beats_to_step_variant"; stepId: string; beatIds: string[]; variantId?: string }
+  | { op: "delete_step_variant"; stepId: string; variantId: string }
+  | { op: "collapse_step_variants"; stepId: string; variantId: string }
+  | { op: "set_step_variant_movement"; stepId: string; variantId: string; actorId: string; pose: BeatVariantPose }
+  | { op: "clear_step_variant_movement"; stepId: string; variantId: string; actorId?: string }
   | { op: "add_beat_variant"; beatId: string; name?: string; createdBy?: string; createdByName?: string }
   | { op: "update_beat_variant"; beatId: string; variantId: string; patch: { name?: string } }
   | { op: "duplicate_beat_variant"; beatId: string; variantId: string; name?: string; createdBy?: string; createdByName?: string }
@@ -66,7 +76,7 @@ export type Op =
 export interface OpResult {
   plan: Plan;
   /** Whatever the op created, for the caller to report back. */
-  value?: Entity | Step | Mech | Mechanic | Variant | BeatVariantRoute | string[] | null;
+  value?: Entity | Step | Mech | Mechanic | Variant | StepVariant | BeatVariantRoute | string[] | null;
 }
 
 /**
@@ -189,6 +199,37 @@ export function applyOp(plan: Plan, op: Op): OpResult {
       return { plan: ops.updateVariant(plan, op.mechanicId, op.variantId, op.patch) };
     case "delete_variant":
       return { plan: ops.deleteVariant(plan, op.mechanicId, op.variantId), value: [op.variantId] };
+    case "add_step_variant": {
+      const r = ops.addStepVariant(plan, op.stepId, {
+        name: op.name,
+        createdBy: op.createdBy,
+        createdByName: op.createdByName,
+      });
+      return { plan: r.plan, value: r.variant };
+    }
+    case "update_step_variant":
+      return { plan: ops.updateStepVariant(plan, op.stepId, op.variantId, op.patch) };
+    case "move_step_variant_set":
+      return { plan: ops.moveStepVariantSet(plan, op.stepId, op.snap, op.boom) };
+    case "assign_beats_to_step_variant":
+      return {
+        plan: ops.assignBeatsToStepVariant(plan, op.stepId, op.beatIds, op.variantId),
+        value: op.beatIds,
+      };
+    case "delete_step_variant":
+      return { plan: ops.deleteStepVariant(plan, op.stepId, op.variantId), value: [op.variantId] };
+    case "collapse_step_variants":
+      return { plan: ops.collapseStepVariants(plan, op.stepId, op.variantId), value: [op.variantId] };
+    case "set_step_variant_movement":
+      return {
+        plan: ops.setStepVariantMovement(plan, op.stepId, op.variantId, op.actorId, op.pose),
+        value: [op.actorId],
+      };
+    case "clear_step_variant_movement":
+      return {
+        plan: ops.clearStepVariantMovement(plan, op.stepId, op.variantId, op.actorId),
+        value: op.actorId ? [op.actorId] : [],
+      };
     case "add_beat_variant": {
       const r = ops.addBeatVariant(plan, op.beatId, {
         name: op.name,
