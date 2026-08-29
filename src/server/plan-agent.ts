@@ -61,6 +61,14 @@ function summarize(op: Op | Op[]): string {
     case "gate_mech": return "Changed a cast reading";
     case "update_variant": return "Updated a reading";
     case "delete_variant": return "Deleted a reading";
+    case "add_step_variant": return "Added a Step Variant box";
+    case "update_step_variant": return "Updated a Step Variant box";
+    case "move_step_variant_set": return "Moved a Step Variant container";
+    case "assign_beats_to_step_variant": return "Moved Beats between Variant boxes";
+    case "delete_step_variant": return "Deleted a Step Variant box";
+    case "collapse_step_variants": return "Collapsed Step Variants to Shared";
+    case "set_step_variant_movement": return "Moved an actor in a Step Variant";
+    case "clear_step_variant_movement": return "Resynchronized Step Variant movement";
     case "add_beat_variant": return "Added a Beat Variant";
     case "update_beat_variant": return "Updated a Beat Variant";
     case "duplicate_beat_variant": return "Duplicated a Beat Variant";
@@ -97,7 +105,7 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
   initialState = EMPTY;
 
   /** Create the document if this is a fresh instance. Idempotent. */
-  async init(input: { id: string; name?: string; encounter?: string; ownerId: string; withParty?: boolean; variantModel?: "beat" }) {
+  async init(input: { id: string; name?: string; encounter?: string; ownerId: string; withParty?: boolean; variantModel?: "beat" | "step" }) {
     if (this.state?.id) return this.state;
     const plan = createPlan({ ...input, withParty: input.withParty ?? true });
     this.setState(plan);
@@ -391,7 +399,7 @@ export interface PlanStub {
     encounter?: string;
     ownerId: string;
     withParty?: boolean;
-    variantModel?: "beat";
+    variantModel?: "beat" | "step";
   }): Promise<Plan>;
   getPlan(): Promise<Plan>;
   replace(doc: unknown, keep: { id: string; ownerId: string }, actor?: HistoryActor): Promise<Plan>;

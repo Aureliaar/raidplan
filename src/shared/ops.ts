@@ -8,6 +8,7 @@ import {
   type Mechanic,
   type Plan,
   type Step,
+  type StepVariant,
   type Variant,
   type PropBag,
   type EncounterSetup,
@@ -41,6 +42,7 @@ import {
   variantStepScene,
   variantLabel,
 } from "./schema";
+import { stepVariantOwner, stepVariants } from "./step-variants";
 import { DEFAULT_PARTY, jobLabel } from "./jobs";
 import { zoneCovers } from "./hits";
 
@@ -63,7 +65,7 @@ export function createPlan(opts: {
   ownerId?: string;
   arena?: Partial<Arena>;
   withParty?: boolean;
-  variantModel?: "beat";
+  variantModel?: "beat" | "step";
 }): Plan {
   const stepId = newId("step");
   const mechanicId = newId("mechanic");
@@ -79,7 +81,7 @@ export function createPlan(opts: {
     mechanics: [{ id: mechanicId, name: "", variants: [] }],
     steps: [{ id: stepId, name: "Step 1", notes: "", mechanic: mechanicId }],
     entities: [],
-    ...(opts.variantModel === "beat" ? { variantModel: "beat", variantRoutes: [] } : {}),
+    ...(opts.variantModel ? { variantModel: opts.variantModel, variantRoutes: [] } : {}),
     createdAt: now,
     updatedAt: now,
     rev: 0,
@@ -1142,6 +1144,269 @@ export function moveMechanic(plan: Plan, mechanicId: string, index: number): Pla
   const [m] = mechanics.splice(from, 1);
   mechanics.splice(Math.max(0, Math.min(mechanics.length, index)), 0, m);
   return touch(reflowSteps({ ...plan, mechanics }));
+}
+
+/* ----------------------------------------------------------- Step Variants */
+
+/** A Step Variant is always one binary split: first use creates its A/B boxes. */
+export function addStepVariant(
+  plan: Plan,
+  stepId: string,
+  opts: { name?: string; createdBy?: string; createdByName?: string } = {},
+): { plan: Plan; variant: StepVariant } {
+  if (plan.variantModel !== "step") throw new Error("This plan does not use Step Variants");
+  const step = plan.steps.find((candidate) => candidate.id === stepId);
+  if (!step) throw new Error(`No Step ${stepId}`);
+  if (stepVariants(step).length) throw new Error("This Step already has its two Variant boxes");
+  const attribution = opts.createdBy
+    ? { createdBy: opts.createdBy, createdByName: opts.createdByName }
+    : {};
+  const first: StepVariant = {
+    id: newId("step_variant"),
+    name: variantName(0),
+    beats: [],
+    ...attribution,
+  };
+  const second: StepVariant = {
+    id: newId("step_variant"),
+    name: opts.name ?? variantName(1),
+    beats: [],
+    ...attribution,
+  };
+  const variants = [first, second];
+  const steps = plan.steps.map((candidate) =>
+    candidate.id === stepId ? { ...candidate, variants, variantEnd: candidate.variantEnd || stepId } : candidate,
+  );
+  return { plan: touch({ ...plan, steps }), variant: first };
+}
+
+export function updateStepVariant(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+  patch: { name?: string },
+): Plan {
+  const step = plan.steps.find((candidate) => candidate.id === stepId);
+  if (!step || !stepVariants(step).some((variant) => variant.id === variantId))
+    throw new Error(`No Step Variant ${variantId}`);
+  return touch({
+    ...plan,
+    steps: plan.steps.map((candidate) =>
+      candidate.id === stepId
+        ? {
+            ...candidate,
+            variants: stepVariants(candidate).map((variant) =>
+              variant.id === variantId ? { ...variant, ...defined(patch) } : variant,
+            ),
+          }
+        : candidate,
+    ),
+  });
+}
+
+/** Move/resize a Step-owned Variant container without changing its children. */
+export function moveStepVariantSet(plan: Plan, stepId: string, snap: string, boom: string): Plan {
+  if (plan.variantModel !== "step") throw new Error("This plan does not use Step Variants");
+  const owner = plan.steps.find((step) => step.id === stepId);
+  const start = plan.steps.find((step) => step.id === snap);
+  const end = plan.steps.find((step) => step.id === boom);
+  if (!owner || stepVariants(owner).length < 2) throw new Error(`No Step Variant set ${stepId}`);
+  if (!start || !end) throw new Error("Variant container range references an unknown Step");
+  if (start.mechanic !== owner.mechanic || end.mechanic !== owner.mechanic)
+    throw new Error("A Variant container cannot leave its Mechanic");
+  const order = plan.steps;
+  if (order.indexOf(start) > order.indexOf(end)) throw new Error("Variant container cannot end before it starts");
+  if (start.id !== owner.id && stepVariants(start).length)
+    throw new Error("That Step already declares a Variant container");
+  const variants = stepVariants(owner);
+  const steps = plan.steps.map((step) => {
+    if (step.id === owner.id && step.id !== start.id)
+      return { ...step, variants: [], variantEnd: undefined };
+    if (step.id === start.id) return { ...step, variants, variantEnd: end.id };
+    return step;
+  });
+  const variantRoutes = plan.variantRoutes?.map((route) => {
+    if (start.id === owner.id || !route.selections[owner.id]) return route;
+    const selections = { ...route.selections, [start.id]: route.selections[owner.id] };
+    delete selections[owner.id];
+    return { ...route, selections };
+  });
+  return touch({ ...plan, steps, variantRoutes });
+}
+
+/** Move whole Beats into one Step Variant box, or back to Shared. */
+export function assignBeatsToStepVariant(
+  plan: Plan,
+  ownerStepId: string,
+  beatIds: string[],
+  variantId?: string,
+): Plan {
+  if (plan.variantModel !== "step") throw new Error("This plan does not use Step Variants");
+  const owner = plan.steps.find((step) => step.id === ownerStepId);
+  if (!owner) throw new Error(`No Step ${ownerStepId}`);
+  if (variantId && !stepVariants(owner).some((variant) => variant.id === variantId))
+    throw new Error(`No Step Variant ${variantId}`);
+  const ids = new Set(beatIds);
+  for (const id of ids) if (!plan.mechs.some((beat) => beat.id === id)) throw new Error(`No Beat ${id}`);
+  const steps = plan.steps.map((step) => ({
+    ...step,
+    variants: stepVariants(step).map((variant) => ({
+      ...variant,
+      beats: variant.beats.filter((id) => !ids.has(id)),
+    })),
+  }));
+  const at = steps.findIndex((step) => step.id === ownerStepId);
+  if (variantId) {
+    steps[at] = {
+      ...steps[at],
+      variants: stepVariants(steps[at]).map((variant) =>
+        variant.id === variantId ? { ...variant, beats: [...variant.beats, ...ids] } : variant,
+      ),
+    };
+  }
+  if (variantId && ids.size) {
+    const covered = plan.mechs
+      .filter((beat) => ids.has(beat.id))
+      .flatMap((beat) => mechSpan(plan, beat))
+      .map((id) => plan.steps.findIndex((step) => step.id === id))
+      .filter((index) => index >= 0);
+    const ownerAt = plan.steps.findIndex((step) => step.id === ownerStepId);
+    const currentEnd = plan.steps.findIndex(
+      (step) => step.id === (steps[at].variantEnd || ownerStepId),
+    );
+    const endAt = Math.max(ownerAt, currentEnd, ...covered);
+    steps[at] = { ...steps[at], variantEnd: plan.steps[endAt]?.id || ownerStepId };
+  }
+  return touch({ ...plan, steps });
+}
+
+function deleteOwnedBeats(plan: Plan, beatIds: Set<string>): Pick<Plan, "mechs" | "entities"> {
+  return {
+    mechs: plan.mechs.filter((beat) => !beatIds.has(beat.id)),
+    entities: plan.entities.filter((entity) => !entity.mech || !beatIds.has(entity.mech)),
+  };
+}
+
+/** Delete a third-or-later box and every Beat it owns. */
+export function deleteStepVariant(plan: Plan, stepId: string, variantId: string): Plan {
+  const owner = stepVariantOwner(plan, variantId);
+  if (!owner || owner.step.id !== stepId) throw new Error(`No Step Variant ${variantId}`);
+  const variants = stepVariants(owner.step);
+  if (variants.length <= 2)
+    throw new Error("Use Collapse Variants to deliberately choose which box becomes Shared");
+  if (plan.variantRoutes?.some((route) => route.selections[stepId] === variantId))
+    throw new Error("This Variant is used by a saved Route; update or delete that Route first");
+  const doomed = new Set(owner.variant.beats);
+  const { mechs, entities } = deleteOwnedBeats(plan, doomed);
+  const steps = plan.steps.map((step) => {
+    const movement = { ...step.stepVariantMovement };
+    delete movement[variantId];
+    return {
+      ...step,
+      variants:
+        step.id === stepId
+          ? stepVariants(step).filter((variant) => variant.id !== variantId)
+          : stepVariants(step),
+      stepVariantMovement: Object.keys(movement).length ? movement : undefined,
+    };
+  });
+  return touch({ ...plan, mechs, entities, steps });
+}
+
+/** Promote one box's Beats and movement to Shared; delete its siblings. */
+export function collapseStepVariants(plan: Plan, stepId: string, variantId: string): Plan {
+  if (plan.variantModel !== "step") throw new Error("This plan does not use Step Variants");
+  const owner = stepVariantOwner(plan, variantId);
+  if (!owner || owner.step.id !== stepId) throw new Error(`No Step Variant ${variantId}`);
+  const variants = stepVariants(owner.step);
+  if (variants.length < 2) throw new Error("This Step is not varying");
+  const siblingIds = new Set(variants.map((variant) => variant.id));
+  const doomed = new Set(
+    variants.filter((variant) => variant.id !== variantId).flatMap((variant) => variant.beats),
+  );
+  const kept = deleteOwnedBeats(plan, doomed);
+  const movementByActor = new Map<string, Record<string, unknown>>();
+  for (const step of plan.steps) {
+    for (const [actorId, movement] of Object.entries(step.stepVariantMovement?.[variantId] ?? {})) {
+      const { compatibilityState, ...pose } = movement;
+      movementByActor.set(actorId, {
+        ...(movementByActor.get(actorId) ?? {}),
+        [step.id]: { ...compatibilityState, ...pose },
+      });
+    }
+  }
+  const entities = kept.entities.map((entity) => {
+    const movement = movementByActor.get(entity.id);
+    return movement
+      ? EntitySchema.parse({ ...entity, overrides: { ...entity.overrides, ...movement } })
+      : entity;
+  });
+  const steps = plan.steps.map((step) => {
+    const movement = Object.fromEntries(
+      Object.entries(step.stepVariantMovement ?? {}).filter(([id]) => !siblingIds.has(id)),
+    );
+    return {
+      ...step,
+      variants: step.id === stepId ? [] : stepVariants(step),
+      stepVariantMovement: Object.keys(movement).length ? movement : undefined,
+    };
+  });
+  const variantRoutes = plan.variantRoutes?.map((route) => {
+    const selections = { ...route.selections };
+    delete selections[stepId];
+    return { ...route, selections };
+  });
+  return touch({ ...plan, mechs: kept.mechs, entities, steps, variantRoutes });
+}
+
+export function setStepVariantMovement(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+  actorId: string,
+  pose: BeatVariantPose,
+): Plan {
+  if (!stepVariantOwner(plan, variantId)) throw new Error(`No Step Variant ${variantId}`);
+  if (!plan.entities.some((entity) =>
+    entity.id === actorId && (entity.type === "player" || entity.type === "enemy")
+  ))
+    throw new Error(`No actor ${actorId}`);
+  const steps = plan.steps.map((step) =>
+    step.id === stepId
+      ? {
+          ...step,
+          stepVariantMovement: {
+            ...step.stepVariantMovement,
+            [variantId]: { ...step.stepVariantMovement?.[variantId], [actorId]: pose },
+          },
+        }
+      : step,
+  );
+  return touch({ ...plan, steps });
+}
+
+/** Remove one actor override, or resynchronize the whole box to Shared. */
+export function clearStepVariantMovement(
+  plan: Plan,
+  stepId: string,
+  variantId: string,
+  actorId?: string,
+): Plan {
+  if (!stepVariantOwner(plan, variantId)) throw new Error(`No Step Variant ${variantId}`);
+  if (!plan.steps.some((step) => step.id === stepId)) throw new Error(`No Step ${stepId}`);
+  const steps = plan.steps.map((step) => {
+    if (step.id !== stepId) return step;
+    const all = { ...step.stepVariantMovement };
+    if (!actorId) delete all[variantId];
+    else {
+      const actors = { ...all[variantId] };
+      delete actors[actorId];
+      if (Object.keys(actors).length) all[variantId] = actors;
+      else delete all[variantId];
+    }
+    return { ...step, stepVariantMovement: Object.keys(all).length ? all : undefined };
+  });
+  return touch({ ...plan, steps });
 }
 
 /* ----------------------------------------------------------- Beat Variants */

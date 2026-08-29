@@ -14,6 +14,7 @@ import type { HistoryActor } from "../shared/history";
 import { BackgroundUploadError, serveBackground, uploadBackground } from "./backgrounds";
 import { dumpFFLogsDebuffs } from "./fflogs";
 import { exchangeFFLogsAuthorizationCode } from "./fflogs-oauth";
+import { convertLegacyPlanToStepVariants } from "../shared/step-variant-conversion";
 
 export { PlanAgent } from "./plan-agent";
 export { Registry } from "./registry";
@@ -145,7 +146,7 @@ app.post("/api/plans", async (c) => {
     name?: string;
     encounter?: string;
     withParty?: boolean;
-    variantModel?: "beat";
+    variantModel?: "beat" | "step";
   };
   const plan = createPlan({ name: body.name, encounter: body.encounter, ownerId: user.id, variantModel: body.variantModel });
   const stub = await planStub(c.env, plan.id);
@@ -353,6 +354,34 @@ app.get("/api/plans/:id/beat-variants/conversion-archive", async (c) => {
   const archive = await (await planStub(c.env, id)).getConversionArchive();
   if (!archive) throw new HttpError(404, "This plan has no legacy conversion archive");
   return c.json({ archive });
+});
+
+/** Short-lived, two-document cutover. Removed immediately after both writes verify. */
+app.post("/api/internal/step-variant-cutover/:id", async (c) => {
+  const expected = c.env.BOOTSTRAP_SECRET;
+  if (!expected || c.req.header("authorization") !== `Bearer ${expected}`)
+    throw new HttpError(404, "Not found");
+  const id = c.req.param("id");
+  const expectedSources: Record<string, { rev: number; sha256: string }> = {
+    plan_c2b9xZyc: { rev: 583, sha256: "757422201d25b1f597866cc8853037faa254840a666798fbbf9e2829c6088dfc" },
+    plan_mMW41ylx: { rev: 3018, sha256: "c8596852ea01f748a8e961a1984b2d3c02bdb89bc9d00c96de283939179ea0f6" },
+  };
+  const pinned = expectedSources[id];
+  if (!pinned) throw new HttpError(404, "Not found");
+  const stub = await planStub(c.env, id);
+  const archive = await stub.getConversionArchive();
+  if (!archive || archive.sourcePlanId !== id || archive.sourceRev !== pinned.rev || archive.sha256 !== pinned.sha256)
+    throw new HttpError(409, "Pinned pre-port archive does not match the audited source");
+  const source = JSON.parse(archive.payload);
+  const converted = convertLegacyPlanToStepVariants(source);
+  if (!converted.plan || !converted.report.convertible)
+    throw new HttpError(409, `Conversion refused: ${converted.report.errors.join("; ")}`);
+  const meta = await registry(c.env).getPlanMeta(id);
+  if (!meta) throw new HttpError(404, "Plan not found");
+  const ownerId = (meta as unknown as { ownerId: string }).ownerId;
+  const plan = await stub.replace(converted.plan, { id, ownerId });
+  await registry(c.env).registerPlan({ id, name: plan.name, encounter: plan.encounter, ownerId: plan.ownerId });
+  return c.json({ ok: true, rev: plan.rev, report: converted.report });
 });
 
 app.post("/api/plans/:id/public", async (c) => {
