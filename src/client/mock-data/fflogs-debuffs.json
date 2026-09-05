@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-27T03:29:00.480Z",
+  "generatedAt": "2026-09-05T12:29:01.198Z",
   "source": {
-    "url": "https://www.fflogs.com/reports/bLHFCQWpGvyNz8J7?fight=24",
-    "reportCode": "bLHFCQWpGvyNz8J7",
-    "fightId": 24,
+    "url": "https://www.fflogs.com/reports/y7RHkWhzD6ACPj4t?fight=5&type=auras&spells=debuffs",
+    "reportCode": "y7RHkWhzD6ACPj4t",
+    "fightId": 5,
     "targetScope": "friendlies"
   },
   "fight": {
-    "id": 24,
-    "name": "Themis",
-    "encounterId": 90,
-    "startTime": 9647429,
-    "endTime": 10188541,
-    "durationMs": 541112,
+    "id": 5,
+    "name": "Athena",
+    "encounterId": 91,
+    "startTime": 1311208,
+    "endTime": 1398052,
+    "durationMs": 86844,
     "kill": false
   },
   "excludedStatuses": [
@@ -23,78 +23,24 @@
   ],
   "debuffs": [
     {
-      "id": 1002088,
-      "name": "Bleeding",
-      "firstAppliedMs": 16748,
-      "firstApplied": "00:16.748",
-      "firstAppliedReportMs": 9664177,
-      "applications": 24,
-      "firstSource": { "id": 10, "name": "Themis", "type": "NPC", "subType": "Boss" },
-      "firstTarget": { "id": 3, "name": "Mogul Kan", "type": "Player", "subType": "RedMage" },
-      "tooltip": "Sustaining damage over time.",
-      "icon": {
-        "id": 215530,
-        "path": "ui/icon/215000/215530_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215530_hr1.tex&format=png"
-      }
-    },
-    {
-      "id": 1002278,
-      "name": "Light Resistance Down",
-      "firstAppliedMs": 26041,
-      "firstApplied": "00:26.041",
-      "firstAppliedReportMs": 9673470,
-      "applications": 4,
-      "firstSource": { "id": 17, "name": "Themis", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 8, "name": "Amelia Sarter", "type": "Player", "subType": "DarkKnight" },
-      "tooltip": "Light resistance is reduced.",
-      "icon": {
-        "id": 217890,
-        "path": "ui/icon/217000/217890_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F217000%2F217890_hr1.tex&format=png"
-      }
-    },
-    {
-      "id": 1003619,
-      "name": "Dark Resistance Down",
-      "firstAppliedMs": 26041,
-      "firstApplied": "00:26.041",
-      "firstAppliedReportMs": 9673470,
-      "applications": 4,
-      "firstSource": { "id": 17, "name": "Themis", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 6, "name": "Saigi Mestonnaux", "type": "Player", "subType": "Gunbreaker" },
-      "tooltip": "Dark resistance is reduced.",
-      "icon": {
-        "id": 215598,
-        "path": "ui/icon/215000/215598_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215598_hr1.tex&format=png"
-      }
-    },
-    {
-      "id": 1003132,
-      "name": "Blunt Resistance Down",
-      "firstAppliedMs": 44119,
-      "firstApplied": "00:44.119",
-      "firstAppliedReportMs": 9691548,
-      "applications": 32,
-      "firstSource": { "id": 12, "name": "illusory Themis", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 2, "name": "Valk Endsky", "type": "Player", "subType": "Dancer" },
-      "tooltip": "Blunt resistance is reduced.",
-      "icon": {
-        "id": 215064,
-        "path": "ui/icon/215000/215064_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215064_hr1.tex&format=png"
-      }
-    },
-    {
       "id": 1002941,
       "name": "Magic Vulnerability Up",
-      "firstAppliedMs": 48353,
-      "firstApplied": "00:48.353",
-      "firstAppliedReportMs": 9695782,
-      "applications": 106,
-      "firstSource": { "id": 17, "name": "Themis", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 2, "name": "Valk Endsky", "type": "Player", "subType": "Dancer" },
+      "firstAppliedMs": 38438,
+      "firstApplied": "00:38.438",
+      "firstAppliedReportMs": 1349646,
+      "applications": 12,
+      "firstSource": {
+        "id": 49,
+        "name": "anthropos",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 41,
+        "name": "Mousenna Tricksterat",
+        "type": "Player",
+        "subType": "Scholar"
+      },
       "tooltip": "Magic damage taken is increased.",
       "icon": {
         "id": 215057,
@@ -103,99 +49,107 @@
       }
     },
     {
-      "id": 1002080,
-      "name": "Stab Wound",
-      "firstAppliedMs": 62802,
-      "firstApplied": "01:02.802",
-      "firstAppliedReportMs": 9710231,
-      "applications": 4,
-      "firstSource": { "id": 10, "name": "Themis", "type": "NPC", "subType": "Boss" },
-      "firstTarget": { "id": 8, "name": "Amelia Sarter", "type": "Player", "subType": "DarkKnight" },
-      "tooltip": "Wounds dealt by a piercing weapon are bleeding, causing damage over time.",
-      "icon": {
-        "id": 215522,
-        "path": "ui/icon/215000/215522_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215522_hr1.tex&format=png"
-      }
-    },
-    {
-      "id": 1003553,
-      "name": "Light's Accord",
-      "firstAppliedMs": 296179,
-      "firstApplied": "04:56.179",
-      "firstAppliedReportMs": 9943608,
-      "applications": 10,
-      "firstSource": { "id": -1, "name": "Environment", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 8, "name": "Amelia Sarter", "type": "Player", "subType": "DarkKnight" },
-      "tooltip": "Though aetherial polarity is tilting toward the Light, balance with Darkness remains intact.",
-      "icon": {
-        "id": 215197,
-        "path": "ui/icon/215000/215197_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215197_hr1.tex&format=png"
-      }
-    },
-    {
-      "id": 1003555,
-      "name": "Light's Discord",
-      "firstAppliedMs": 296179,
-      "firstApplied": "04:56.179",
-      "firstAppliedReportMs": 9943608,
-      "applications": 8,
-      "firstSource": { "id": -1, "name": "Environment", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 7, "name": "Lorem Malaguld", "type": "Player", "subType": "Reaper" },
-      "tooltip": "Aetherial polarity is tilting dangerously toward the Light. Failure to restore the balance with Darkness will result in damage taken.",
-      "icon": {
-        "id": 215195,
-        "path": "ui/icon/215000/215195_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215195_hr1.tex&format=png"
-      }
-    },
-    {
-      "id": 1003556,
-      "name": "Dark's Discord",
-      "firstAppliedMs": 296179,
-      "firstApplied": "04:56.179",
-      "firstAppliedReportMs": 9943608,
-      "applications": 8,
-      "firstSource": { "id": -1, "name": "Environment", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 4, "name": "Mousenna Tricksterat", "type": "Player", "subType": "Scholar" },
-      "tooltip": "Aetherial polarity is tilting dangerously toward the Dark. Failure to restore the balance with Light will result in damage taken.",
-      "icon": {
-        "id": 215194,
-        "path": "ui/icon/215000/215194_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215194_hr1.tex&format=png"
-      }
-    },
-    {
-      "id": 1003554,
-      "name": "Dark's Accord",
-      "firstAppliedMs": 297782,
-      "firstApplied": "04:57.782",
-      "firstAppliedReportMs": 9945211,
-      "applications": 8,
-      "firstSource": { "id": -1, "name": "Environment", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 4, "name": "Mousenna Tricksterat", "type": "Player", "subType": "Scholar" },
-      "tooltip": "Though aetherial polarity is tilting toward the Dark, balance with Light remains intact.",
-      "icon": {
-        "id": 215196,
-        "path": "ui/icon/215000/215196_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215196_hr1.tex&format=png"
-      }
-    },
-    {
-      "id": 1003559,
-      "name": "Polarizing",
-      "firstAppliedMs": 330076,
-      "firstApplied": "05:30.076",
-      "firstAppliedReportMs": 9977505,
+      "id": 1003579,
+      "name": "Umbralbright Soul",
+      "firstAppliedMs": 66575,
+      "firstApplied": "01:06.575",
+      "firstAppliedReportMs": 1377783,
       "applications": 2,
-      "firstSource": { "id": 17, "name": "Themis", "type": "NPC", "subType": "NPC" },
-      "firstTarget": { "id": 6, "name": "Saigi Mestonnaux", "type": "Player", "subType": "Gunbreaker" },
-      "tooltip": "Aetherially unbalanced and taking damage over time. Resistance to certain attacks is decreased.",
+      "firstSource": {
+        "id": -1,
+        "name": "Environment",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 42,
+        "name": "Edznbhar Rhotbyrtsyn",
+        "type": "Player",
+        "subType": "Viper"
+      },
+      "tooltip": "Soul has been commandeered to unleash Umbral Glow when this effect expires.",
       "icon": {
-        "id": 218506,
-        "path": "ui/icon/218000/218506_hr1.tex",
-        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F218000%2F218506_hr1.tex&format=png"
+        "id": 215182,
+        "path": "ui/icon/215000/215182_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215182_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003580,
+      "name": "Astralbright Soul",
+      "firstAppliedMs": 66575,
+      "firstApplied": "01:06.575",
+      "firstAppliedReportMs": 1377783,
+      "applications": 2,
+      "firstSource": {
+        "id": -1,
+        "name": "Environment",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 40,
+        "name": "Esli Ciel",
+        "type": "Player",
+        "subType": "Paladin"
+      },
+      "tooltip": "Soul has been commandeered to unleash Astral Glow when this effect expires.",
+      "icon": {
+        "id": 215183,
+        "path": "ui/icon/215000/215183_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215183_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003576,
+      "name": "Umbral Tilt",
+      "firstAppliedMs": 76469,
+      "firstApplied": "01:16.469",
+      "firstAppliedReportMs": 1387677,
+      "applications": 5,
+      "firstSource": {
+        "id": 48,
+        "name": "anthropos",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 35,
+        "name": "Ray Aureliaar",
+        "type": "Player",
+        "subType": "Sage"
+      },
+      "tooltip": "Internal aether is dramatically polarized toward the umbral. Damage taken from umbral attacks is increased, though explosive damage from astral attacks can be quelled. ",
+      "icon": {
+        "id": 215179,
+        "path": "ui/icon/215000/215179_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215179_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003577,
+      "name": "Astral Tilt",
+      "firstAppliedMs": 76470,
+      "firstApplied": "01:16.470",
+      "firstAppliedReportMs": 1387678,
+      "applications": 3,
+      "firstSource": {
+        "id": 48,
+        "name": "anthropos",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 37,
+        "name": "Mira Nopon",
+        "type": "Player",
+        "subType": "Pictomancer"
+      },
+      "tooltip": "Internal aether is dramatically polarized toward the astral. Damage taken from astral attacks is increased, though explosive damage from umbral attacks can be quelled. ",
+      "icon": {
+        "id": 215180,
+        "path": "ui/icon/215000/215180_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215180_hr1.tex&format=png"
       }
     }
   ]
