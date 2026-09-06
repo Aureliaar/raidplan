@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Op } from "../shared/apply";
 import type { FFLogsDebuffDump } from "../shared/fflogs";
 import { assetUrl } from "../shared/assets";
@@ -16,14 +16,52 @@ import {
   type Plan,
   mechLabel,
 } from "../shared/schema";
-import { fflogsDebuffDumpMock } from "./mock-data";
+import type { FightLibraryEntry } from "../shared/fight-library";
+import { api } from "./api";
+
+/** A plan whose encounter the library has not been taught, remembered here. */
+const pickedKey = (planId: string) => `raidplan.debuffs.${planId}`;
 
 /**
- * Where the fight's statuses come from. For now the captured Themis dump;
- * the seam a real per-encounter fetch (fflogs-browser) slots into later.
+ * The fight this plan reads its statuses from: whatever the debuff library
+ * holds for the encounter the plan names, and the library itself so an author
+ * can point at another fight when the name is one it has not seen before.
  */
-function getDebuffDump(_plan: Plan): FFLogsDebuffDump | null {
-  return fflogsDebuffDumpMock;
+function useFightDebuffs(plan: Plan) {
+  const [library, setLibrary] = useState<FightLibraryEntry[]>([]);
+  const [key, setKey] = useState<string | null>(null);
+  const [dump, setDump] = useState<FFLogsDebuffDump | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let live = true;
+    void api
+      .planDebuffs(plan.id)
+      .then(async (found) => {
+        if (!live) return;
+        setLibrary(found.library);
+        const remembered = localStorage.getItem(pickedKey(plan.id));
+        const fallback = remembered && found.library.some((e) => e.key === remembered) ? remembered : null;
+        setKey(found.key ?? fallback);
+        setDump(found.dump ?? (fallback ? await api.debuffFight(fallback) : null));
+      })
+      .catch(() => undefined)
+      .finally(() => live && setLoading(false));
+    return () => {
+      live = false;
+    };
+  }, [plan.id]);
+
+  /** Choosing a fight teaches the library what this plan calls its encounter. */
+  async function choose(next: string) {
+    const chosen = await api.usePlanDebuffFight(plan.id, next);
+    localStorage.setItem(pickedKey(plan.id), next);
+    setKey(chosen.key);
+    setDump(chosen.dump);
+    setLibrary(await api.debuffLibrary());
+  }
+
+  return { library, key, dump, loading, choose };
 }
 
 const GROUP_META: Record<DebuffGroup, { label: string; color: string }> = {
@@ -58,7 +96,8 @@ export function DebuffPanel({
   run(ops: Op | Op[]): Promise<{ values: unknown[] }>;
   onClose(): void;
 }) {
-  const dump = getDebuffDump(plan);
+  const fight = useFightDebuffs(plan);
+  const { dump } = fight;
   const rows = useMemo(() => (dump ? pickerRows(dump) : []), [dump]);
   const deal = mech.debuffs ?? EMPTY;
   const pooled = (deal.pools.supports?.length ?? 0) > 0;
@@ -268,8 +307,32 @@ export function DebuffPanel({
 
         {/* The fight's statuses, in first-appearance rows. */}
         <div className="panel mt-3 rounded p-2">
-          <div className="text-[11px] uppercase tracking-wide text-ink-400">
-            {dump ? `${dump.fight.name} — statuses by first appearance` : "No log attached"}
+          <div className="flex items-center gap-2">
+            <div className="text-[11px] uppercase tracking-wide text-ink-400">
+              {dump
+                ? `${dump.fight.name} — statuses by first appearance`
+                : fight.loading
+                  ? "Reading the library…"
+                  : fight.library.length
+                    ? "Which fight is this?"
+                    : "No fight in the library yet — import a log from the FF Logs page"}
+            </div>
+            {fight.library.length > 1 || (!dump && fight.library.length > 0) ? (
+              <select
+                className="field ml-auto w-auto py-0.5 text-xs"
+                value={fight.key ?? ""}
+                onChange={(e) => void fight.choose(e.target.value)}
+              >
+                <option value="" disabled>
+                  Pick the fight
+                </option>
+                {fight.library.map((entry) => (
+                  <option key={entry.key} value={entry.key}>
+                    {entry.name} ({entry.debuffs})
+                  </option>
+                ))}
+              </select>
+            ) : null}
           </div>
           <div className="mt-1 grid gap-1">
             {rows.map((row) => (

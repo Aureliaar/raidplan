@@ -70,7 +70,7 @@ try {
     const { plan } = await fetch(`/api/plans/${id}`).then((response) => response.json());
     return plan.entities.find((entity) => entity.id === tether)?.range === 250;
   }, [planId, tetherId]);
-  await page.getByRole("complementary").getByRole("button", { name: "✕", exact: true }).click();
+  await page.getByRole("button", { name: "Close inspector" }).click();
   await calibration.fill("50");
   await calibration.press("Enter");
   await page.getByText("50×37.5 yalms · manual override", { exact: true }).waitFor();
@@ -86,6 +86,11 @@ try {
   }, planId);
   await page.getByRole("button", { name: "reset", exact: true }).click();
   await page.getByText("40×30 yalms · M12S phase 1", { exact: true }).waitFor();
+  // The label turns before the request lands: wait for the document itself.
+  await page.waitForFunction(async (id) => {
+    const { plan } = await fetch(`/api/plans/${id}`).then((response) => response.json());
+    return plan.arena.widthYalms === undefined;
+  }, planId);
   plan = (await api(`/api/plans/${planId}`)).plan;
   if (plan.arena.widthYalms !== undefined) throw new Error("reset did not clear the manual override");
   console.log("known M12S 40×30 calibration, shape application, tether conversion, manual override and reset all work");

@@ -34,6 +34,7 @@ import {
   beatVariantMovement,
   beatVariantLabel,
   beatVariantOwner,
+  isActor,
   isBeatPart,
   validateBeatVariantSelections,
   poseKey,
@@ -239,7 +240,6 @@ function replaceBeatContent(
   };
 }
 
-const ACTOR_TYPES = new Set<Entity["type"]>(["player", "enemy"]);
 const POSE_KEYS = new Set(["x", "y", "rotation"]);
 
 /** Store one sparse absolute actor pose without detaching Beat content. */
@@ -252,7 +252,7 @@ function updateBeatMovement(
 ): { plan: Plan; entity: Entity } {
   beatAddress(plan, stepId, variantId);
   const actor = plan.entities.find((candidate) => candidate.id === id);
-  if (!actor || !ACTOR_TYPES.has(actor.type)) throw new Error(`No shared actor ${id}`);
+  if (!actor || !isActor(actor)) throw new Error(`No shared actor ${id}`);
   if (Object.keys(patch).some((key) => !POSE_KEYS.has(key)))
     throw new Error("Beat Variant actor edits may only change movement");
   const shared = resolveEntity(actor, stepId);
@@ -369,7 +369,7 @@ export function updateEntity(
   if (stepId && variantId) {
     if (plan.variantModel === "beat") {
       const global = plan.entities.find((candidate) => candidate.id === id);
-      if (global && ACTOR_TYPES.has(global.type))
+      if (global && isActor(global))
         return updateBeatMovement(plan, id, clean, stepId, variantId);
       const detached = beatContentForEdit(plan, stepId, variantId);
       const idx = detached.content.parts.findIndex((entity) => entity.id === id);
@@ -439,7 +439,7 @@ export function clearOverride(plan: Plan, id: string, stepId: string, variantId?
   if (variantId) {
     if (plan.variantModel === "beat") {
       const owner = beatAddress(plan, stepId, variantId);
-      const actor = plan.entities.find((entity) => entity.id === id && ACTOR_TYPES.has(entity.type));
+      const actor = plan.entities.find((entity) => entity.id === id && isActor(entity));
       if (actor) {
         const steps = plan.steps.map((step) => {
           if (step.id !== stepId) return step;
@@ -1405,9 +1405,7 @@ export function setStepVariantMovement(
   pose: BeatVariantPose,
 ): Plan {
   if (!stepVariantOwner(plan, variantId)) throw new Error(`No Step Variant ${variantId}`);
-  if (!plan.entities.some((entity) =>
-    entity.id === actorId && (entity.type === "player" || entity.type === "enemy")
-  ))
+  if (!plan.entities.some((entity) => entity.id === actorId && isActor(entity)))
     throw new Error(`No actor ${actorId}`);
   const steps = plan.steps.map((step) =>
     step.id === stepId
@@ -2024,16 +2022,21 @@ export function deleteVariant(plan: Plan, mechanicId: string, variantId: string)
  */
 export function addMech(
   plan: Plan,
-  opts: { name?: string; snap?: string; boom?: string; color?: string } = {},
+  opts: { id?: string; name?: string; snap?: string; boom?: string; color?: string; plain?: boolean } = {},
 ): { plan: Plan; mech: Mech } {
+  if (opts.id && plan.mechs.some((m) => m.id === opts.id)) throw new Error(`Mech id ${opts.id} is already in use`);
   const here = opts.snap ?? plan.steps[0]?.id ?? "";
   // The least-used colour, so the second cast never matches the first and a
   // plan with a handful of them spreads across the palette.
   const used = (c: string) => plan.mechs.filter((m) => mechColor(plan, m) === c).length;
-  const color =
-    opts.color ?? MECH_COLORS.reduce((best, c) => (used(c) < used(best) ? c : best), MECH_COLORS[0]);
+  // A Beat made for a drop is plain: it has no colour of its own, so its
+  // Parts keep the family colours a raider reads the floor by. A Beat someone
+  // asked for by name gets a colour, because it is a thing they will fill.
+  const color = opts.plain
+    ? undefined
+    : opts.color ?? MECH_COLORS.reduce((best, c) => (used(c) < used(best) ? c : best), MECH_COLORS[0]);
   const mech: Mech = {
-    id: newId("mech"),
+    id: opts.id ?? newId("mech"),
     name: opts.name ?? "",
     snap: here,
     boom: opts.boom ?? here,
@@ -2066,6 +2069,67 @@ export function updateMech(plan: Plan, mechId: string, patch: Partial<Omit<Mech,
       );
   }
   return touch({ ...plan, mechs });
+}
+
+/**
+ * Fold Beats into one. Everything the others held becomes the target's, the
+ * target stretches to cover every span it swallowed, and the others are gone.
+ * A merged Beat is aimed at the target's new snapshot, so a bait folded in
+ * from a later Beat re-aims at where people stood when the earlier one took
+ * its picture — that is what putting them in one Beat means.
+ */
+export function mergeMechs(plan: Plan, into: string, mechIds: string[]): Plan {
+  const target = plan.mechs.find((m) => m.id === into);
+  if (!target) throw new Error(`No mech ${into}`);
+  const sources = mechIds.filter((id) => id !== into);
+  const swallowed = new Set(sources);
+  for (const id of sources) if (!plan.mechs.some((m) => m.id === id)) throw new Error(`No mech ${id}`);
+  if (!swallowed.size) return plan;
+  const all = [target, ...plan.mechs.filter((m) => swallowed.has(m.id))];
+  const at = (stepId: string) => plan.steps.findIndex((step) => step.id === stepId);
+  const snaps = all.map((m) => at(m.snap)).filter((i) => i >= 0);
+  const booms = all.map((m) => at(m.boom || m.snap)).filter((i) => i >= 0);
+  const named = all.find((m) => m.name);
+  const debuffs = all.find((m) => m.debuffs)?.debuffs;
+  const merged: Mech = {
+    ...target,
+    name: target.name || named?.name || "",
+    snap: snaps.length ? plan.steps[Math.min(...snaps)].id : target.snap,
+    boom: booms.length ? plan.steps[Math.max(...booms)].id : target.boom,
+    ...(debuffs && !target.debuffs ? { debuffs } : {}),
+  };
+  const adopt = (entity: Entity): Entity =>
+    entity.mech && swallowed.has(entity.mech) ? ({ ...entity, mech: into } as Entity) : entity;
+  const steps = plan.steps.map((step) => ({
+    ...step,
+    ...(step.variantScenes
+      ? {
+          variantScenes: Object.fromEntries(
+            Object.entries(step.variantScenes).map(([variant, scene]) => [variant, scene.map(adopt)])
+          ),
+        }
+      : {}),
+    ...(step.variants?.length
+      ? {
+          variants: step.variants.map((variant) => ({
+            ...variant,
+            beats: variant.beats.filter((id) => !swallowed.has(id)),
+          })),
+        }
+      : {}),
+  }));
+  const variantRoutes = plan.variantRoutes?.map((route) => {
+    const selections = { ...route.selections };
+    for (const id of swallowed) delete selections[id];
+    return { ...route, selections };
+  });
+  return touch({
+    ...plan,
+    mechs: plan.mechs.filter((m) => !swallowed.has(m.id)).map((m) => (m.id === into ? merged : m)),
+    entities: plan.entities.map(adopt),
+    steps,
+    variantRoutes,
+  });
 }
 
 /**
@@ -2283,30 +2347,6 @@ export function applyEncounterSetup(plan: Plan, setup: EncounterSetup): Plan {
   return placeMarkers(deleteEntities(setArena(plan, setup.arena), strays), setup.markers);
 }
 
-/** Add a standard 8-player party, laid out in a ring near the middle. */
-export function addParty(
-  plan: Plan,
-  party: { job: string; name: string }[] = DEFAULT_PARTY,
-  radiusFraction = 0.25
-): { plan: Plan; ids: string[] } {
-  let next = plan;
-  const ids: string[] = [];
-  const r = (plan.arena.width / 2) * radiusFraction;
-  party.forEach((p, i) => {
-    const a = (i / party.length) * Math.PI * 2 - Math.PI / 2;
-    const res = addEntity(next, {
-      type: "player",
-      job: p.job,
-      name: p.name,
-      x: Math.cos(a) * r,
-      y: Math.sin(a) * r,
-    });
-    next = res.plan;
-    ids.push(res.entity.id);
-  });
-  return { plan: next, ids };
-}
-
 /**
  * The party-finder clock, clockwise from north. Each slot lists the names that
  * belong in it, so a party built as MT/OT/H1/H2/D1-D4 lands in the right spots.
@@ -2323,6 +2363,57 @@ export const PF_SLOTS: { slot: string; names: string[] }[] = [
   { slot: "H1", names: ["H1"] },
   { slot: "R1", names: ["R1", "D3"] },
 ];
+
+/**
+ * Restore the requested party preset and put it on the PF clock. Existing
+ * players are reused (including renamed ones), missing slots are created, and
+ * extras are left alone. An already complete, aligned party is a true no-op.
+ */
+export function addParty(
+  plan: Plan,
+  party: { job: string; name: string }[] = DEFAULT_PARTY,
+  radiusFraction = PF_SPREAD
+): { plan: Plan; ids: string[] } {
+  const existing = plan.entities.filter((entity) => entity.type === "player");
+  const unused = new Set(existing.map((entity) => entity.id));
+  const assigned = new Map<number, Entity>();
+
+  // Named slots win, so a reordered document or the older D1-D4 names still
+  // land in their conventional positions. Renamed players fill any gaps.
+  for (let i = 0; i < party.length; i++) {
+    const wanted = party[i].name.toUpperCase();
+    const aliases = PF_SLOTS.find((slot) => slot.slot === wanted)?.names ?? [wanted];
+    const match = existing.find(
+      (entity) => unused.has(entity.id) && aliases.includes((entity.name ?? "").toUpperCase())
+    );
+    if (match) {
+      assigned.set(i, match);
+      unused.delete(match.id);
+    }
+  }
+  const spares = existing.filter((entity) => unused.has(entity.id));
+
+  let next = plan;
+  const ids: string[] = [];
+  const r = (plan.arena.width / 2) * radiusFraction;
+  for (let i = 0; i < party.length; i++) {
+    const spec = party[i];
+    const slot = PF_SLOTS.findIndex((candidate) => candidate.names.includes(spec.name.toUpperCase()));
+    const clockIndex = slot >= 0 ? slot : i % PF_SLOTS.length;
+    const a = (clockIndex / PF_SLOTS.length) * Math.PI * 2 - Math.PI / 2;
+    const pose = { x: Math.round(Math.cos(a) * r), y: Math.round(Math.sin(a) * r) };
+    const entity = assigned.get(i) ?? spares.shift();
+    if (!entity) {
+      const res = addEntity(next, { type: "player", ...spec, ...pose });
+      next = res.plan;
+      ids.push(res.entity.id);
+    } else if (entity.x !== pose.x || entity.y !== pose.y) {
+      next = updateEntity(next, entity.id, pose).plan;
+      ids.push(entity.id);
+    }
+  }
+  return { plan: next, ids };
+}
 
 /**
  * Move the players already in the plan onto the PF clock. Anyone whose name
@@ -2477,13 +2568,20 @@ export const PALETTE = [
   "together",
   "apart",
   "anchor",
+  "text",
+  "arrow",
 ] as const;
 export type PaletteKind = (typeof PALETTE)[number];
 export type PaletteSourceKind = Extract<PaletteKind, "boss" | "add" | "anchor">;
-export type PaletteMechanicKind = Exclude<PaletteKind, PaletteSourceKind>;
+/** Pure annotations: they never bind to players or sources, only to the floor. */
+export type PaletteCosmeticKind = Extract<PaletteKind, "text" | "arrow">;
+export type PaletteMechanicKind = Exclude<PaletteKind, PaletteSourceKind | PaletteCosmeticKind>;
 
 export const isPaletteSource = (kind: PaletteKind): kind is PaletteSourceKind =>
   kind === "boss" || kind === "add" || kind === "anchor";
+
+export const isPaletteCosmetic = (kind: PaletteKind): kind is PaletteCosmeticKind =>
+  kind === "text" || kind === "arrow";
 
 export const isPaletteTether = (kind: PaletteKind): kind is Extract<PaletteKind, "together" | "apart"> =>
   kind === "together" || kind === "apart";
@@ -2503,9 +2601,11 @@ export const PALETTE_LABEL: Record<PaletteKind, string> = {
   together: "Together tether",
   apart: "Go-far tether",
   anchor: "Bait anchor",
+  text: "Text",
+  arrow: "Arrow",
 };
 
-/** Physical thresholds used whenever a player tether is created from the palette. */
+/** Physical thresholds used whenever a tether is created from the palette. */
 export const PALETTE_TETHER_RANGE_YALMS = { together: 8, apart: 25 } as const;
 
 export const PALETTE_HINT: Record<PaletteKind, string> = {
@@ -2520,9 +2620,11 @@ export const PALETTE_HINT: Record<PaletteKind, string> = {
   stack2: "A pair stack: two people share it.",
   linestack: "A line stack: a beam from the boss that several people line up in.",
   flare: "A flare: a big circle on somebody, who carries it away from the others.",
-  together: `A player tether whose inward chevrons turn green within ${PALETTE_TETHER_RANGE_YALMS.together} yalms. Drop it on one player, then click the other.`,
-  apart: `A player tether whose outward chevrons turn green at ${PALETTE_TETHER_RANGE_YALMS.apart} yalms. Drop it on one player, then click the other.`,
+  together: `A tether whose inward chevrons turn green within ${PALETTE_TETHER_RANGE_YALMS.together} yalms. Drop it on any object, then pick the other.`,
+  apart: `A tether whose outward chevrons turn green at ${PALETTE_TETHER_RANGE_YALMS.apart} yalms. Drop it on any object, then pick the other.`,
   anchor: "A point mechanics come out of that is not the boss — an add, an orb, a portal.",
+  text: "A free text label. Drop it anywhere and edit what it says.",
+  arrow: "A cosmetic arrow — points where somebody should go. It hits nothing.",
 };
 
 /** Which bait preset each palette kind becomes once it is bound to somebody. */
@@ -2553,16 +2655,18 @@ const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
   stack2: { type: "zone", shape: "stack", radius: 140, soak: 2 },
   linestack: { type: "zone", shape: "linestack", width: 120, length: 600, soak: 4 },
   flare: { type: "zone", shape: "flare", radius: 320 },
-  // Player tethers are authored by dropping on Supports or Damagers. These
+  // Tether sets are authored by dropping on Supports or Damagers. These
   // placeholders only make the palette's free-spec table exhaustive; the
   // editor rejects a floor/source drop before it reaches this table.
   together: { type: "tether", from: "", to: "", style: "close", range: 200 },
   apart: { type: "tether", from: "", to: "", style: "far", range: 625 },
   anchor: { type: "enemy", role: "anchor", size: 60, ring: false, showFacing: false },
+  text: { type: "text", text: "Text", fontSize: 48 },
+  arrow: { type: "zone", shape: "arrow", width: 60, length: 300, color: "#e8edf5" },
 };
 
 export const paletteNeedsSource = (kind: PaletteKind) =>
-  !isPaletteSource(kind) && baitNeedsSource(PALETTE_BAIT[kind].kind);
+  !isPaletteSource(kind) && !isPaletteCosmetic(kind) && baitNeedsSource(PALETTE_BAIT[kind].kind);
 
 /** A free-standing shape at a point on the floor. */
 export function paletteSpec(kind: PaletteKind, props: PropBag = {}): PropBag & { type: EntityType } {
@@ -2600,6 +2704,8 @@ function sizeFields(entity: Entity): string[] {
       return ["range"];
     case "path":
       return ["width"];
+    case "text":
+      return ["fontSize"];
     default:
       return ["size"];
   }

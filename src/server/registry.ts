@@ -1,6 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
 import type { AppEnv } from "./env";
 import type { EncounterSetup, EncounterSummary, PlanRole, PlanSummary, User } from "../shared/schema";
+import type { FFLogsDebuffDump } from "../shared/fflogs";
+import { type FightLibraryEntry, encounterAlias, fightKey, mergeDumps } from "../shared/fight-library";
 
 /** "M5S — Dancing Green" and "m5s — dancing green" are the same fight. */
 const encounterKey = (name: string) => name.trim().toLowerCase();
@@ -53,6 +55,22 @@ export class Registry extends DurableObject<AppEnv> {
       setup TEXT NOT NULL,
       updatedAt INTEGER NOT NULL,
       PRIMARY KEY (ownerId, encounter)
+    )`);
+    // The debuff library: what each fight does, gathered from imported logs.
+    // Shared by everyone — a fight's statuses are the game's, not a group's
+    // reading of it, and each import only makes the entry more complete.
+    sql.exec(`CREATE TABLE IF NOT EXISTS fights (
+      key TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      encounterId INTEGER,
+      dump TEXT NOT NULL,
+      updatedAt INTEGER NOT NULL
+    )`);
+    // What a plan calls its encounter ("p12s") pointing at the fight FF Logs
+    // calls something else ("Athena"), recorded the first time someone says so.
+    sql.exec(`CREATE TABLE IF NOT EXISTS fight_aliases (
+      alias TEXT PRIMARY KEY,
+      fight TEXT NOT NULL
     )`);
     sql.exec(`CREATE TABLE IF NOT EXISTS acl (
       planId TEXT NOT NULL,
@@ -283,6 +301,74 @@ export class Registry extends DurableObject<AppEnv> {
       ownerId,
       encounterKey(encounter)
     );
+  }
+
+  /* -------------------------------------------------------- debuff library */
+
+  /**
+   * Fold an imported log into its fight's entry. Reports back the entry and how
+   * many statuses this pull taught the library that it did not already hold.
+   */
+  async importFightDebuffs(dump: FFLogsDebuffDump): Promise<{ entry: FightLibraryEntry; added: number }> {
+    const key = fightKey(dump.fight);
+    const held = this.fightDump(key);
+    const merged = held ? mergeDumps(held, dump) : dump;
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO fights (key, name, encounterId, dump, updatedAt) VALUES (?, ?, ?, ?, ?)`,
+      key,
+      dump.fight.name,
+      dump.fight.encounterId,
+      JSON.stringify(merged),
+      Date.now()
+    );
+    return {
+      entry: this.listFights().find((entry) => entry.key === key)!,
+      added: merged.debuffs.length - (held?.debuffs.length ?? 0),
+    };
+  }
+
+  async listFightDebuffs(): Promise<FightLibraryEntry[]> {
+    return this.listFights();
+  }
+
+  async getFightDebuffs(key: string): Promise<FFLogsDebuffDump | null> {
+    return this.fightDump(key) ?? null;
+  }
+
+  /** Teach the library that an encounter name means this fight. */
+  async linkEncounterToFight(encounter: string, key: string): Promise<void> {
+    const alias = encounterAlias(encounter);
+    if (!alias) return;
+    this.ctx.storage.sql.exec(
+      `INSERT OR REPLACE INTO fight_aliases (alias, fight) VALUES (?, ?)`,
+      alias,
+      key
+    );
+  }
+
+  private fightDump(key: string): FFLogsDebuffDump | undefined {
+    const row = [...this.ctx.storage.sql.exec(`SELECT dump FROM fights WHERE key = ?`, key)][0];
+    return row ? (JSON.parse(row.dump as string) as FFLogsDebuffDump) : undefined;
+  }
+
+  private listFights(): FightLibraryEntry[] {
+    const aliases = new Map<string, string[]>();
+    for (const row of this.ctx.storage.sql.exec(`SELECT alias, fight FROM fight_aliases`)) {
+      const key = row.fight as string;
+      aliases.set(key, [...(aliases.get(key) ?? []), row.alias as string]);
+    }
+    return [...this.ctx.storage.sql.exec(`SELECT * FROM fights ORDER BY updatedAt DESC`)].map((row) => {
+      const dump = JSON.parse(row.dump as string) as FFLogsDebuffDump;
+      return {
+        key: row.key as string,
+        name: row.name as string,
+        encounterId: (row.encounterId as number | null) ?? null,
+        debuffs: dump.debuffs.length,
+        aliases: aliases.get(row.key as string) ?? [],
+        updatedAt: row.updatedAt as number,
+        source: dump.source,
+      };
+    });
   }
 
   /* -------------------------------------------------------------------- acl */

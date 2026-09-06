@@ -9,6 +9,7 @@
  *   node scripts/e2e-livedrag.mjs http://localhost:59577
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -40,6 +41,11 @@ const boss = (await ops(planId, [{ op: "add_entity", spec: { type: "enemy", name
   .values[0].id;
 let doc = await api("/api/plans/" + planId).then((p) => p.plan ?? p);
 const idOf = (name) => doc.entities.find((e) => e.name === name).id;
+const stepId = doc.steps[0].id;
+
+await ops(planId, [
+  { op: "update_step", stepId, patch: { notes: "Drag this note" } },
+]);
 
 const made = await ops(planId, [
   { op: "add_entity", spec: { type: "zone", name: "Donut", shape: "donut", innerRadius: 120, radius: 380, anchor: { to: idOf("H1") } } },
@@ -65,7 +71,7 @@ const node = (id) =>
 const box = await page.locator("canvas").first().boundingBox();
 doc = await api("/api/plans/" + planId).then((p) => p.plan ?? p);
 const h1 = doc.entities.find((e) => e.name === "H1");
-const scale = box.width / doc.arena.width;
+const scale = viewScale(box.width, doc.arena.width);
 const screen = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 
 const donutBefore = await node(donutId);
@@ -73,9 +79,12 @@ const autoBefore = await node(autoId);
 
 // Press on H1 and walk them in close to the boss — closer than anyone else, so
 // the autobait must hand its beam over — and stop there, button still down.
+// The drop point sits near the NE spoke, so hold Alt: this exact free-hand
+// placement is the point, and Alt is the radial snap's escape hatch.
 const dropAt = { x: 30, y: -40 };
 const from = screen(h1.x, h1.y);
 const to = screen(dropAt.x, dropAt.y);
+await page.keyboard.down("Alt");
 await page.mouse.move(from.x, from.y);
 await page.mouse.down();
 await page.mouse.move(to.x, to.y, { steps: 25 });
@@ -113,6 +122,7 @@ if (!tetherEnds.some((p) => Math.hypot(p.x - dropAt.x, p.y - dropAt.y) < 20))
 else console.log("mid-drag: the tether endpoint moved with H1 too");
 
 await page.mouse.up();
+await page.keyboard.up("Alt");
 await page.waitForTimeout(700);
 
 const finalDoc = await api("/api/plans/" + planId).then((p) => p.plan ?? p);
@@ -124,5 +134,54 @@ const donutAfter = await node(donutId);
 if (Math.hypot(donutAfter.x - donutMid.x, donutAfter.y - donutMid.y) > 5)
   fail("the donut jumped between the drop and the commit: " + JSON.stringify(donutMid) + " -> " + JSON.stringify(donutAfter));
 
-console.log(process.exitCode ? "FAILED" : "OK - the canvas re-solves while you drag, and does not flinch on drop");
+// Notes are ordinary DOM rather than Konva, but obey the same release
+// contract. Hold their ops before they reach the server and sample every paint:
+// the card must track the pointer, stay at the released pose, and only then let
+// the authoritative step position take over.
+const notes = page.locator(`[data-step-notes="${stepId}"]`);
+const noteBefore = await notes.boundingBox();
+let releaseOps = false;
+await page.route(`**/api/plans/${planId}/ops`, async (route) => {
+  if (releaseOps) await new Promise((resolve) => setTimeout(resolve, 700));
+  await route.continue();
+});
+const noteTo = { x: noteBefore.x + 150, y: noteBefore.y + 90 };
+await page.mouse.move(noteBefore.x + 10, noteBefore.y + 10);
+await page.mouse.down();
+await page.mouse.move(noteTo.x + 10, noteTo.y + 10, { steps: 15 });
+const noteMid = await notes.boundingBox();
+if (Math.hypot(noteMid.x - noteTo.x, noteMid.y - noteTo.y) > 5)
+  fail("the notes card did not follow the pointer before release");
+
+await page.evaluate(() => {
+  window.__noteFrames = [];
+  const sample = () => {
+    const node = document.querySelector("[data-step-notes]");
+    if (node) {
+      const box = node.getBoundingClientRect();
+      window.__noteFrames.push({ x: box.x, y: box.y });
+    }
+    if (window.__noteFrames.length < 55) requestAnimationFrame(sample);
+  };
+  requestAnimationFrame(sample);
+});
+releaseOps = true;
+await page.mouse.up();
+await page.waitForTimeout(120);
+const staleDoc = await api("/api/plans/" + planId).then((p) => p.plan ?? p);
+if (staleDoc.steps[0].notesPos)
+  fail("the delayed notes request reached the server before the settling check");
+if ((await notes.getAttribute("data-drag-settling")) !== "true")
+  fail("the released notes preview was not marked settling");
+await page.waitForTimeout(900);
+
+const noteFrames = await page.evaluate(() => window.__noteFrames);
+if (noteFrames.some((frame) => Math.hypot(frame.x - noteTo.x, frame.y - noteTo.y) > 5))
+  fail("the notes card flashed back to its old position while the request settled");
+const noteDoc = await api("/api/plans/" + planId).then((p) => p.plan ?? p);
+if (!noteDoc.steps[0].notesPos)
+  fail("the notes drag did not persist a step position");
+else console.log("notes drag: live preview handed directly to optimistic state and held through acknowledgement");
+
+console.log(process.exitCode ? "FAILED" : "OK - live drags hand directly to persistent state without flinching");
 await browser.close();

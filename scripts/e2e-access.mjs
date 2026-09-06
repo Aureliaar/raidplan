@@ -57,6 +57,28 @@ const socket = (page) =>
 check((await socket(stranger)) !== "state", "stranger blocked over socket");
 check((await socket(owner)) === "state", "owner still syncs");
 
+const editLinkResponse = await owner.request.post(`${base}/api/plans/${id}/edit-link`);
+const { url: editLink } = await editLinkResponse.json();
+const guest = await (await browser.newContext()).newPage();
+await guest.goto(editLink, { waitUntil: "domcontentloaded" });
+const guestPlan = await guest.request.get(`${base}/api/plans/${id}`);
+const guestBody = await guestPlan.json();
+check(guestPlan.ok() && guestBody.role === "editor", "edit link grants editing");
+check((await socket(guest)) === "state", "edit link grants sync");
+
+await owner.request.post(`${base}/api/plans/${id}/public`, { data: { isPublic: true } });
+const duplicateResponse = await stranger.request.post(`${base}/api/plans/${id}/duplicate`);
+const { id: duplicateId } = await duplicateResponse.json();
+const duplicateResponseBody = await (await stranger.request.get(`${base}/api/plans/${duplicateId}`)).json();
+check(duplicateResponse.ok() && duplicateResponseBody.role === "owner", "duplicate belongs to viewer");
+check(
+  JSON.stringify(duplicateResponseBody.plan.entities) === JSON.stringify(guestBody.plan.entities) &&
+    JSON.stringify(duplicateResponseBody.plan.steps) === JSON.stringify(guestBody.plan.steps) &&
+    JSON.stringify(duplicateResponseBody.plan.mechanics) === JSON.stringify(guestBody.plan.mechanics),
+  "duplicate keeps plan contents"
+);
+
+await stranger.request.delete(`${base}/api/plans/${duplicateId}`);
 await owner.request.delete(`${base}/api/plans/${id}`);
 await browser.close();
 console.log(failed ? `${failed} check(s) failed` : "access checks pass");

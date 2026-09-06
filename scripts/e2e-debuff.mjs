@@ -1,11 +1,15 @@
 /**
- * The debuff deal: "New debuff mech here" opens the popup, a status dragged
- * from the fight's timeline lands in a role pool, and dropping on Supports
- * folds tanks and healers into one pool and flips the tokens to S/D art.
+ * The debuff deal: a log imported into the fight library reaches a plan for
+ * that encounter on its own, "New debuff Beat here" opens the popup, a status
+ * dragged from the fight's timeline lands in a role pool, and dropping on
+ * Supports folds tanks and healers into one pool and flips the tokens to S/D.
  *
  *   node scripts/e2e-debuff.mjs http://localhost:59577
  */
+import { readFileSync } from "node:fs";
 import { chromium } from "playwright";
+
+const dump = JSON.parse(readFileSync(new URL("./fixtures/athena-debuffs.json", import.meta.url), "utf8"));
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -27,9 +31,14 @@ const api = (path, init = {}) =>
     [path, init]
   );
 
+/* --- a log lands in the library, and the plan's encounter finds it --------- */
+
+const library = await api("/api/debuffs", { method: "POST", body: JSON.stringify(dump) });
+if (library.entry.name !== dump.fight.name) fail("the import did not name the fight: " + JSON.stringify(library.entry));
+
 const created = await api("/api/plans", {
   method: "POST",
-  body: JSON.stringify({ name: "debuff e2e", withParty: true }),
+  body: JSON.stringify({ name: "debuff e2e", encounter: "P12S — Athena", withParty: true }),
 });
 const planId = (created.plan ?? created).id;
 const load = () => api("/api/plans/" + planId).then((p) => p.plan ?? p);
@@ -40,16 +49,16 @@ await page.waitForTimeout(900);
 
 /* --- the popup opens on a fresh debuff mech ------------------------------- */
 
-await page.getByRole("button", { name: "New debuff mech here" }).click();
+await page.getByRole("button", { name: "New debuff Beat here" }).click();
 await page.waitForTimeout(600);
 const modal = page.locator("div.fixed.inset-0");
 if (!(await modal.count())) fail("the debuff popup did not open");
-if (!(await modal.getByText("statuses by first appearance").count()))
-  fail("the popup shows no first-appearance timeline");
+if (!(await modal.getByText("Athena — statuses by first appearance").count()))
+  fail("the popup did not pick the library fight up from the plan's encounter");
 
 /* --- a status dragged onto Tanks lands in their pool ---------------------- */
 
-const chip = modal.locator("div[draggable=true]", { hasText: "Bleeding" }).first();
+const chip = modal.locator("div[draggable=true]", { hasText: "Umbralbright Soul" }).first();
 const tanks = modal.getByText("Tanks", { exact: true });
 await chip.dragTo(tanks);
 await page.waitForTimeout(600);
@@ -57,9 +66,9 @@ await page.waitForTimeout(600);
 let doc = await load();
 let mech = doc.mechs.find((m) => m.debuffs);
 if (!mech) fail("no mech holds a debuff deal after the drop");
-else if ((mech.debuffs.pools.tanks ?? []).length !== 1 || mech.debuffs.pools.tanks[0].name !== "Bleeding")
-  fail("Bleeding did not land in the tank pool: " + JSON.stringify(mech.debuffs.pools));
-else console.log("Bleeding dealt to the tanks, mode " + mech.debuffs.mode);
+else if ((mech.debuffs.pools.tanks ?? []).length !== 1 || mech.debuffs.pools.tanks[0].name !== "Umbralbright Soul")
+  fail("Umbralbright Soul did not land in the tank pool: " + JSON.stringify(mech.debuffs.pools));
+else console.log("Umbralbright Soul dealt to the tanks, mode " + mech.debuffs.mode);
 
 /* --- dropping on Supports folds the pools and flips to S/D art ------------ */
 

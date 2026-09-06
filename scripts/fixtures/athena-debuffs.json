@@ -1,0 +1,234 @@
+{
+  "schemaVersion": 1,
+  "generatedAt": "2026-09-06T11:45:14.217Z",
+  "source": {
+    "url": "https://www.fflogs.com/reports/y7RHkWhzD6ACPj4t?fight=35",
+    "reportCode": "y7RHkWhzD6ACPj4t",
+    "fightId": 35,
+    "targetScope": "friendlies"
+  },
+  "fight": {
+    "id": 35,
+    "name": "Athena",
+    "encounterId": 91,
+    "startTime": 10620973,
+    "endTime": 10775816,
+    "durationMs": 154843,
+    "kill": false
+  },
+  "excludedStatuses": [
+    "Weakness",
+    "Brink of Death",
+    "Damage Down"
+  ],
+  "debuffs": [
+    {
+      "id": 1002941,
+      "name": "Magic Vulnerability Up",
+      "firstAppliedMs": 38464,
+      "firstApplied": "00:38.464",
+      "firstAppliedReportMs": 10659437,
+      "applications": 28,
+      "firstSource": {
+        "id": 49,
+        "name": "anthropos",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 41,
+        "name": "Mousenna Tricksterat",
+        "type": "Player",
+        "subType": "Scholar"
+      },
+      "tooltip": "Magic damage taken is increased.",
+      "icon": {
+        "id": 215057,
+        "path": "ui/icon/215000/215057_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215057_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003579,
+      "name": "Umbralbright Soul",
+      "firstAppliedMs": 66542,
+      "firstApplied": "01:06.542",
+      "firstAppliedReportMs": 10687515,
+      "applications": 3,
+      "firstSource": {
+        "id": -1,
+        "name": "Environment",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 39,
+        "name": "Valk Endsky",
+        "type": "Player",
+        "subType": "Dancer"
+      },
+      "tooltip": "Soul has been commandeered to unleash Umbral Glow when this effect expires.",
+      "icon": {
+        "id": 215182,
+        "path": "ui/icon/215000/215182_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215182_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003580,
+      "name": "Astralbright Soul",
+      "firstAppliedMs": 66542,
+      "firstApplied": "01:06.542",
+      "firstAppliedReportMs": 10687515,
+      "applications": 3,
+      "firstSource": {
+        "id": -1,
+        "name": "Environment",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 35,
+        "name": "Ray Aureliaar",
+        "type": "Player",
+        "subType": "Sage"
+      },
+      "tooltip": "Soul has been commandeered to unleash Astral Glow when this effect expires.",
+      "icon": {
+        "id": 215183,
+        "path": "ui/icon/215000/215183_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215183_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003576,
+      "name": "Umbral Tilt",
+      "firstAppliedMs": 76452,
+      "firstApplied": "01:16.452",
+      "firstAppliedReportMs": 10697425,
+      "applications": 11,
+      "firstSource": {
+        "id": 48,
+        "name": "anthropos",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 40,
+        "name": "Esli Ciel",
+        "type": "Player",
+        "subType": "Paladin"
+      },
+      "tooltip": "Internal aether is dramatically polarized toward the umbral. Damage taken from umbral attacks is increased, though explosive damage from astral attacks can be quelled. ",
+      "icon": {
+        "id": 215179,
+        "path": "ui/icon/215000/215179_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215179_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003577,
+      "name": "Astral Tilt",
+      "firstAppliedMs": 76452,
+      "firstApplied": "01:16.452",
+      "firstAppliedReportMs": 10697425,
+      "applications": 11,
+      "firstSource": {
+        "id": 48,
+        "name": "anthropos",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 38,
+        "name": "Lorem Malaguld",
+        "type": "Player",
+        "subType": "Reaper"
+      },
+      "tooltip": "Internal aether is dramatically polarized toward the astral. Damage taken from astral attacks is increased, though explosive damage from umbral attacks can be quelled. ",
+      "icon": {
+        "id": 215180,
+        "path": "ui/icon/215000/215180_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215180_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003578,
+      "name": "Heavensflame Soul",
+      "firstAppliedMs": 125354,
+      "firstApplied": "02:05.354",
+      "firstAppliedReportMs": 10746327,
+      "applications": 4,
+      "firstSource": {
+        "id": -1,
+        "name": "Environment",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 37,
+        "name": "Mira Nopon",
+        "type": "Player",
+        "subType": "Pictomancer"
+      },
+      "tooltip": "Soul has been commandeered to unleash Theos's Holy when this effect expires.",
+      "icon": {
+        "id": 215181,
+        "path": "ui/icon/215000/215181_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215181_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003581,
+      "name": "Umbralstrong Soul",
+      "firstAppliedMs": 125354,
+      "firstApplied": "02:05.354",
+      "firstAppliedReportMs": 10746327,
+      "applications": 1,
+      "firstSource": {
+        "id": -1,
+        "name": "Environment",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 35,
+        "name": "Ray Aureliaar",
+        "type": "Player",
+        "subType": "Sage"
+      },
+      "tooltip": "Soul has been commandeered to unleash Umbral Impact when this effect expires.",
+      "icon": {
+        "id": 215184,
+        "path": "ui/icon/215000/215184_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215184_hr1.tex&format=png"
+      }
+    },
+    {
+      "id": 1003582,
+      "name": "Astralstrong Soul",
+      "firstAppliedMs": 125354,
+      "firstApplied": "02:05.354",
+      "firstAppliedReportMs": 10746327,
+      "applications": 1,
+      "firstSource": {
+        "id": -1,
+        "name": "Environment",
+        "type": "NPC",
+        "subType": "NPC"
+      },
+      "firstTarget": {
+        "id": 36,
+        "name": "Saigi Mestonnaux",
+        "type": "Player",
+        "subType": "Gunbreaker"
+      },
+      "tooltip": "Soul has been commandeered to unleash Astral Impact when this effect expires.",
+      "icon": {
+        "id": 215185,
+        "path": "ui/icon/215000/215185_hr1.tex",
+        "url": "https://v2.xivapi.com/api/asset?path=ui%2Ficon%2F215000%2F215185_hr1.tex&format=png"
+      }
+    }
+  ]
+}

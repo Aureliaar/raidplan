@@ -20,16 +20,25 @@ try {
 
   await page.goto(`${base}/p/${created.id}`);
   await page.waitForSelector("canvas");
-  await page.locator('input[type="file"][accept*="image/png"]').setInputFiles(path.resolve("hitbox.png"));
-
+  const backdrop = page.locator('select:has(option[value="arena/p12_octagon"])');
+  await backdrop.waitFor();
+  await backdrop.selectOption("arena/p12_octagon");
   await page.waitForFunction(async (planId) => {
     const response = await fetch(`/api/plans/${planId}`);
     const { plan } = await response.json();
-    return plan.arena.image?.startsWith("/backgrounds/");
+    return plan.arena.image === "arena/p12_octagon";
   }, created.id);
+  console.log("preset background dropdown is visible and persisted a selection");
+
+  await page.locator('input[type="file"][accept*="image/png"]').setInputFiles(path.resolve("hitbox.png"));
+
+  await page.waitForFunction(() =>
+    document.querySelector('select:has(option[value="arena/p12_octagon"])')?.value.startsWith("/backgrounds/")
+  );
 
   const result = await page.evaluate(async (planId) => {
-    const { plan } = await fetch(`/api/plans/${planId}`).then((response) => response.json());
+    const { plan } = await fetch(`/api/plans/${planId}?fresh=${Date.now()}`, { cache: "no-store" })
+      .then((response) => response.json());
     const image = await fetch(plan.arena.image);
     const invalid = await fetch("/api/backgrounds", {
       method: "POST",

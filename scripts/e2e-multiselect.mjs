@@ -1,5 +1,6 @@
 /** Shift-click and marquee select several entities; a drag carries the set. */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -45,7 +46,7 @@ await page.locator("header select").selectOption("all");
 
 const canvas = page.locator("canvas").first();
 const box = await canvas.boundingBox();
-const scale = box.width / 1000;
+const scale = viewScale(box.width);
 const at = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 const plan = (await api(`/api/plans/${id}`)).plan;
 const left = plan.entities.find((e) => e.name === "left");

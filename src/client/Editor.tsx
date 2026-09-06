@@ -4,7 +4,7 @@ import { useAgent } from "agents/react";
 import { api } from "./api";
 import { navigate } from "./App";
 import type { EditLayer } from "./canvas/Scene";
-import { Scene } from "./canvas/Scene";
+import { Scene, viewScale } from "./canvas/Scene";
 import { Inspector } from "./Inspector";
 import { ChatPanel } from "./ChatPanel";
 import { applyOp, type Op } from "../shared/apply";
@@ -30,6 +30,7 @@ import {
   defaultBeatVariantSelections,
   entitiesForStep,
   hydratePlan,
+  isActor,
   mechLabel,
   MECH_COLORS,
   mechColor,
@@ -57,6 +58,7 @@ import {
   PALETTE_HINT,
   PALETTE_LABEL,
   PALETTE_TETHER_RANGE_YALMS,
+  isPaletteCosmetic,
   isPaletteSource,
   isPaletteTether,
   paletteBait,
@@ -131,6 +133,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [isPublic, setIsPublic] = useState(false);
+  const [duplicating, setDuplicating] = useState(false);
   /** What is in the hand mid-drag, purely so the drop targets can light up. */
   const [carrying, setCarrying] = useState<PaletteKind | null>(null);
   /** Full-size arena preview of a palette item before its drop is committed. */
@@ -141,7 +144,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   } | null>(null);
   const paletteMoveRef = useRef<(kind: PaletteKind, clientX: number, clientY: number) => void>(() => {});
   const paletteDropRef = useRef<(kind: PaletteKind, clientX: number, clientY: number) => void>(() => {});
-  /** First endpoint of a player tether, waiting for the second player click. */
+  /** First endpoint of a tether, waiting for the second entity pick. */
   const [pendingTether, setPendingTether] = useState<{
     kind: Extract<PaletteKind, "together" | "apart">;
     from: string;
@@ -223,6 +226,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 )
               ))
           ) continue;
+          if (op.op === "add_mech" && op.id && visible.mechs.some((beat) => beat.id === op.id))
+            continue;
           visible = applyOp(visible, op).plan;
         } catch {
           // A collaborator may have removed the target first. The request's
@@ -448,7 +453,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         const optimistic = expanded.every(
           (op) =>
             OPTIMISTIC_OPS.has(op.op) ||
-            (op.op === "add_entity" && typeof op.spec.id === "string")
+            (op.op === "add_entity" && typeof op.spec.id === "string") ||
+            (op.op === "add_mech" && typeof op.id === "string")
         );
         if (optimistic && current) {
           optimisticToken = Symbol("entity edit");
@@ -564,6 +570,34 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   }, [editable]);
 
   /**
+   * Deleting one box of a split. A Step's boxes only ever come as a pair, so
+   * dropping one is the same act as ending the branch: what the surviving box
+   * authored becomes the Step's Shared reading, which is why the confirm names
+   * both sides rather than only the doomed one.
+   */
+  const deleteStepVariantBox = useCallback(
+    (variantId: string) => {
+      const owner = plan?.variantModel === "step" ? stepVariantOwner(plan, variantId) : undefined;
+      const sibling = owner
+        ? stepVariants(owner.step).find((variant) => variant.id !== variantId)
+        : undefined;
+      if (!owner || !sibling) return;
+      const beats = owner.variant.beats.length;
+      if (
+        !window.confirm(
+          `Delete ${stepVariantLabel(owner.step, variantId)}${beats ? ` and the ${beats} Beat${beats === 1 ? "" : "s"} inside it` : ""}? ${stepVariantLabel(owner.step, sibling.id)} becomes Shared at every Step. This can be undone from history.`
+        )
+      )
+        return;
+      // The destination only falls back to Shared once the box is really gone.
+      void run({ op: "collapse_step_variants", stepId: owner.step.id, variantId: sibling.id })
+        .then(() => setEditingBeatVariant(null))
+        .catch(() => undefined);
+    },
+    [plan, run]
+  );
+
+  /**
    * The two gestures every editor has. Deliberately not bound while a field has
    * focus: Backspace in the plan-name box must delete a letter, not the boss.
    */
@@ -581,10 +615,24 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         return;
       }
       if (!mod && (ev.key === "Delete" || ev.key === "Backspace")) {
-        if (!selection.length) return;
+        if (selection.length) {
+          ev.preventDefault();
+          setSelected(null);
+          void run({ op: "delete_entities", ids: selection });
+          return;
+        }
+        // Nothing on the canvas is selected, so the key falls through to the
+        // other thing a click can select: the Variant box being edited.
+        if (plan?.variantModel !== "step" || !editingBeatVariant) return;
         ev.preventDefault();
-        setSelected(null);
-        void run({ op: "delete_entities", ids: selection });
+        deleteStepVariantBox(editingBeatVariant);
+        return;
+      }
+      // Escape steps back out to Shared, so the edit destination is never a
+      // state you can only leave by clicking the right box again.
+      if (!mod && ev.key === "Escape" && editingBeatVariant) {
+        ev.preventDefault();
+        setEditingBeatVariant(null);
         return;
       }
       if (mod && ev.key.toLowerCase() === "c") {
@@ -715,7 +763,19 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [editable, selected, selection, plan, run, travelHistory, shown, editingBeatVariant, step, mech]);
+  }, [
+    editable,
+    selected,
+    selection,
+    plan,
+    run,
+    travelHistory,
+    shown,
+    editingBeatVariant,
+    deleteStepVariantBox,
+    step,
+    mech,
+  ]);
 
   /**
    * Walking the fight from the keyboard, on the rail's own two axes: W and S
@@ -832,7 +892,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   function arenaPointAt(clientX: number, clientY: number): { x: number; y: number } {
     const box = stageBox.current?.getBoundingClientRect();
     if (!box) return { x: 0, y: 0 };
-    const scale = box.width / Math.max(plan!.arena.width, plan!.arena.height);
+    const scale = viewScale(plan!.arena, box.width);
     return {
       x: Math.round((clientX - box.left - box.width / 2) / scale),
       y: Math.round((clientY - box.top - box.height / 2) / scale),
@@ -885,18 +945,25 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * it is the real dimensions that change, not `scale`, so the plan keeps
    * saying how big the thing is.
    */
-  function resize(id: string, factor: number, what: "size" | "opacity" = "size") {
+  function resize(requestedIds: string[], factor: number, what: "size" | "opacity" = "size") {
     const current = planRef.current;
     if (!current) return;
     const editableScene =
       scope === "step" && playing
         ? authoredEntitiesForStep(current, step!.id, playing)
         : current.entities;
-    const target = editableScene.find((e) => e.id === id);
-    if (!target) return;
-    const ids = target.bond
-      ? editableScene.filter((e) => e.bond?.id === target.bond!.id).map((e) => e.id)
-      : [id];
+    const requested = new Set(requestedIds);
+    const bonds = new Set(
+      editableScene
+        .filter((entity) => requested.has(entity.id) && entity.bond)
+        .map((entity) => entity.bond!.id)
+    );
+    // Preserve bonded-set behavior inside a multi-selection. Scene order keeps
+    // the pooled gesture key stable when the pointer crosses selected faces.
+    const ids = editableScene
+      .filter((entity) => requested.has(entity.id) || (entity.bond && bonds.has(entity.bond.id)))
+      .map((entity) => entity.id);
+    if (!ids.length) return;
     // Pointing somewhere else mid-spin: land what is owed before starting again.
     if (
       pendingResize.current &&
@@ -980,13 +1047,37 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     return boss ? boss.id : await placeSource("anchor", 0, 0);
   }
 
-  /** A player token under a palette drop, used to start a two-click tether. */
-  function playerAt(pt: { x: number; y: number }): string | undefined {
-    return entitiesForStep(plan!, step!.id, undefined, shown).find(
-      (e) =>
-        e.type === "player" &&
-        Math.hypot(e.x - pt.x, e.y - pt.y) <= e.size * 0.9 * e.scale
-    )?.id;
+  /**
+   * Any drawable entity under a tether drop. Prefer the smallest hit so a
+   * token or add remains reachable when it is standing inside a large AoE.
+   * Existing tethers cannot be endpoints: their own x/y is only a schema
+   * fallback, not a meaningful place on the floor.
+   */
+  function tetherEndAt(pt: { x: number; y: number }): string | undefined {
+    return entitiesForStep(plan!, step!.id, undefined, shown)
+      .filter((entity) => entity.type !== "tether")
+      .map((entity) => {
+        const radius =
+          entity.type === "zone"
+            ? entity.shape === "rect" || entity.shape === "line" || entity.shape === "knockback" || entity.shape === "arrow"
+              ? Math.max(entity.width, entity.length) / 2
+              : entity.radius
+            : entity.type === "text"
+              ? entity.fontSize
+              : entity.type === "path"
+                ? Math.max(40, entity.width)
+                : entity.type === "enemy"
+                  ? entity.size
+                  : entity.size / 2;
+        const scaled = radius * entity.scale;
+        return {
+          id: entity.id,
+          hit: Math.hypot(entity.x - pt.x, entity.y - pt.y) <= scaled,
+          area: Math.PI * scaled * scaled,
+        };
+      })
+      .filter((candidate) => candidate.hit)
+      .sort((a, b) => a.area - b.area)[0]?.id;
   }
 
   /** Zone shape each mechanic tile lands as — used to count what a source has. */
@@ -1026,6 +1117,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       await placeSource(kind, pt.x, pt.y);
       return;
     }
+    // Annotations never bind to what they land on: they just sit there.
+    if (isPaletteCosmetic(kind)) {
+      const beat = beatForDrop(PALETTE_LABEL[kind]);
+      const res = await run([
+        ...beat.ops,
+        { op: "add_entity", spec: paletteSpec(kind, { x: pt.x, y: pt.y, ...stamp(beat) }) as never },
+      ]);
+      const created = res.values[beat.ops.length] as { id: string } | null;
+      if (created) setSelected(created.id);
+      return;
+    }
     if (target.at === "group") {
       if (isPaletteTether(kind)) {
         if (target.group !== "supports" && target.group !== "damagers")
@@ -1038,8 +1140,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           group: target.group,
           label: PALETTE_LABEL[kind],
         };
-        await run(
-          pairs.map(([support, damager]) => ({
+        const beat = beatForDrop(PALETTE_LABEL[kind]);
+        await run([
+          ...beat.ops,
+          ...pairs.map(([support, damager]) => ({
             op: "add_entity" as const,
             spec: {
               type: "tether" as const,
@@ -1050,10 +1154,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               width: 8,
               name: `${PALETTE_LABEL[kind]}: ${support.name || jobLabel(support.job)} ↔ ${damager.name || jobLabel(damager.job)}`,
               bond,
-              ...stamp(),
+              ...stamp(beat),
             },
-          }))
-        );
+          })),
+        ]);
         setSelected(null);
         return;
       }
@@ -1066,20 +1170,22 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         group: target.group,
         label: PALETTE_LABEL[kind],
       };
-      await run(
-        people.map((p) => ({
+      const beat = beatForDrop(PALETTE_LABEL[kind]);
+      await run([
+        ...beat.ops,
+        ...people.map((p) => ({
           op: "add_entity" as const,
           spec: paletteBait(kind, p.id, from, {
             name: `${PALETTE_LABEL[kind]} on ${p.name || jobLabel(p.job)}`,
             bond,
-            ...stamp(),
+            ...stamp(beat),
           }) as never,
-        }))
-      );
+        })),
+      ]);
       setSelected(null);
       return;
     }
-    if (target.at === "player") {
+    if (target.at === "entity") {
       if (!isPaletteTether(kind)) return;
       setPendingTether({ kind, from: target.id });
       setSelected(target.id);
@@ -1087,7 +1193,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       return;
     }
     if (target.at === "source") {
-      if (isPaletteTether(kind)) return setError("Drop this tether on its first player");
+      if (isPaletteTether(kind)) return setError("Drop this tether on its first object");
       const taken = authoredScene.filter(
         (e) =>
           e.type === "zone" &&
@@ -1096,23 +1202,28 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           (e.anchor.from === target.id || e.anchor.near === target.id)
       ).length;
       const rank = Math.min(8, taken + 1);
-      const res = await run({
-        op: "add_entity",
-        spec: paletteBait(kind, { pick: "closest", rank }, target.id, {
-          name: `${PALETTE_LABEL[kind]} ${rank}`,
-          ...stamp(),
-        }) as never,
-      });
-      const created = res.values[0] as { id: string } | null;
+      const beat = beatForDrop(PALETTE_LABEL[kind]);
+      const res = await run([
+        ...beat.ops,
+        {
+          op: "add_entity",
+          spec: paletteBait(kind, { pick: "closest", rank }, target.id, {
+            name: `${PALETTE_LABEL[kind]} ${rank}`,
+            ...stamp(beat),
+          }) as never,
+        },
+      ]);
+      const created = res.values[beat.ops.length] as { id: string } | null;
       if (created) setSelected(created.id);
       return;
     }
-    if (isPaletteTether(kind)) return setError("Drop this tether on its first player");
-    const res = await run({
-      op: "add_entity",
-      spec: paletteSpec(kind, { x: pt.x, y: pt.y, ...stamp() }) as never,
-    });
-    const created = res.values[0] as { id: string } | null;
+    if (isPaletteTether(kind)) return setError("Drop this tether on its first object");
+    const beat = beatForDrop(PALETTE_LABEL[kind]);
+    const res = await run([
+      ...beat.ops,
+      { op: "add_entity", spec: paletteSpec(kind, { x: pt.x, y: pt.y, ...stamp(beat) }) as never },
+    ]);
+    const created = res.values[beat.ops.length] as { id: string } | null;
     if (created) setSelected(created.id);
   }
 
@@ -1120,14 +1231,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   async function finishTether(to: string) {
     const pending = pendingTether;
     if (!pending) return;
-    const fromPlayer = authoredScene.find(
-      (e): e is PlayerEntity => e.id === pending.from && e.type === "player"
-    );
-    const toPlayer = authoredScene.find(
-      (e): e is PlayerEntity => e.id === to && e.type === "player"
-    );
-    if (!fromPlayer || !toPlayer) return setError("Choose a player for the other end of the tether");
-    if (fromPlayer.id === toPlayer.id) return setError("Choose a different player for the other end");
+    const fromEntity = authoredScene.find((e) => e.id === pending.from && e.type !== "tether");
+    const toEntity = authoredScene.find((e) => e.id === to && e.type !== "tether");
+    if (!fromEntity || !toEntity) return setError("Choose an object for the other end of the tether");
+    if (fromEntity.id === toEntity.id) return setError("Choose a different object for the other end");
+    const endpointLabel = (entity: Entity) =>
+      entity.name || (entity.type === "player" ? jobLabel(entity.job) : entity.type);
     setPendingTether(null);
     setError("");
     // The server accepts caller-provided entity IDs. Carrying one random ID in
@@ -1135,21 +1244,25 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     // makes the tether visible without waiting for the network round trip.
     const id = `tether_${crypto.randomUUID()}`;
     setSelected(id);
-    const res = await run({
-      op: "add_entity",
-      spec: {
-        id,
-        type: "tether",
-        from: fromPlayer.id,
-        to: toPlayer.id,
-        style: pending.kind === "together" ? "close" : "far",
-        range: defaultTetherRange(pending.kind),
-        width: 8,
-        name: `${PALETTE_LABEL[pending.kind]}: ${fromPlayer.name || jobLabel(fromPlayer.job)} ↔ ${toPlayer.name || jobLabel(toPlayer.job)}`,
-        ...stamp(),
+    const beat = beatForDrop(PALETTE_LABEL[pending.kind]);
+    const res = await run([
+      ...beat.ops,
+      {
+        op: "add_entity",
+        spec: {
+          id,
+          type: "tether",
+          from: fromEntity.id,
+          to: toEntity.id,
+          style: pending.kind === "together" ? "close" : "far",
+          range: defaultTetherRange(pending.kind),
+          width: 8,
+          name: `${PALETTE_LABEL[pending.kind]}: ${endpointLabel(fromEntity)} ↔ ${endpointLabel(toEntity)}`,
+          ...stamp(beat),
+        },
       },
-    });
-    const created = res.values[0] as { id: string } | null;
+    ]);
+    const created = res.values[beat.ops.length] as { id: string } | null;
     if (created && created.id !== id) setSelected(created.id);
   }
 
@@ -1159,9 +1272,22 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     return yalmsToArenaUnits(plan!.arena, PALETTE_TETHER_RANGE_YALMS[kind], calibration.widthYalms);
   }
 
-  /** What every drop carries: the step that declared it, and the slot it joins. */
-  function stamp(): PropBag {
-    return { declaredIn: step!.id, ...(openMech ? { mech: openMech.id } : {}) };
+  /**
+   * The Beat a drop joins: the open one, or a new one made for it in this
+   * step. Every Part lives in a Beat, and the Beat decides its timing, so a
+   * drop with nothing open is one batch: the Beat, then what went into it.
+   * The id is minted here so the batch is optimistic like any other add.
+   */
+  function beatForDrop(name: string): { mech: string; ops: Op[] } {
+    if (openMech) return { mech: openMech.id, ops: [] };
+    const id = `mech_${crypto.randomUUID()}`;
+    // Named after what went into it, so the rail reads "Circle", "Stack ×8".
+    return { mech: id, ops: [{ op: "add_mech", id, name, snap: step!.id, plain: true }] };
+  }
+
+  /** What every drop carries: the step that declared it, and the Beat it joins. */
+  function stamp(beat?: { mech: string }): PropBag {
+    return { declaredIn: step!.id, ...(beat ? { mech: beat.mech } : {}) };
   }
 
   /** Put a whole group into a tight stack centred where its card was dropped. */
@@ -1207,7 +1333,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const spec = paletteSpec(palettePreview.kind, {
       x: palettePreview.x,
       y: palettePreview.y,
-      ...stamp(),
+      ...stamp(openMech ? { mech: openMech.id } : undefined),
     });
     const ops =
       symmetryCount > 1
@@ -1237,32 +1363,32 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   paletteMoveRef.current = (kind, clientX, clientY) => {
     const under = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
     const group = under?.closest<HTMLElement>("[data-drop-group]")?.dataset.dropGroup as GroupId | undefined;
-    setHover(group && kind !== "anchor" ? group : null);
+    setHover(group && kind !== "anchor" && !isPaletteCosmetic(kind) ? group : null);
     const box = stageBox.current?.getBoundingClientRect();
     if (!box || clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) {
       setPalettePreview(null);
       return;
     }
     const pt = arenaPointAt(clientX, clientY);
-    setPalettePreview(sourceAt(pt) ? null : { kind, x: pt.x, y: pt.y });
+    setPalettePreview(sourceAt(pt) && !isPaletteCosmetic(kind) ? null : { kind, x: pt.x, y: pt.y });
   };
 
   paletteDropRef.current = (kind, clientX, clientY) => {
     const under = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
     const group = under?.closest<HTMLElement>("[data-drop-group]")?.dataset.dropGroup as GroupId | undefined;
-    if (group && kind !== "anchor") {
+    if (group && kind !== "anchor" && !isPaletteCosmetic(kind)) {
       void drop(kind, { x: 0, y: 0 }, { at: "group", group });
       return;
     }
     const box = stageBox.current?.getBoundingClientRect();
     if (!box || clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) return;
     const pt = arenaPointAt(clientX, clientY);
-    const player = isPaletteTether(kind) ? playerAt(pt) : undefined;
+    const tetherEnd = isPaletteTether(kind) ? tetherEndAt(pt) : undefined;
     const on = sourceAt(pt);
     void drop(
       kind,
       pt,
-      player ? { at: "player", id: player } : on ? { at: "source", id: on } : { at: "free" }
+      tetherEnd ? { at: "entity", id: tetherEnd } : on ? { at: "source", id: on } : { at: "free" }
     );
   };
 
@@ -1446,6 +1572,25 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             isPublic={isPublic}
             setIsPublic={setIsPublic}
           />
+          {user && role !== "owner" && (
+            <button
+              className="btn"
+              disabled={duplicating}
+              onClick={async () => {
+                setDuplicating(true);
+                setError("");
+                try {
+                  const { id } = await api.duplicatePlan(planId);
+                  navigate(`/p/${id}`);
+                } catch (error) {
+                  setError(error instanceof Error ? error.message : "Could not duplicate the plan");
+                  setDuplicating(false);
+                }
+              }}
+            >
+              {duplicating ? "Duplicating…" : "Duplicate to My Plans"}
+            </button>
+          )}
           <span className="text-xs text-ink-400">
             {user ? user.name : <a href="/">sign in</a>}
           </span>
@@ -1495,6 +1640,28 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                   : `Editing: ${step.name || "Step"} shared scene`
               : "Viewer preview"}
           </span>
+          {editable && editingVariant && editingVariantOwner && (
+            <>
+              <button
+                className="btn h-6 py-0 text-[10px]"
+                data-delete-step-variant={editingVariant}
+                title={`Delete this Variant box and the Beats inside it, leaving ${stepVariantLabel(
+                  editingVariantOwner.step,
+                  stepVariants(editingVariantOwner.step).find((variant) => variant.id !== editingVariant)?.id ?? editingVariant
+                )} as Shared (Del)`}
+                onClick={() => deleteStepVariantBox(editingVariant)}
+              >
+                Delete Variant
+              </button>
+              <button
+                className="btn h-6 py-0 text-[10px]"
+                title="Go back to editing Shared (Esc)"
+                onClick={() => setEditingBeatVariant(null)}
+              >
+                Edit Shared
+              </button>
+            </>
+          )}
         </div>
       )}
 
@@ -1569,12 +1736,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 const kind = kindOf(ev);
                 if (!kind) return;
                 ev.preventDefault();
-                const player = isPaletteTether(kind) ? playerAt(pt) : undefined;
+                const tetherEnd = isPaletteTether(kind) ? tetherEndAt(pt) : undefined;
                 const on = sourceAt(pt);
                 void drop(
                   kind,
                   pt,
-                  player ? { at: "player", id: player } : on ? { at: "source", id: on } : { at: "free" }
+                  tetherEnd ? { at: "entity", id: tetherEnd } : on ? { at: "source", id: on } : { at: "free" }
                 );
                 setCarrying(null);
                 setHover(null);
@@ -1594,7 +1761,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               )}
               {pendingTether && (
                 <div className="absolute inset-x-2 bottom-2 z-20 flex items-center justify-center gap-2 rounded bg-blue-950/95 px-3 py-2 text-xs text-blue-100 shadow-lg">
-                  Click the player for the other end of {PALETTE_LABEL[pendingTether.kind].toLowerCase()}.
+                  Pick any other object for the other end of {PALETTE_LABEL[pendingTether.kind].toLowerCase()}.
                   <button className="underline" onClick={() => setPendingTether(null)}>Cancel</button>
                 </div>
               )}
@@ -1616,17 +1783,94 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 onPick={(id) => {
                   if (!pendingTether) return false;
                   const target = authoredScene.find((e) => e.id === id);
-                  if (target?.type === "player") void finishTether(target.id);
-                  else setError("Choose a player for the other end of the tether");
+                  if (target && target.type !== "tether") void finishTether(target.id);
+                  else setError("Choose an object for the other end of the tether");
                   return true;
                 }}
                 onSelect={setSelection}
                 onResize={resize}
+                onTransform={async (id, next) => {
+                  const entity = authoredScene.find((candidate) => candidate.id === id);
+                  if (!entity) return;
+                  const sizePatch = {
+                    ...(Math.abs(next.factor - 1) > 0.0005 ? resizeSpec(entity, next.factor) : {}),
+                    // The donut-hole and cone-spread ticks land as the same
+                    // kind of dimension edit as a uniform resize.
+                    ...(next.innerRadius !== undefined &&
+                    entity.type === "zone" &&
+                    entity.shape === "donut" &&
+                    Math.abs(next.innerRadius - entity.innerRadius) > 0.4
+                      ? { innerRadius: next.innerRadius }
+                      : {}),
+                    ...(next.angle !== undefined &&
+                    entity.type === "zone" &&
+                    entity.shape === "cone" &&
+                    Math.abs(next.angle - entity.angle) > 0.4
+                      ? { angle: next.angle }
+                      : {}),
+                    ...(next.width !== undefined &&
+                    entity.type === "zone" &&
+                    "width" in entity &&
+                    Math.abs(next.width - entity.width) > 0.4
+                      ? { width: next.width }
+                      : {}),
+                    ...(next.length !== undefined &&
+                    entity.type === "zone" &&
+                    "length" in entity &&
+                    Math.abs(next.length - entity.length) > 0.4
+                      ? { length: next.length }
+                      : {}),
+                  };
+                  const sizeChanged = Object.keys(sizePatch).length > 0;
+                  const rotationChanged =
+                    next.rotation !== undefined && Math.abs(next.rotation - entity.rotation) > 0.05;
+                  if (!sizeChanged && !rotationChanged) return;
+
+                  if (plan.variantModel === "step" && editingVariant && isActor(entity)) {
+                    const ops: Op[] = [];
+                    if (rotationChanged)
+                      ops.push({
+                        op: "set_step_variant_movement",
+                        stepId: step.id,
+                        variantId: editingVariant,
+                        actorId: id,
+                        pose: { x: entity.x, y: entity.y, rotation: next.rotation! },
+                      });
+                    if (sizeChanged)
+                      ops.push({ op: "update_entity", id, patch: sizePatch });
+                    if (ops.length) await run(ops, false);
+                    return;
+                  }
+
+                  await run(
+                    {
+                      op: "update_entity",
+                      id,
+                      patch: {
+                        ...sizePatch,
+                        ...(rotationChanged ? { rotation: next.rotation } : {}),
+                      },
+                      stepId:
+                        plan.variantModel === "beat" && editingVariant
+                          ? step.id
+                          : scope === "step"
+                            ? step.id
+                            : undefined,
+                      variant:
+                        plan.variantModel === "beat"
+                          ? editingVariant
+                          : scope === "step"
+                            ? playing
+                            : undefined,
+                    },
+                    false
+                  );
+                }}
                 onMove={(moves) => {
                   if (plan.variantModel === "step" && editingVariant) {
                     const movementOps = moves.flatMap(({ id, x, y }): Op[] => {
                       const entity = authoredScene.find((candidate) => candidate.id === id);
-                      return entity?.type === "player" || entity?.type === "enemy"
+                      return entity && isActor(entity)
                         ? [{
                             op: "set_step_variant_movement",
                             stepId: step.id,
@@ -1677,6 +1921,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                     false
                   );
                 }}
+              />
+              <NotesCard
+                key={step.id}
+                plan={plan}
+                step={step}
+                size={size}
+                editable={editable}
+                onMove={(pos) =>
+                  run({ op: "update_step", stepId: step.id, patch: { notesPos: pos } }, false)
+                }
+                onEdit={(notes) => run({ op: "update_step", stepId: step.id, patch: { notes } })}
               />
             </div>
           )}
@@ -1790,8 +2045,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           <h2 className="label mb-2">Add</h2>
           <p className="mb-2 text-xs text-ink-400">
             Drag onto the floor to place one, onto a group to give everybody one, or onto a boss,
-            add, or bait anchor to have it thrown at whoever stands nearest. Drop a tether on one player,
-            then click the other. Scroll over anything on the arena to size it — shift for fine steps.
+            add, or bait anchor to have it thrown at whoever stands nearest. Drop a tether on any object,
+            then pick any other object. Scroll over anything on the arena to size it — shift for fine steps.
           </p>
           <div className="mb-4 grid grid-cols-2 gap-1">
             {PALETTE.map((k) => (
@@ -1868,7 +2123,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             <button
               className="btn"
               disabled={!editable}
-              title="Eight players, standard composition"
+              title="Restore missing party members and align the party to PF clock positions"
               onClick={() => run({ op: "add_party" })}
             >
               add party
@@ -1915,6 +2170,22 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             </button>
             {note && <span className="text-xs text-ink-400">{note}</span>}
           </div>
+
+          {/* With no floor object selected the sidebar is the palette, but it
+              is also the only place ArenaFields can be reached. Keep the
+              arena inspector mounted here so backdrop presets and uploads do
+              not disappear behind the object-inspector routing. */}
+          <Inspector
+            plan={plan}
+            entity={null}
+            stepId={step.id}
+            scope={scope}
+            variant={editingVariant ?? playing}
+            shown={shown}
+            editable={editable}
+            run={run}
+            onDeselect={() => setSelected(null)}
+          />
           </>
           ) : (
           <Inspector
@@ -2107,9 +2378,12 @@ function CanvasArea({ children }: { children: (size: number) => React.ReactNode 
  * ids or server-side reads stay off the list, wait-for-ack.
  */
 const OPTIMISTIC_OPS = new Set<string>([
+  "set_arena",
   "update_entity",
+  "update_step",
   "delete_entities",
   "update_mech",
+  "merge_mechs",
   "gate_mech",
   "assign_beats_to_step_variant",
   "move_step_variant_set",
@@ -2118,7 +2392,11 @@ const OPTIMISTIC_OPS = new Set<string>([
 ]);
 
 interface Drag {
+  /** Identifies this pointer gesture so an older acknowledgement cannot clear a newer one. */
+  gesture: number;
   id: string;
+  /** Whether this Beat was already open when the pointer went down. */
+  wasOpen?: boolean;
   mode: "top" | "bottom";
   grabbed: number;
   /** Row indices within the section the box is drawn in, not step numbers. */
@@ -2138,6 +2416,11 @@ interface Drag {
    * clear of every box, so letting go outside pulls the Beat back to shared.
    */
   into?: { stepId: string; variantId: string };
+  /**
+   * Another Beat's box the pointer is over: letting go there folds the held
+   * Beat into it. Carrying a Beat onto a Beat is how two become one.
+   */
+  mergeInto?: string;
   moved: boolean;
   /**
    * Released, waiting for the server: the preview holds its pose, the move
@@ -2149,6 +2432,8 @@ interface Drag {
 
 /** A row or heading being carried to another slot in its list. */
 interface Slide {
+  /** Identifies this pointer gesture so an older acknowledgement cannot clear a newer one. */
+  gesture: number;
   id: string;
   /** The slot it is over right now — where it would land if you let go. */
   at: number;
@@ -2231,6 +2516,7 @@ function StepRail({
    */
   const [rowDrag, setRowDrag] = useState<Slide | null>(null);
   const [sectionDrag, setSectionDrag] = useState<Slide | null>(null);
+  const nextGesture = useRef(0);
   /** A drag that moved ends in a click too; this is how that click is ignored. */
   const dragged = useRef(false);
   /** The step, mech, mechanic or variant whose name is a field right now. */
@@ -2417,19 +2703,46 @@ function StepRail({
         }
         return Math.max(1, mine.reduce((n, p) => Math.max(n, p.lane + 1), 0));
       });
-      return [{ owner, variants, lo: boxLo, hi: boxHi, lane: 0, subs, slots }];
+      const planLo = Math.min(own, end);
+      const planHi = Math.max(own, end);
+      return [{ owner, variants, lo: boxLo, hi: boxHi, planLo, planHi, lane: 0, subs, slots }];
     });
     // A Variant is one timeline container with sibling readings inside it.
     // Give every reading a timeline column per sublane, as the legacy split
     // did, while the shared colour strips and end handle span the container.
+    // Boxes whose rows don't overlap share one run of columns, the way loose
+    // casts share a lane — packed off the plan's rows, not the drag's, so no
+    // column slides away under a box you are carrying.
     const laneWidths = Array(from).fill(66) as number[];
-    boxes.forEach((box) => {
-      box.lane = from;
-      from += box.variants.length;
+    const packs: (typeof boxes)[] = [];
+    for (const box of boxes) {
+      const pack = packs.find((mine) =>
+        mine.every((p) => p.planHi < box.planLo || p.planLo > box.planHi)
+      );
+      if (pack) pack.push(box);
+      else packs.push([box]);
+    }
+    for (const pack of packs) {
       // Each sublane must hold a normal 66px Beat card, plus the Variant
-      // container's own border and breathing room.
-      laneWidths.push(...box.subs.map((n) => n * 66 + 12));
-    });
+      // container's own border and breathing room; a shared column is as wide
+      // as the widest sublane that lands in it.
+      const widths: number[] = [];
+      for (const box of pack) {
+        box.lane = from;
+        box.subs.forEach((n, i) => (widths[i] = Math.max(widths[i] ?? 0, n * 66 + 12)));
+      }
+      from += widths.length;
+      laneWidths.push(...widths);
+    }
+    // The rail must never crowd the floor out: past a budget the lanes share
+    // it, and a step with many Beats shows many narrow cards — which is the
+    // cue to fold them into fewer Beats, not a reason to shrink the arena.
+    const budget = 240;
+    const total = laneWidths.reduce((sum, width) => sum + width, 0);
+    if (total > budget) {
+      const scale = budget / total;
+      laneWidths.forEach((width, i) => (laneWidths[i] = Math.max(30, Math.floor(width * scale))));
+    }
     return { placed, boxes, lanes: from, laneWidths, groups };
   }
 
@@ -2511,6 +2824,15 @@ function StepRail({
     return undefined;
   };
 
+  /** Another Beat's box under the pointer: the one a carried Beat would merge into. */
+  const beatCardAt = (clientX: number, clientY: number, held: string): string | undefined => {
+    for (const el of document.elementsFromPoint(clientX, clientY)) {
+      const id = (el as HTMLElement).closest?.("[data-mech]")?.getAttribute("data-mech");
+      if (id && id !== held) return id;
+    }
+    return undefined;
+  };
+
   /** The Variant box a Beat lives in, if it lives in one. */
   const beatHome = (beatId: string): { stepId: string; variantId: string } | undefined => {
     for (const step of plan.steps)
@@ -2529,7 +2851,10 @@ function StepRail({
     setTimeout(() => (dragged.current = false), 0);
     const landing = siblings[Math.max(0, Math.min(siblings.length - 1, settled.at))];
     const to = plan.steps.indexOf(landing);
-    const done = () => setRowDrag((held) => (held?.settling ? null : held));
+    const done = () =>
+      setRowDrag((held) =>
+        held?.settling && held.gesture === settled.gesture ? null : held
+      );
     void run({ op: "move_step", stepId: settled.id, index: to }).then(done, done);
     setIndex(to);
   }
@@ -2546,7 +2871,10 @@ function StepRail({
     // changes what is at that place: hold on to the step itself instead, or
     // the open section changes under you.
     const keep = current?.id;
-    const done = () => setSectionDrag((held) => (held?.settling ? null : held));
+    const done = () =>
+      setSectionDrag((held) =>
+        held?.settling && held.gesture === settled.gesture ? null : held
+      );
     void run({ op: "move_mechanic", mechanicId: settled.id, index: settled.at })
       .then((res) => {
         const i = res.plan.steps.findIndex((s) => s.id === keep);
@@ -2627,7 +2955,11 @@ function StepRail({
     if (!settled || settled.settling) return;
     if (!settled.moved) {
       setDrag(null);
-      return onOpenMech(openMech?.id === mech.id ? null : mech.id);
+      // A closed Beat opens on pointer-down so clicking feels immediate. Its
+      // release only has work left when this was a click on an already-open
+      // Beat, which preserves the old click-again-to-close behavior.
+      if (settled.wasOpen) onOpenMech(null);
+      return;
     }
     setDrag({ ...settled, settling: true });
     // Asked where the pointer let go rather than trusted to the last move
@@ -2637,6 +2969,15 @@ function StepRail({
       plan.variantModel === "step" && at
         ? variantBoxAt(at.clientX, at.clientY)
         : settled.into;
+    // Let go on another Beat, the two are one: that is the whole edit.
+    const mergeInto = at ? beatCardAt(at.clientX, at.clientY, mech.id) : settled.mergeInto;
+    if (mergeInto) {
+      const done = () =>
+        setDrag((held) => (held?.settling && held.gesture === settled.gesture ? null : held));
+      onOpenMech(mergeInto);
+      void run({ op: "merge_mechs", into: mergeInto, mechIds: [mech.id] }).then(done, done);
+      return;
+    }
     // One drag can say both: which reading it is for, and when it happens.
     const [wasLo, wasHi] = settled.from;
     // One batch, applied optimistically in the same paint that clears the
@@ -2672,7 +3013,10 @@ function StepRail({
     // The preview outlives the request: it is dropped only once the round
     // trip settles (the optimistic apply makes that the same paint), and only
     // if no new drag has replaced it in the meantime.
-    const done = () => setDrag((held) => (held?.settling ? null : held));
+    const done = () =>
+      setDrag((held) =>
+        held?.settling && held.gesture === settled.gesture ? null : held
+      );
     if (settle.length) void run(settle).then(done, done);
     else done();
   }
@@ -2681,8 +3025,18 @@ function StepRail({
     const settled = variantDrag;
     if (settled?.settling) return;
     if (!settled?.moved) return setVariantDrag(null);
+    // A release that reaches the wrong box's handler must not move that box,
+    // and a drag that came back to where it started has nothing to say: a
+    // same-place move would still record a revision, and its ack would read
+    // as the drag silently snapping back.
+    if (settled.id !== owner.id) return setVariantDrag(null);
+    if (settled.lo === settled.from[0] && settled.hi === settled.from[1])
+      return setVariantDrag(null);
     setVariantDrag({ ...settled, settling: true });
-    const done = () => setVariantDrag((held) => (held?.settling ? null : held));
+    const done = () =>
+      setVariantDrag((held) =>
+        held?.settling && held.gesture === settled.gesture ? null : held
+      );
     void run({
       op: "move_step_variant_set",
       stepId: owner.id,
@@ -2844,7 +3198,10 @@ function StepRail({
                 }`}
                 // The row is where the step is in the fight, so carrying it is the
                 // whole edit. It cannot leave the section: these are its rows.
-                onPointerDown={() => editable && setRowDrag({ id: s.id, at: i, moved: false })}
+                onPointerDown={() =>
+                  editable &&
+                  setRowDrag({ gesture: ++nextGesture.current, id: s.id, at: i, moved: false })
+                }
                 onClick={() => !dragged.current && go(s)}
                 onDoubleClick={() => editable && setRenaming(s.id)}
                 title={
@@ -2938,10 +3295,14 @@ function StepRail({
               onPointerDown={(e) => {
                 if (!editable) return;
                 if (plan.variantModel === "beat") onFocusBeat(mech.id);
+                const wasOpen = openMech?.id === mech.id;
+                if (!wasOpen) onOpenMech(mech.id);
                 const r = e.currentTarget.getBoundingClientRect();
                 e.currentTarget.setPointerCapture(e.pointerId);
                 setDrag({
+                  gesture: ++nextGesture.current,
                   id: mech.id,
+                  wasOpen,
                   // The half you grabbed is the end you are holding.
                   mode: e.clientY - r.top < r.height / 2 ? "top" : "bottom",
                   grabbed: rowAt(e.clientY, visible),
@@ -2964,6 +3325,7 @@ function StepRail({
                   : undefined;
                 const into =
                   plan.variantModel === "step" ? variantBoxAt(e.clientX, e.clientY) : undefined;
+                const mergeInto = beatCardAt(e.clientX, e.clientY, mech.id);
                 const row = rowAt(e.clientY, visible);
                 const [wasLo, wasHi] = drag.from;
                 // The end you are holding cannot cross the other one: a cast
@@ -2981,9 +3343,10 @@ function StepRail({
                   next[1] === drag.hi &&
                   !!gate === !!drag.gate &&
                   gate?.to === drag.gate?.to &&
-                  into?.variantId === drag.into?.variantId;
+                  into?.variantId === drag.into?.variantId &&
+                  mergeInto === drag.mergeInto;
                 if (same) return;
-                setDrag({ ...drag, gate, into, lo: next[0], hi: next[1], moved: true });
+                setDrag({ ...drag, gate, into, mergeInto, lo: next[0], hi: next[1], moved: true });
               }}
               onPointerUp={(e) => endDrag(mech, lo, hi, visible, e)}
               onPointerCancel={() => setDrag(null)}
@@ -2993,6 +3356,10 @@ function StepRail({
               } ${active ? "text-white" : "text-ink-200"} ${
                 drag?.id === mech.id ? "ring-1 ring-white/70" : ""
               } ${skipped ? "opacity-60" : ""} ${
+                drag && drag.id !== mech.id && drag.mergeInto === mech.id
+                  ? "ring-2 ring-white"
+                  : ""
+              } ${
                 // Held over a Variant half the box goes invisible — the half's
                 // chip preview is the Beat now — but stays mounted, keeping
                 // the pointer capture that will deliver the release.
@@ -3145,6 +3512,7 @@ function StepRail({
                         if (!editable) return;
                         event.currentTarget.setPointerCapture(event.pointerId);
                         setVariantDrag({
+                          gesture: ++nextGesture.current,
                           id: owner.id,
                           mode: "top",
                           grabbed: rowAt(event.clientY, visible),
@@ -3220,10 +3588,14 @@ function StepRail({
                             onPointerDown={(event) => {
                               event.stopPropagation();
                               if (!editable) return;
+                              const wasOpen = openMech?.id === beat.id;
+                              if (!wasOpen) onOpenMech(beat.id);
                               const rect = event.currentTarget.getBoundingClientRect();
                               event.currentTarget.setPointerCapture(event.pointerId);
                               setDrag({
+                                gesture: ++nextGesture.current,
                                 id: beat.id,
+                                wasOpen,
                                 mode: event.clientY - rect.top < rect.height / 2 ? "top" : "bottom",
                                 grabbed: rowAt(event.clientY, visible),
                                 lo: beatLo,
@@ -3309,12 +3681,17 @@ function StepRail({
                 aria-label="Drag the Variant container's end Step"
                 // The container ends the way a Beat does: an amber edge, no
                 // caption. It is still the handle for the split's end Step.
-                className={`h-1 shrink-0 touch-none border-t border-ink-600/60 bg-amber-400/70 ${editable ? "cursor-grab active:cursor-grabbing" : ""}`}
+                // Raised above the next container: boxes sharing a lane sit
+                // flush, and each container leans -my-1 into the seam, so a
+                // later sibling's colour strip would otherwise cover this
+                // handle and a grab meant for this box would drag that one.
+                className={`relative z-10 h-1 shrink-0 touch-none border-t border-ink-600/60 bg-amber-400/70 ${editable ? "cursor-grab active:cursor-grabbing" : ""}`}
                 title="Drag the Variant container's end Step"
                 onPointerDown={(event) => {
                   if (!editable) return;
                   event.currentTarget.setPointerCapture(event.pointerId);
                   setVariantDrag({
+                    gesture: ++nextGesture.current,
                     id: owner.id,
                     mode: "bottom",
                     grabbed: rowAt(event.clientY, visible),
@@ -3436,7 +3813,12 @@ function StepRail({
                       const r = headerRefs.current.get(m.id)?.getBoundingClientRect();
                       return r ? r.top + r.height / 2 : Infinity;
                     });
-                    setSectionDrag({ id: mechanic.id, at: index_, moved: false });
+                    setSectionDrag({
+                      gesture: ++nextGesture.current,
+                      id: mechanic.id,
+                      at: index_,
+                      moved: false,
+                    });
                   }}
                   onClick={() => !dragged.current && go(visible[0])}
                   onDoubleClick={() => editable && setRenaming(mechanic.id)}
@@ -3553,19 +3935,23 @@ function MechBox({
       )[0]
     : undefined;
   const addBeatHere = async (debuff = false) => {
-    const res = await run({ op: "add_mech", snap: stepId });
-    const made = res.values[0] as { id: string } | null;
-    if (!made) return;
-    if (stepVariantDestination) {
-      await run({
-        op: "assign_beats_to_step_variant",
-        stepId: stepVariantDestination.step.id,
-        variantId: stepVariantDestination.variant.id,
-        beatIds: [made.id],
-      });
-    }
-    onOpen(made.id);
-    if (debuff) onDebuffs(made.id);
+    // Minted here so the Beat is on the rail in the same paint as the click.
+    const id = `mech_${crypto.randomUUID()}`;
+    await run([
+      { op: "add_mech", id, snap: stepId },
+      ...(stepVariantDestination
+        ? [
+            {
+              op: "assign_beats_to_step_variant" as const,
+              stepId: stepVariantDestination.step.id,
+              variantId: stepVariantDestination.variant.id,
+              beatIds: [id],
+            },
+          ]
+        : []),
+    ]);
+    onOpen(id);
+    if (debuff) onDebuffs(id);
   };
   const previewed = open?.variants.length
     ? (open.variants.find(
@@ -3945,7 +4331,6 @@ function ShareButton({
   setIsPublic: (isPublic: boolean) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const [userId, setUserId] = useState("");
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
   const shareRef = useRef<HTMLDivElement>(null);
@@ -3994,22 +4379,35 @@ function ShareButton({
     }
   }
 
+  async function copyEditLink() {
+    setBusy(true);
+    setFeedback("");
+    try {
+      const { url } = await api.createEditLink(planId);
+      await navigator.clipboard.writeText(url);
+      setFeedback("Edit-enabled link copied");
+    } catch (error) {
+      setFeedback(error instanceof Error ? error.message : "Could not create the edit link");
+    } finally {
+      setBusy(false);
+      setOpen(true);
+    }
+  }
+
   return (
     <div ref={shareRef} className="relative flex">
-      <button className="btn rounded-r-none" disabled={busy} onClick={() => void copyViewOnlyLink()}>
-        {busy ? "Sharing…" : "Share"}
-      </button>
       <button
-        className="btn rounded-l-none border-l-0 px-2"
+        className="btn"
+        disabled={busy}
         aria-label="Sharing options"
         aria-expanded={open}
-        title="Sharing options"
+        title="Share this plan"
         onClick={() => {
           setFeedback("");
           setOpen((value) => !value);
         }}
       >
-        ▾
+        {busy ? "Sharing…" : "Share"}
       </button>
       {open && (
         <div
@@ -4026,7 +4424,7 @@ function ShareButton({
             ×
           </button>
           {feedback && <p className="mb-2 text-xs text-ink-400">{feedback}</p>}
-          <label className="mb-2 mr-8 flex items-center gap-2 text-sm">
+          <label className="mb-3 mr-8 flex items-center gap-2 text-sm">
             <input
               type="checkbox"
               checked={isPublic}
@@ -4044,25 +4442,16 @@ function ShareButton({
             />
             Anyone with the link can view
           </label>
-          <div className="flex gap-1">
-            <input
-              className="field"
-              placeholder="discord:123456789…"
-              value={userId}
-              onChange={(e) => setUserId(e.target.value)}
-            />
-            <button
-              className="btn"
-              onClick={async () => {
-                await api.share(planId, userId, "editor");
-                setUserId("");
-              }}
-            >
-              Add
+          <div className="grid gap-2">
+            <button className="btn w-full" disabled={busy} onClick={() => void copyViewOnlyLink()}>
+              Copy view-only link
+            </button>
+            <button className="btn w-full" disabled={busy} onClick={() => void copyEditLink()}>
+              Copy edit-enabled link
             </button>
           </div>
           <p className="mt-2 text-xs text-ink-400">
-            Ask the person for their Discord user id; they must have signed in once.
+            Anyone with an edit-enabled link can change this plan. No sign-in required.
           </p>
         </div>
       )}
@@ -4090,9 +4479,121 @@ type DropTarget =
   | { at: "free" }
   | { at: "group"; group: GroupId }
   | { at: "source"; id: string }
-  | { at: "player"; id: string };
+  | { at: "entity"; id: string };
 
 /** A glyph, so the palette reads as shapes rather than as four words. */
+/**
+ * The step's notes, on the floor itself: a card you drag to wherever this
+ * step's story is happening. Its position is the step's own — every step can
+ * park its notes somewhere else. Double-click to edit in place.
+ */
+function NotesCard({
+  plan,
+  step,
+  size,
+  editable,
+  onMove,
+  onEdit,
+}: {
+  plan: Plan;
+  step: Step;
+  size: number;
+  editable: boolean;
+  onMove(pos: { x: number; y: number }): Promise<unknown>;
+  onEdit(notes: string): void;
+}) {
+  const scale = viewScale(plan.arena, size);
+  const home = step.notesPos ?? {
+    x: -plan.arena.width / 2 + 20,
+    y: -plan.arena.height / 2 + 20,
+  };
+  /**
+   * Uncommitted drag position, in arena units, so the card tracks the pointer.
+   * The gesture token lets an older acknowledgement settle without clearing a
+   * newer drag that started in the meantime.
+   */
+  const [held, setHeld] = useState<{
+    x: number;
+    y: number;
+    gesture: number;
+    settling?: boolean;
+  } | null>(null);
+  const nextGesture = useRef(0);
+  const [editing, setEditing] = useState(false);
+  const pos = held ?? home;
+  if (!step.notes && !editing) return null;
+
+  function beginDrag(ev: React.PointerEvent<HTMLDivElement>) {
+    if (!editable || editing || ev.button !== 0) return;
+    ev.preventDefault();
+    const gesture = ++nextGesture.current;
+    const { pointerId, clientX: startX, clientY: startY } = ev;
+    // A fresh grab may replace a released gesture while its request settles.
+    // Begin exactly where the card is painted, not at an older server pose.
+    const from = held ?? home;
+    let last = from;
+    setHeld({ x: from.x, y: from.y, gesture });
+    const move = (next: PointerEvent) => {
+      if (next.pointerId !== pointerId || gesture !== nextGesture.current) return;
+      last = {
+        x: Math.round(from.x + (next.clientX - startX) / scale),
+        y: Math.round(from.y + (next.clientY - startY) / scale),
+      };
+      setHeld({ ...last, gesture });
+    };
+    const finish = (next: PointerEvent) => {
+      if (next.pointerId !== pointerId || gesture !== nextGesture.current) return;
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      if (last.x === from.x && last.y === from.y) {
+        setHeld((current) => (current?.gesture === gesture ? null : current));
+        return;
+      }
+      // Keep the released preview mounted until the optimistic update and its
+      // authoritative round trip have settled. Clearing it here would expose
+      // the old notesPos for a frame on a slow connection.
+      setHeld({ ...last, gesture, settling: true });
+      const done = () =>
+        setHeld((current) =>
+          current?.gesture === gesture && current.settling ? null : current
+        );
+      void onMove(last).then(done, done);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
+  }
+
+  return (
+    <div
+      data-step-notes={step.id}
+      data-drag-settling={held?.settling || undefined}
+      className={`absolute z-10 max-w-[45%] select-none rounded border border-ink-600/70 bg-ink-900/85 p-2 text-xs text-ink-100 shadow ${
+        editable && !editing ? "cursor-grab touch-none active:cursor-grabbing" : ""
+      }`}
+      style={{ left: size / 2 + pos.x * scale, top: size / 2 + pos.y * scale }}
+      title={editable ? "Drag to move. Double-click to edit" : undefined}
+      onPointerDown={beginDrag}
+      onDoubleClick={() => editable && setEditing(true)}
+    >
+      {editing ? (
+        <textarea
+          autoFocus
+          className="field h-24 w-56 resize-none text-xs"
+          defaultValue={step.notes}
+          onBlur={(e) => {
+            setEditing(false);
+            if (e.target.value !== step.notes) onEdit(e.target.value);
+          }}
+        />
+      ) : (
+        <div className="whitespace-pre-wrap">{step.notes}</div>
+      )}
+    </div>
+  );
+}
+
 function PaletteGlyph({ kind }: { kind: PaletteKind }) {
   const stroke = "#7aa2f7";
   return (
@@ -4158,6 +4659,16 @@ function PaletteGlyph({ kind }: { kind: PaletteKind }) {
               <path d="M12 10 l-5 5 l5 5 M18 10 l5 5 l-5 5" />
             </>
           )}
+        </g>
+      )}
+      {kind === "text" && (
+        <text x="15" y="21" textAnchor="middle" fontSize="17" fontWeight="700" fill="#e8edf5">
+          T
+        </text>
+      )}
+      {kind === "arrow" && (
+        <g fill="none" stroke="#e8edf5" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M15 26 V6 M9 12 L15 5 L21 12" />
         </g>
       )}
       {kind === "anchor" && (

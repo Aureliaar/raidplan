@@ -1,5 +1,6 @@
 import {
   Fragment,
+  type ReactNode,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -41,6 +42,18 @@ import {
  * Top-down arena renderer. Everything is drawn in arena units inside one scaled
  * group, so the plan JSON never has to know about pixels.
  */
+
+/**
+ * The stage is wider than the arena so anything sitting on — or just past — a
+ * wall keeps drawing instead of being cut off at the canvas edge. Everything
+ * that maps arena units to pixels goes through viewScale so the drop point, the
+ * notes card and the canvas all agree on where the floor is.
+ */
+export const VIEW_MARGIN = 1.18;
+
+export function viewScale(arena: Plan["arena"], size: number): number {
+  return size / (Math.max(arena.width, arena.height) * VIEW_MARGIN);
+}
 
 const ZONE_DEFAULT = "#ff7043";
 const MARKER_COLORS: Record<string, string> = {
@@ -122,7 +135,19 @@ export interface SceneProps {
   onSelect(ids: string[]): void;
   onMove(moves: { id: string; x: number; y: number }[]): void;
   /** Wheel over something: resize it (or a tether's range) by that factor. */
-  onResize?(id: string, factor: number, what: "size" | "opacity"): void;
+  onResize?(ids: string[], factor: number, what: "size" | "opacity"): void;
+  /** Direct-manipulation pins commit the selected entity's visual transform. */
+  onTransform?(
+    id: string,
+    patch: {
+      factor: number;
+      rotation?: number;
+      innerRadius?: number;
+      angle?: number;
+      width?: number;
+      length?: number;
+    }
+  ): Promise<unknown> | void;
 }
 
 /** How long the floor takes to walk into the next step, and its easing. */
@@ -250,9 +275,10 @@ export function Scene({
   onSelect,
   onMove,
   onResize,
+  onTransform,
 }: SceneProps) {
   const { arena } = plan;
-  const scale = size / Math.max(arena.width, arena.height);
+  const scale = viewScale(arena, size);
 
   /**
    * Where the thing under the pointer is mid-drag, before the op that commits
@@ -273,6 +299,12 @@ export function Scene({
     from: { x: number; y: number };
     to: { x: number; y: number };
     additive: boolean;
+  } | null>(null);
+  /** Which radial-snap guides the current drag has earned drawing. */
+  const [guides, setGuides] = useState<{
+    spoke?: number;
+    radius?: number;
+    point?: { x: number; y: number };
   } | null>(null);
   useEffect(() => {
     // A response to an earlier edit can arrive during a new drag. Preserve the
@@ -388,12 +420,66 @@ export function Scene({
     };
   }
 
-  function moveGroup(id: string, at: { x: number; y: number }) {
+  /**
+   * An anchored offset dropped within a hand's breadth of zero means "just
+   * follow the target again": snap it home so the plan does not accumulate
+   * meaningless two-unit nudges.
+   */
+  function settleAnchorSnap(live: Map<string, { x: number; y: number }>) {
+    for (const [id, p] of live) {
+      if (anchorBase.has(id) && Math.hypot(p.x, p.y) < 12 / scale) live.set(id, { x: 0, y: 0 });
+    }
+    return live;
+  }
+
+  /**
+   * FFXIV positioning is radial: intercardinal spokes, shared rings, waymark
+   * tiles. A lone unanchored drag snaps to those — angle to 45° spokes, radius
+   * to other tokens' rings, position to a waymark — unless Alt says free-hand.
+   * Returns the settled point and remembers which guides earned drawing.
+   */
+  function radialSnap(id: string, p: { x: number; y: number }) {
+    const grip = 8 / scale;
+    for (const o of committed) {
+      if (o.type !== "marker" || o.id === id) continue;
+      if (Math.hypot(o.x - p.x, o.y - p.y) < 12 / scale) {
+        setGuides({ point: { x: o.x, y: o.y } });
+        return { x: o.x, y: o.y };
+      }
+    }
+    const r = Math.hypot(p.x, p.y);
+    if (r < 1) {
+      setGuides(null);
+      return p;
+    }
+    let ang = Math.atan2(p.y, p.x);
+    const spoke = Math.round(ang / (Math.PI / 4)) * (Math.PI / 4);
+    const onSpoke = Math.abs(ang - spoke) * r < grip;
+    if (onSpoke) ang = spoke;
+    let ringAt: number | undefined;
+    for (const o of committed) {
+      if ((o.type !== "player" && o.type !== "enemy") || o.id === id) continue;
+      const or = Math.hypot(o.x, o.y);
+      if (Math.abs(or - r) < grip && (ringAt === undefined || Math.abs(or - r) < Math.abs(ringAt - r)))
+        ringAt = or;
+    }
+    if (!onSpoke && ringAt === undefined) {
+      setGuides(null);
+      return p;
+    }
+    setGuides({ spoke: onSpoke ? spoke : undefined, radius: ringAt });
+    const useR = ringAt ?? r;
+    return { x: useR * Math.cos(ang), y: useR * Math.sin(ang) };
+  }
+
+  function moveGroup(id: string, at: { x: number; y: number }, alt = false) {
     const start = dragStart.current;
     if (!start || start.source !== id) return null;
     const dx = at.x - start.sourceAt.x;
     const dy = at.y - start.sourceAt.y;
-    if (Math.hypot(dx, dy) > 0.5) start.moved = true;
+    // Four screen pixels of intent before anything counts as a move: a click
+    // that wobbles in the hand must select, not nudge.
+    if (Math.hypot(dx, dy) > 4 / scale) start.moved = true;
     if (start.members.size > 1 && symmetryKind === "rotate") {
       const source = start.members.get(id)!;
       const sourceBase = { x: source.shownX - source.x, y: source.shownY - source.y };
@@ -418,7 +504,7 @@ export function Scene({
           y: member.y + shownY - member.shownY,
         });
       }
-      setDragging(live);
+      setDragging(settleAnchorSnap(live));
       return live;
     }
     if (start.snapSymmetry) {
@@ -453,7 +539,14 @@ export function Scene({
       }
       live.set(memberId, { x: member.x + mx, y: member.y + my });
     }
-    setDragging(live);
+    // A lone unanchored token gets the arena's radial snap; anything grouped,
+    // mirrored, or anchored keeps its own settling rules.
+    if (live.size === 1 && symmetryCount === 1 && !anchorBase.has(id) && start.moved && !alt) {
+      live.set(id, radialSnap(id, live.get(id)!));
+    } else {
+      setGuides(null);
+    }
+    setDragging(settleAnchorSnap(live));
     return live;
   }
 
@@ -474,16 +567,6 @@ export function Scene({
 
     const hits = stage.getAllIntersections(point);
     const arenaAt = { x: (point.x - size / 2) / scale, y: (point.y - size / 2) / scale };
-    // A frozen waymark is still the thing the pointer visibly landed on. Do
-    // not click through it into a smaller actor underneath; on the Step layer
-    // the mark is scenery and the whole gesture is intentionally inert.
-    if (
-      layer !== "markers" &&
-      hits.some((shape) => {
-        const group = shape.findAncestor(".entity", true) as Konva.Group | undefined;
-        return group ? byId.get(group.id())?.type === "marker" : false;
-      })
-    ) return undefined;
     let best: { node: Konva.Group; id: string } | undefined;
     let bestSize = Infinity;
     for (const shape of hits) {
@@ -519,11 +602,14 @@ export function Scene({
             (stagePoint.y - size / 2) / scale - entity.y,
           ) <= entity.size * entity.scale * 0.55
       );
-    if (onFrozenMarker) {
+    const best = under(evt);
+    // A bare waymark is frozen scenery on the Step layer. An editable shape
+    // visibly on top of it still wins, though: otherwise a player parked on a
+    // waymark (R1 on D in the final P11S slide) cannot be grabbed at all.
+    if (onFrozenMarker && !best) {
       onSelect([]);
       return;
     }
-    const best = under(evt);
     const additive = "shiftKey" in evt.evt && evt.evt.shiftKey;
     if (!best) {
       const point = evt.target.getStage()?.getPointerPosition();
@@ -607,7 +693,11 @@ export function Scene({
     evt.evt.preventDefault();
     const step = evt.evt.shiftKey ? 1.02 : 1.08;
     // Plain wheel is size; with ctrl held it is how solid the thing is drawn.
-    onResize(hit.id, evt.evt.deltaY < 0 ? step : 1 / step, evt.evt.ctrlKey ? "opacity" : "size");
+    // Shift, marquee, and symmetry selection all resolve into `selectedIds`.
+    // Pointing at one member makes that whole selection the wheel target;
+    // pointing elsewhere keeps the no-selection-required wheel behavior.
+    const ids = selectedIds.size > 1 && selectedIds.has(hit.id) ? [...selectedIds] : [hit.id];
+    onResize(ids, evt.evt.deltaY < 0 ? step : 1 / step, evt.evt.ctrlKey ? "opacity" : "size");
   }
 
   return (
@@ -637,17 +727,23 @@ export function Scene({
                 scaleX={e.scale}
                 scaleY={e.scale}
                 opacity={e.opacity * (offLayer(e) ? 0.4 : 1)}
-                onDragMove={(ev) => moveGroup(e.id, poseOf(e.id, ev.target))}
+                onDragMove={(ev) =>
+                  moveGroup(e.id, poseOf(e.id, ev.target), "altKey" in ev.evt && ev.evt.altKey)
+                }
                 onDragEnd={(ev) => {
                   const pose = poseOf(e.id, ev.target);
                   if (!dragStart.current?.moved) {
+                    setGuides(null);
                     dragStart.current = null;
                     setDragging(null);
                     return;
                   }
                   // Held until the new revision arrives, so the shape does not
                   // snap back to its old pose for the length of a round trip.
-                  const final = moveGroup(e.id, pose) ?? new Map([[e.id, pose]]);
+                  const final =
+                    moveGroup(e.id, pose, "altKey" in ev.evt && ev.evt.altKey) ??
+                    new Map([[e.id, pose]]);
+                  setGuides(null);
                   const moves = [...final].map(([id, p]) => ({
                     id,
                     x: Math.round(p.x),
@@ -659,7 +755,9 @@ export function Scene({
               >
                 <GrabTarget entity={e} />
                 <EntityShape entity={e} blast={blast.get(e.id) ?? 0} dress={dress?.get(e.id)} />
-                {(selectedIds.has(e.id) ||
+                {/* One selected thing gets the pins' quiet ring instead; a
+                    group shows who is coming along before anything moves. */}
+                {((selectedIds.size > 1 && selectedIds.has(e.id)) ||
                   (!!highlight && (e.bond?.id === highlight || e.mech === highlight))) && (
                   <SelectionRing entity={e} />
                 )}
@@ -708,6 +806,92 @@ export function Scene({
               ))}
           {/* Transform geometry is guidance, so it stays legible over tokens,
               telegraphs, labels, and the waymark ghost pass. */}
+          {guides && (
+            <Group listening={false}>
+              {guides.spoke !== undefined && (
+                <Line
+                  points={[
+                    0,
+                    0,
+                    Math.cos(guides.spoke) * Math.max(arena.width, arena.height) * 0.7,
+                    Math.sin(guides.spoke) * Math.max(arena.width, arena.height) * 0.7,
+                  ]}
+                  stroke="rgba(125, 211, 252, 0.75)"
+                  strokeWidth={1.5 / scale}
+                  dash={[5 / scale, 4 / scale]}
+                />
+              )}
+              {guides.radius !== undefined && (
+                <Circle
+                  radius={guides.radius}
+                  stroke="rgba(125, 211, 252, 0.6)"
+                  strokeWidth={1.5 / scale}
+                  dash={[2 / scale, 5 / scale]}
+                />
+              )}
+              {guides.point && (
+                <Circle
+                  x={guides.point.x}
+                  y={guides.point.y}
+                  radius={14 / scale}
+                  stroke="rgba(125, 211, 252, 0.85)"
+                  strokeWidth={2 / scale}
+                />
+              )}
+            </Group>
+          )}
+          {/* Dragging an anchored bait edits "and a bit that way", not a place:
+              the leash makes that reading visible, and the small ring is the
+              drop zone that puts the offset back to zero. */}
+          {dragging &&
+            [...dragging].map(([id, off]) => {
+              const base = anchorBase.get(id);
+              if (!base) return null;
+              const u = 1 / scale;
+              const home = Math.hypot(off.x, off.y) < 0.5;
+              return (
+                <Group key={"leash-" + id} listening={false}>
+                  <Circle
+                    x={base.x}
+                    y={base.y}
+                    radius={12 * u}
+                    stroke="#fcd34d"
+                    strokeWidth={1.5 * u}
+                    dash={[2 * u, 4 * u]}
+                    opacity={home ? 1 : 0.6}
+                  />
+                  {!home && (
+                    <>
+                      <Line
+                        points={[base.x, base.y, base.x + off.x, base.y + off.y]}
+                        stroke="#fcd34d"
+                        strokeWidth={2 * u}
+                        dash={[5 * u, 5 * u]}
+                      />
+                      <Group x={base.x + off.x / 2 + 10 * u} y={base.y + off.y / 2 + 10 * u}>
+                        <Rect
+                          width={84 * u}
+                          height={20 * u}
+                          cornerRadius={5 * u}
+                          fill="#232833"
+                          stroke="#2e3543"
+                          strokeWidth={1 * u}
+                        />
+                        <Text
+                          width={84 * u}
+                          height={20 * u}
+                          align="center"
+                          verticalAlign="middle"
+                          fontSize={12 * u}
+                          fill="#e6ebf2"
+                          text={`${off.x >= 0 ? "+" : ""}${Math.round(off.x)}, ${off.y >= 0 ? "+" : ""}${Math.round(off.y)}`}
+                        />
+                      </Group>
+                    </>
+                  )}
+                </Group>
+              );
+            })}
           {selectedIds.size > 1 && (
             <TransformAxis
               kind={symmetryKind}
@@ -716,6 +900,17 @@ export function Scene({
               entities={entities.filter((e) => selectedIds.has(e.id))}
             />
           )}
+          {editable && selectedIds.size === 1 && (() => {
+            const entity = entities.find((candidate) => selectedIds.has(candidate.id));
+            return entity && !frozen(entity) && !entity.locked && entity.type !== "tether" ? (
+              <SelectionPins
+                entity={entity}
+                pixelsPerUnit={scale}
+                viewHalf={size / 2 / scale}
+                onTransform={(patch) => onTransform?.(entity.id, patch)}
+              />
+            ) : null;
+          })()}
         </Group>
       </Layer>
       {marquee && (
@@ -733,6 +928,465 @@ export function Scene({
         </Layer>
       )}
     </Stage>
+  );
+}
+
+/**
+ * Contextual direct-manipulation handles for one selected floor object.
+ *
+ * The handles are ticks on a hairline selection ring: a radial tick pushes and
+ * pulls the object's size, an amber arc tick along the ring turns it. Each mark
+ * crosses the edge it edits, so its shape says what dragging it does. Visuals
+ * stay 6–8px quiet and bloom under the cursor; the grabbable area is a larger
+ * invisible disc, so small never means fiddly. The rotate tick only appears
+ * where turning the object communicates something: facing actors, waymarks,
+ * art, paths, and directional telegraphs. Round, position-only objects do not
+ * grow a decorative control that cannot change their meaning.
+ */
+type PinKind = "resize" | "rotate" | "inner" | "angle" | "width" | "length";
+
+function SelectionPins({
+  entity,
+  pixelsPerUnit,
+  viewHalf,
+  onTransform,
+}: {
+  entity: Exclude<Entity, { type: "tether" }>;
+  pixelsPerUnit: number;
+  /** Half-extent (arena units) of the visible canvas around the arena centre. */
+  viewHalf: number;
+  onTransform(patch: {
+    factor: number;
+    rotation?: number;
+    innerRadius?: number;
+    angle?: number;
+    width?: number;
+    length?: number;
+  }): Promise<unknown> | void;
+}) {
+  const group = useRef<Konva.Group>(null);
+  const gesture = useRef(0);
+  const [hover, setHover] = useState<PinKind | null>(null);
+  const [live, setLive] = useState<{
+    kind: PinKind;
+    factor: number;
+    rotation: number;
+    inner: number;
+    angle: number;
+    width: number;
+    length: number;
+  } | null>(null);
+  const directional =
+    entity.type === "marker" ||
+    entity.type === "icon" ||
+    entity.type === "path" ||
+    (entity.type === "player" && entity.showFacing) ||
+    (entity.type === "enemy" && entity.showFacing) ||
+    (entity.type === "zone" &&
+      ["cone", "rect", "line", "knockback", "arrow", "exaflare", "linestack"].includes(entity.shape));
+
+  // Handle dimensions are expressed in arena units because this group sits
+  // inside the scaled floor group. Divide by the canvas scale to keep the
+  // ticks finger-sized and the strokes crisp on every arena/viewport size.
+  const unit = 1 / Math.max(0.001, pixelsPerUnit);
+  const factor = live?.factor ?? 1;
+  const rotation = live?.rotation ?? entity.rotation;
+  // Rectangular shapes have two independent dimensions the corner tick cannot
+  // separate: width gets grips on the side edges, length on the ends.
+  const boxy =
+    entity.type === "zone" &&
+    ["rect", "line", "knockback", "arrow", "linestack"].includes(entity.shape)
+      ? (entity as Extract<Entity, { type: "zone" }> & { width: number; length: number })
+      : null;
+  const liveW = boxy ? (live?.width ?? boxy.width) : 0;
+  const liveL = boxy ? (live?.length ?? boxy.length) : 0;
+  // The margin follows the dimensions being dragged, not the authored ones,
+  // so the ring keeps hugging the shape mid-gesture.
+  const hint = boxy ? Math.max(liveW, liveL) / 2 : radiusHint(entity);
+  const outerRing = Math.max((hint + 14) * entity.scale * factor, 14 * unit);
+  // A big shape's ring keeps its full margin as long as it fits on screen;
+  // only the viewport edge shrinks it (over the shape's own body if need be).
+  const viewRadius = Math.min(viewHalf - Math.abs(entity.x), viewHalf - Math.abs(entity.y));
+  const maxRing = Math.max(viewRadius - 4, 20 * unit);
+  const ring = Math.min(outerRing, maxRing);
+  // No grip may leave the visible floor, wherever its edge or ring point
+  // lands: pull it straight back inside, keeping its grab disc whole.
+  const clampView = (p: { x: number; y: number }) => ({
+    x: Math.min(Math.max(p.x, -viewHalf - entity.x + 12 * unit), viewHalf - entity.x - 12 * unit),
+    y: Math.min(Math.max(p.y, -viewHalf - entity.y + 12 * unit), viewHalf - entity.y - 12 * unit),
+  });
+  // The resize tick keeps the old corner convention (south-east); the rotate
+  // tick rides the ring at the object's facing, so it follows a turn.
+  const resizeAt = clampView({ x: ring * Math.SQRT1_2, y: ring * Math.SQRT1_2 });
+  const rotateRad = ((rotation - 90) * Math.PI) / 180;
+  const rotateAt = clampView({ x: ring * Math.cos(rotateRad), y: ring * Math.sin(rotateRad) });
+  // A donut's hole and a cone's spread are the values the wheel cannot reach:
+  // each gets a tick directly on the edge it edits.
+  const donut = entity.type === "zone" && entity.shape === "donut" ? entity : null;
+  const cone = entity.type === "zone" && entity.shape === "cone" ? entity : null;
+  const innerDist = donut
+    ? Math.max((live?.inner ?? donut.innerRadius) * donut.scale, 18 * unit)
+    : 0;
+  const innerAt = clampView({ x: -innerDist * Math.SQRT1_2, y: -innerDist * Math.SQRT1_2 });
+  const coneAngle = live?.angle ?? (cone ? cone.angle : 0);
+  const coneEdgeRad = ((rotation + coneAngle / 2 - 90) * Math.PI) / 180;
+  const coneAt = cone
+    ? clampView({
+        x: cone.radius * cone.scale * factor * Math.cos(coneEdgeRad),
+        y: cone.radius * cone.scale * factor * Math.sin(coneEdgeRad),
+      })
+    : { x: 0, y: 0 };
+  const boxRad = (rotation * Math.PI) / 180;
+  // Local +x (the width axis) and local -y (the facing / length axis) in
+  // arena space, given the node's clockwise rotation.
+  const xAxis = { x: Math.cos(boxRad), y: Math.sin(boxRad) };
+  const frontAxis = { x: Math.sin(boxRad), y: -Math.cos(boxRad) };
+  const halfW = boxy ? Math.max((liveW / 2) * boxy.scale * factor, 14 * unit) : 0;
+  const halfL = boxy ? Math.max((liveL / 2) * boxy.scale * factor, 14 * unit) : 0;
+  const widthAt = { x: xAxis.x * halfW, y: xAxis.y * halfW };
+  const lengthAt = { x: frontAxis.x * halfL, y: frontAxis.y * halfL };
+  // The resize arrows must point along the direction the grip actually drags
+  // on screen, which turns with the shape.
+  const axisCursor = (axis: { x: number; y: number }) => {
+    const deg = ((Math.atan2(axis.y, axis.x) * 180) / Math.PI + 180) % 180;
+    if (deg < 22.5 || deg >= 157.5) return "ew-resize";
+    if (deg < 67.5) return "nwse-resize";
+    if (deg < 112.5) return "ns-resize";
+    return "nesw-resize";
+  };
+
+  const cursor = (style: string) => {
+    const container = group.current?.getStage()?.container();
+    if (container) container.style.cursor = style;
+  };
+
+  function begin(kind: PinKind, evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+    evt.cancelBubble = true;
+    const stage = group.current?.getStage();
+    const node = stage?.findOne(`#${entity.id}`) as Konva.Group | undefined;
+    if (!stage || !node) return;
+    // A fresh direct manipulation replaces an older released gesture even
+    // while that older request is settling.
+    gesture.current += 1;
+    const center = node.getAbsolutePosition();
+    const point = stage.getPointerPosition();
+    if (!point) return;
+    const fromDist = Math.max(1, Math.hypot(point.x - center.x, point.y - center.y));
+    const fromAngle = Math.atan2(point.y - center.y, point.x - center.x);
+    const state = {
+      factor: 1,
+      rotation: entity.rotation,
+      inner: donut ? donut.innerRadius : 0,
+      angle: cone ? cone.angle : 0,
+      width: boxy ? boxy.width : 0,
+      length: boxy ? boxy.length : 0,
+    };
+    // Projection of the grab point onto the edited axis, so a later pointer
+    // position reads as a ratio of the starting dimension.
+    const rad = (entity.rotation * Math.PI) / 180;
+    const axis =
+      kind === "width"
+        ? { x: Math.cos(rad), y: Math.sin(rad) }
+        : { x: Math.sin(rad), y: -Math.cos(rad) };
+    const fromAxis = Math.max(
+      1,
+      Math.abs((point.x - center.x) * axis.x + (point.y - center.y) * axis.y)
+    );
+
+    const track = (move: MouseEvent | TouchEvent) => {
+      stage.setPointersPositions(move);
+      const at = stage.getPointerPosition();
+      if (!at) return;
+      if (kind === "resize") {
+        const raw = Math.hypot(at.x - center.x, at.y - center.y) / fromDist;
+        // Never let the ring collapse under the pointer: the handle must stay
+        // grabbable, whatever the entity's own minimum turns out to be.
+        state.factor = Math.max(0.04, ((radiusHint(entity) + 14) * entity.scale * raw < 12 * unit)
+          ? state.factor
+          : raw);
+        node.scaleX(entity.scale * state.factor);
+        node.scaleY(entity.scale * state.factor);
+      } else if (kind === "rotate") {
+        const turned = ((Math.atan2(at.y - center.y, at.x - center.x) - fromAngle) * 180) / Math.PI;
+        let deg = (((entity.rotation + turned) % 360) + 360) % 360;
+        const snap = Math.round(deg / 45) * 45;
+        if (Math.abs(deg - snap) <= 5) deg = snap % 360;
+        state.rotation = deg;
+        node.rotation(deg);
+      } else if ((kind === "width" || kind === "length") && boxy) {
+        const along = Math.abs((at.x - center.x) * axis.x + (at.y - center.y) * axis.y);
+        const raw = along / fromAxis;
+        if (kind === "width") {
+          state.width = Math.max(8, boxy.width * raw);
+          node.scaleX((entity.scale * state.width) / boxy.width);
+        } else {
+          state.length = Math.max(8, boxy.length * raw);
+          node.scaleY((entity.scale * state.length) / boxy.length);
+        }
+      } else if (kind === "inner" && donut) {
+        const raw = Math.hypot(at.x - center.x, at.y - center.y) / fromDist;
+        state.inner = Math.max(0, Math.min(donut.radius - 2, donut.innerRadius * raw));
+      } else if (kind === "angle" && cone) {
+        // The grip lives on the cone's clockwise edge; the pointer's bearing
+        // from the facing line reads directly as half the spread.
+        const bearing = (Math.atan2(at.y - center.y, at.x - center.x) * 180) / Math.PI + 90;
+        let off = ((bearing - entity.rotation) % 360 + 360) % 360;
+        if (off > 180) off = 360 - off;
+        let deg = Math.max(5, Math.min(360, off * 2));
+        const snap = Math.round(deg / 15) * 15;
+        if (Math.abs(deg - snap) <= 3 && snap >= 5) deg = snap;
+        state.angle = deg;
+      }
+      setLive({ kind, ...state });
+    };
+    const release = () => {
+      window.removeEventListener("mousemove", track);
+      window.removeEventListener("touchmove", track);
+      window.removeEventListener("mouseup", release);
+      window.removeEventListener("touchend", release);
+      cursor("");
+      setLive(null);
+      setHover(null);
+      const moved =
+        kind === "resize"
+          ? Math.abs(state.factor - 1) > 0.002
+          : kind === "rotate"
+            ? state.rotation !== entity.rotation
+            : kind === "inner"
+              ? !!donut && Math.abs(state.inner - donut.innerRadius) > 0.4
+              : kind === "width"
+                ? !!boxy && Math.abs(state.width - boxy.width) > 0.4
+                : kind === "length"
+                  ? !!boxy && Math.abs(state.length - boxy.length) > 0.4
+                  : !!cone && Math.abs(state.angle - cone.angle) > 0.4;
+      // The preview lived on the Konva node itself. The document stores
+      // meaningful dimensions instead (the same fields the wheel changes),
+      // so restore the authored node transform before the optimistic op
+      // paints those dimensions in this same release turn.
+      node.scaleX(entity.scale);
+      node.scaleY(entity.scale);
+      node.rotation(entity.rotation);
+      if (!moved) return;
+      void onTransform({
+        factor: kind === "resize" ? Math.round(state.factor * 1000) / 1000 : 1,
+        ...(kind === "rotate" && directional ? { rotation: Math.round(state.rotation * 10) / 10 } : {}),
+        ...(kind === "inner" ? { innerRadius: Math.round(state.inner) } : {}),
+        ...(kind === "angle" ? { angle: Math.round(state.angle) } : {}),
+        ...(kind === "width" ? { width: Math.round(state.width) } : {}),
+        ...(kind === "length" ? { length: Math.round(state.length) } : {}),
+      });
+    };
+    window.addEventListener("mousemove", track);
+    window.addEventListener("touchmove", track);
+    window.addEventListener("mouseup", release);
+    window.addEventListener("touchend", release);
+  }
+
+  /** One tick: the quiet visible mark, its hover halo, and a fat invisible grab disc. */
+  const tick = (
+    kind: PinKind,
+    at: { x: number; y: number },
+    mark: ReactNode,
+    grabCursor: string,
+    key?: string,
+    hitRadius = 11
+  ) => {
+    const lit = hover === kind || live?.kind === kind;
+    return (
+      <Group key={key ?? kind} x={at.x} y={at.y}>
+        {lit && <Circle radius={hitRadius * unit} fill="rgba(122, 162, 247, 0.25)" listening={false} />}
+        {mark}
+        <Circle
+          radius={hitRadius * unit}
+          fill="#000"
+          opacity={0}
+          onMouseEnter={() => { setHover(kind); cursor(grabCursor); }}
+          onMouseLeave={() => { if (!live) { setHover(null); cursor(""); } }}
+          onMouseDown={(evt) => begin(kind, evt)}
+          onTouchStart={(evt) => begin(kind, evt)}
+        />
+      </Group>
+    );
+  };
+
+  const readoutAt =
+    live?.kind === "resize"
+      ? { x: resizeAt.x + 16 * unit, y: resizeAt.y + 16 * unit }
+      : live?.kind === "inner"
+        ? { x: innerAt.x - 70 * unit, y: innerAt.y - 30 * unit }
+        : live?.kind === "angle"
+          ? { x: coneAt.x + 16 * unit, y: coneAt.y + 16 * unit }
+          : live?.kind === "width"
+            ? { x: widthAt.x + 16 * unit, y: widthAt.y + 16 * unit }
+            : live?.kind === "length"
+              ? { x: lengthAt.x + 16 * unit, y: lengthAt.y - 30 * unit }
+              : { x: resizeAt.x + 16 * unit, y: -ring - 30 * unit };
+  const readout = live && (
+    <Group x={readoutAt.x} y={readoutAt.y}>
+      <Rect width={54 * unit} height={20 * unit} cornerRadius={5 * unit} fill="#232833" stroke="#2e3543" strokeWidth={1 * unit} />
+      <Text
+        width={54 * unit}
+        height={20 * unit}
+        align="center"
+        verticalAlign="middle"
+        fontSize={12 * unit}
+        fill="#e6ebf2"
+        text={
+          live.kind === "resize"
+            ? `${Math.round(live.factor * 100)}%`
+            : live.kind === "inner"
+              ? `${Math.round(live.inner)}`
+              : live.kind === "width"
+                ? `${Math.round(live.width)}`
+                : live.kind === "length"
+                  ? `${Math.round(live.length)}`
+                  : `${Math.round(live.kind === "angle" ? live.angle : live.rotation)}°`
+        }
+      />
+    </Group>
+  );
+
+  const grew = (kind: PinKind) => (hover === kind || live?.kind === kind ? 1.4 : 1);
+  return (
+    <Group ref={group} name="selection-pins" x={entity.x} y={entity.y}>
+      <Circle
+        name="selection"
+        radius={ring}
+        stroke="rgba(122, 162, 247, 0.55)"
+        strokeWidth={1 * unit}
+        dash={[2 * unit, 5 * unit]}
+        listening={false}
+      />
+      {/* Boxy shapes edit width and length independently on their own
+          edges; a uniform corner scale would only fight those grips. */}
+      {!boxy &&
+        tick(
+        "resize",
+        resizeAt,
+        <Line
+          points={[-6 * unit * Math.SQRT1_2, -6 * unit * Math.SQRT1_2, 6 * unit * Math.SQRT1_2, 6 * unit * Math.SQRT1_2].map(
+            (v) => v * grew("resize")
+          )}
+          stroke="#e6ebf2"
+          strokeWidth={3 * unit}
+          lineCap="round"
+          listening={false}
+          shadowColor="#14171c"
+          shadowBlur={2 * unit}
+        />,
+        "nwse-resize"
+      )}
+      {directional &&
+        tick(
+          "rotate",
+          rotateAt,
+          <Shape
+            listening={false}
+            sceneFunc={(ctx, shape) => {
+              // A short arc curving around the entity centre, through the
+              // tick's (possibly view-clamped) position.
+              const r = Math.max(1, Math.hypot(rotateAt.x, rotateAt.y));
+              const a = Math.atan2(rotateAt.y, rotateAt.x);
+              const span = (8 * unit * grew("rotate")) / r;
+              ctx.beginPath();
+              ctx.arc(-rotateAt.x, -rotateAt.y, r, a - span, a + span);
+              ctx.strokeShape(shape);
+            }}
+            stroke="#fcd34d"
+            strokeWidth={3 * unit}
+            lineCap="round"
+            shadowColor="#14171c"
+            shadowBlur={2 * unit}
+          />,
+          "grab"
+        )}
+      {donut &&
+        tick(
+          "inner",
+          innerAt,
+          <Line
+            points={[-6 * unit * Math.SQRT1_2, -6 * unit * Math.SQRT1_2, 6 * unit * Math.SQRT1_2, 6 * unit * Math.SQRT1_2].map(
+              (v) => v * grew("inner")
+            )}
+            stroke="#e6ebf2"
+            strokeWidth={3 * unit}
+            lineCap="round"
+            listening={false}
+            shadowColor="#14171c"
+            shadowBlur={2 * unit}
+          />,
+          "nwse-resize"
+        )}
+      {cone &&
+        tick(
+          "angle",
+          coneAt,
+          <Shape
+            listening={false}
+            sceneFunc={(ctx, shape) => {
+              // A short arc along the cone's own rim, centred on the edge grip
+              // (or on its view-clamped stand-in near the wall).
+              const rim = Math.max(1, Math.hypot(coneAt.x, coneAt.y));
+              const a = Math.atan2(coneAt.y, coneAt.x);
+              const span = (8 * unit * grew("angle")) / rim;
+              ctx.beginPath();
+              ctx.arc(-coneAt.x, -coneAt.y, rim, a - span, a + span);
+              ctx.strokeShape(shape);
+            }}
+            stroke="#e6ebf2"
+            strokeWidth={3 * unit}
+            lineCap="round"
+            shadowColor="#14171c"
+            shadowBlur={2 * unit}
+          />,
+          "grab"
+        )}
+      {boxy &&
+        // A pill riding the middle of each of the four edges, long side lying
+        // along its edge: the pair on the sides edits width, the pair on the
+        // ends edits length. Both of a pair light up together.
+        [1, -1].flatMap((side) => [
+          tick(
+            "width",
+            clampView({ x: widthAt.x * side, y: widthAt.y * side }),
+            <Rect
+              width={8 * unit * grew("width")}
+              height={36 * unit * grew("width")}
+              offsetX={(8 * unit * grew("width")) / 2}
+              offsetY={(36 * unit * grew("width")) / 2}
+              cornerRadius={4 * unit * grew("width")}
+              rotation={rotation}
+              fill="#e6ebf2"
+              listening={false}
+              shadowColor="#14171c"
+              shadowBlur={2 * unit}
+            />,
+            axisCursor(xAxis),
+            `width${side}`,
+            20
+          ),
+          tick(
+            "length",
+            clampView({ x: lengthAt.x * side, y: lengthAt.y * side }),
+            <Rect
+              width={36 * unit * grew("length")}
+              height={8 * unit * grew("length")}
+              offsetX={(36 * unit * grew("length")) / 2}
+              offsetY={(8 * unit * grew("length")) / 2}
+              cornerRadius={4 * unit * grew("length")}
+              rotation={rotation}
+              fill="#e6ebf2"
+              listening={false}
+              shadowColor="#14171c"
+              shadowBlur={2 * unit}
+            />,
+            axisCursor(frontAxis),
+            `length${side}`,
+            20
+          ),
+        ])}
+      {readout}
+    </Group>
   );
 }
 
@@ -1693,12 +2347,19 @@ function Tether({
       : entity.style === "far"
         ? distance >= entity.range
         : undefined;
-  // Direction says what to do; colour says whether the current positions do it.
-  const color = satisfied === true
+  const defaultColor = entity.style === "far" ? "#e05252" : entity.style === "close" ? "#5aa8e0" : "#e0c452";
+  // Red/green is the default tether's status language. Once the author picks
+  // another colour, that explicit choice is the stronger instruction and must
+  // remain stable as the endpoints move in and out of range. Explicitly
+  // choosing the style's default colour keeps the useful status feedback.
+  const customColor = entity.color && entity.color.toLowerCase() !== defaultColor.toLowerCase()
+    ? entity.color
+    : undefined;
+  const color = customColor ?? (satisfied === true
     ? "#54d68b"
     : satisfied === false
       ? "#f05b67"
-      : entity.color ?? (entity.style === "far" ? "#e05252" : entity.style === "close" ? "#5aa8e0" : "#e0c452");
+      : defaultColor);
   const dash =
     entity.style === "minus" ? [26, 18] : entity.style === "chain" ? [8, 10] : undefined;
   const angle = Math.atan2(b.y - a.y, b.x - a.x) * 180 / Math.PI;

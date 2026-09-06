@@ -529,7 +529,7 @@ export function Inspector({
       {!entity.anchor && entity.type !== "tether" && (
         <BaitPanel
           plan={plan}
-          target={entity}
+          target={shownEntity}
           stepId={stepId}
           scope={scope}
           variant={variant}
@@ -880,7 +880,7 @@ export function Inspector({
                 })
               }
             >
-              <option value="">no Beat</option>
+              {!entity.mech && <option value="">no Beat</option>}
               {plan.mechs.map((m) => (
                 <option key={m.id} value={m.id}>
                   {mechLabel(plan, m)}

@@ -157,7 +157,14 @@ if (!onMT) fail("dropping a circle on Party bound nothing to MT");
 else if (onMT.declaredIn !== pull)
   fail("the circle was declared in " + onMT.declaredIn + " instead of the step it was dropped in");
 
-// MT stands somewhere else in "Adds" — the circle must not follow them there.
+// The drop made a Beat for the circle in Pull. Stretch that Beat into Adds,
+// where MT stands somewhere else: the circle must not follow them there.
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({
+    ops: [{ op: "update_mech", mechId: onMT.mech, patch: { boom: addsStep } }],
+  }),
+});
 const seen = await page.evaluate(
   async ([id, zid, a, b]) => {
     const d = await (await fetch("/api/plans/" + id)).json().then((p) => p.plan ?? p);

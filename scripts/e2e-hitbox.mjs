@@ -31,7 +31,7 @@ const api = (path, init = {}) =>
   );
 const ops = (id, list) => api("/api/plans/" + id + "/ops", { method: "POST", body: JSON.stringify({ ops: list }) });
 
-const created = await api("/api/plans", { method: "POST", body: JSON.stringify({ name: "hitbox e2e" }) });
+const created = await api("/api/plans", { method: "POST", body: JSON.stringify({ name: "hitbox e2e", withParty: false }) });
 const id = (created.plan ?? created).id;
 
 // A 160-wide beam pointing north from the centre: it spans x in [-80, 80].

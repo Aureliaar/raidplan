@@ -13,6 +13,7 @@ import type { PlanRole, User } from "../shared/schema";
 import type { HistoryActor } from "../shared/history";
 import { BackgroundUploadError, serveBackground, uploadBackground } from "./backgrounds";
 import { dumpFFLogsDebuffs } from "./fflogs";
+import { fightForEncounter, parseDebuffDump } from "../shared/fight-library";
 import { exchangeFFLogsAuthorizationCode } from "./fflogs-oauth";
 
 export { PlanAgent } from "./plan-agent";
@@ -80,6 +81,63 @@ app.post("/api/fflogs/exchange", async (c) => {
   if (!code) throw new HttpError(400, "FF Logs authorization code is missing");
   const redirectUri = `${appUrl(c.env, c.req.raw)}/fflogs`;
   return c.json(await exchangeFFLogsAuthorizationCode(code, redirectUri, c.env));
+});
+
+/* The debuff library: one entry per fight, grown by every log imported through
+   the FF Logs tool. Shared by everyone — the statuses are the game's — and
+   found again by the encounter a plan names. */
+
+app.get("/api/debuffs", async (c) => {
+  requireUser(c);
+  return c.json(await registry(c.env).listFightDebuffs());
+});
+
+app.post("/api/debuffs", async (c) => {
+  requireUser(c);
+  let dump;
+  try {
+    dump = parseDebuffDump(await c.req.json());
+  } catch {
+    throw new HttpError(400, "That is not an FF Logs debuff dump this app produced");
+  }
+  return c.json(await registry(c.env).importFightDebuffs(dump));
+});
+
+app.get("/api/debuffs/:key", async (c) => {
+  requireUser(c);
+  const dump = await registry(c.env).getFightDebuffs(c.req.param("key"));
+  if (!dump) throw new HttpError(404, "No such fight in the library");
+  return c.json(dump);
+});
+
+/* What this plan's fight is, resolved from the encounter it names. The whole
+   library rides along so the author can point at another fight when the name
+   is one the library has not been taught yet. */
+
+app.get("/api/plans/:id/debuffs", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "view");
+  const plan = await (await planStub(c.env, id)).getPlan();
+  const library = await registry(c.env).listFightDebuffs();
+  const match = fightForEncounter(library, plan.encounter);
+  return c.json({
+    key: match?.key ?? null,
+    dump: match ? await registry(c.env).getFightDebuffs(match.key) : null,
+    library,
+  });
+});
+
+app.post("/api/plans/:id/debuffs", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "edit");
+  const { key } = (await c.req.json().catch(() => ({}))) as { key?: string };
+  if (!key) throw new HttpError(400, "Choose a fight from the library");
+  const dump = await registry(c.env).getFightDebuffs(key);
+  if (!dump) throw new HttpError(404, "No such fight in the library");
+  // The plan's own word for the fight now finds it, for every plan that uses it.
+  const plan = await (await planStub(c.env, id)).getPlan();
+  if (plan.encounter) await registry(c.env).linkEncounterToFight(plan.encounter, key);
+  return c.json({ key, dump });
 });
 
 /* ---------------------------------------------------------------- session */
@@ -176,6 +234,42 @@ app.get("/api/plans/:id", async (c) => {
   const plan = await stub.getPlan();
   const meta = await registry(c.env).getPlanMeta(id);
   return c.json({ plan, role, meta });
+});
+
+app.post("/api/plans/:id/duplicate", async (c) => {
+  const sourceId = c.req.param("id");
+  await roleOrThrow(c, sourceId, "view");
+  const user = requireUser(c);
+  const source = await (await planStub(c.env, sourceId)).getPlan();
+  const draft = createPlan({
+    name: `${source.name} copy`,
+    encounter: source.encounter,
+    ownerId: user.id,
+    withParty: false,
+    variantModel: source.variantModel,
+  });
+  const stub = await planStub(c.env, draft.id);
+  await stub.init({
+    id: draft.id,
+    name: draft.name,
+    encounter: draft.encounter,
+    ownerId: user.id,
+    withParty: false,
+    variantModel: source.variantModel,
+  });
+  const now = Date.now();
+  const copy = await stub.replace(
+    { ...source, name: `${source.name} copy`, createdAt: now, updatedAt: now },
+    { id: draft.id, ownerId: user.id },
+    historyActor(user, undefined, "editor")
+  );
+  await registry(c.env).registerPlan({
+    id: copy.id,
+    name: copy.name,
+    encounter: copy.encounter,
+    ownerId: user.id,
+  });
+  return c.json({ id: copy.id });
 });
 
 app.post("/api/plans/:id/ops", async (c) => {
@@ -320,6 +414,19 @@ app.post("/api/plans/:id/share", async (c) => {
   if (remove) await registry(c.env).unshare(id, userId);
   else await registry(c.env).share(id, userId, role ?? "editor");
   return c.json({ ok: true });
+});
+
+app.post("/api/plans/:id/edit-link", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "own");
+  const linkUserId = `editlink:${id}`;
+  await registry(c.env).upsertUser({ id: linkUserId, provider: "edit-link", name: "Edit link guest" });
+  await registry(c.env).share(id, linkUserId, "editor");
+  const { token } = await issueToken(c.env, linkUserId, "shared edit link");
+  const next = `/p/${encodeURIComponent(id)}`;
+  return c.json({
+    url: `${appUrl(c.env, c.req.raw)}/auth/edit-link?token=${encodeURIComponent(token)}&next=${encodeURIComponent(next)}`,
+  });
 });
 
 /**

@@ -226,6 +226,26 @@ async function edit(ctx: ToolContext, planId: string, make: (plan: Plan) => Op |
 }
 
 const planUrl = (ctx: ToolContext, id: string) => `${ctx.appUrl}/p/${id}`;
+
+/**
+ * Every Part lives in a Beat: the one named, or a new one made for it in the
+ * step it is being added to. The Beat is the first op of the batch, so what
+ * a tool reports comes after it in `values`.
+ */
+function beatFor(
+  plan: Plan,
+  mech: string | undefined,
+  stepId: string | undefined,
+  name: string,
+): { mech: string; prelude: Op[] } {
+  if (mech) return { mech: mechIdOf(plan, mech), prelude: [] };
+  const id = newId("mech");
+  const label = name.charAt(0).toUpperCase() + name.slice(1);
+  return {
+    mech: id,
+    prelude: [{ op: "add_mech", id, name: label, snap: stepId ?? plan.steps[0]?.id, plain: true }],
+  };
+}
 const idOf = (v: unknown) => (v as { id: string }).id;
 
 function requireBeatModel(plan: Plan): void {
@@ -1163,6 +1183,27 @@ export const TOOLS: ToolDef[] = [
   }),
 
   def({
+    name: "merge_mechs",
+    description:
+      "Fold Beats into one. Everything they held becomes the target's, the target stretches to cover every span it swallowed, and the others are deleted.",
+    schema: {
+      plan_id: z.string(),
+      into: z.string().describe("The Beat that survives: id, 1-based index or name"),
+      mechs: z.array(z.string()).min(1).describe("Beats to fold into it: ids, indexes or names"),
+    },
+    async run(ctx, a) {
+      let into = "";
+      const res = await edit(ctx, a.plan_id, (plan) => ({
+        op: "merge_mechs",
+        into: (into = mechIdOf(plan, a.into)),
+        mechIds: a.mechs.map((m) => mechIdOf(plan, m)),
+      }));
+      const m = res.plan.mechs.find((x) => x.id === into)!;
+      return `${mechLabel(res.plan, m)} now holds ${res.plan.entities.filter((e) => e.mech === into).length} Part(s) over ${mechSpan(res.plan, m).length} step(s).`;
+    },
+  }),
+
+  def({
     name: "assign_mech",
     description: "Put existing shapes into a mechanic, so they are timed and aimed by it. Pass mech empty to take them out again.",
     schema: {
@@ -1327,7 +1368,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "add_party",
     description:
-      "Add a standard 8-player party (MT/OT/H1/H2/M1/M2/R1/R2) in a ring near the centre. New plans already have one — use arrange_party to reposition it instead.",
+      "Restore a standard 8-player party (MT/OT/H1/H2/M1/M2/R1/R2) and align it to PF clock positions. Existing players are reused, only missing members are added, extras are preserved, and an already aligned party is unchanged.",
     schema: {
       plan_id: z.string(),
       jobs: z
@@ -1337,7 +1378,8 @@ export const TOOLS: ToolDef[] = [
     },
     async run(ctx, a) {
       const res = await edit(ctx, a.plan_id, () => ({ op: "add_party", party: a.jobs }));
-      return `Added ${(res.values[0] as string[]).length} players.`;
+      const changed = (res.values[0] as string[]).length;
+      return changed ? `Restored or aligned ${changed} players.` : "Party was already complete and aligned.";
     },
   }),
 
@@ -1363,7 +1405,7 @@ export const TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe(
-          "Put it in a mech (id, index or name): the mech decides which steps it is on the floor for, and aims it at its snapshot"
+          "The Beat it joins (id, index or name). Every Part lives in a Beat, which decides which steps it is on the floor for; leave it out and a new Beat is made for it in `step`"
         ),
       ...stepArg,
       ...posArgs,
@@ -1372,7 +1414,8 @@ export const TOOLS: ToolDef[] = [
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
         const variant = poseVariant(plan, stepId, a.variant, a.beat);
-        return {
+        const beat = beatFor(plan, a.mech, stepId, a.name ?? a.shape);
+        return [...beat.prelude, {
           op: "add_entity",
           stepId,
           variant,
@@ -1390,13 +1433,12 @@ export const TOOLS: ToolDef[] = [
             soak: a.soak,
             color: a.color,
             hollow: a.hollow,
-            mech: a.mech ? mechIdOf(plan, a.mech) : undefined,
-            steps: stepId ? [stepId] : "all",
+            mech: beat.mech,
             ...positionOf(plan, a),
           },
-        };
+        }];
       });
-      return `Added ${a.shape} zone ${idOf(res.values[0])}`;
+      return `Added ${a.shape} zone ${idOf(res.values.at(-1))}`;
     },
   }),
 
@@ -1408,6 +1450,12 @@ export const TOOLS: ToolDef[] = [
       text: z.string(),
       size: z.number().positive().optional(),
       color: z.string().optional(),
+      mech: z
+        .string()
+        .optional()
+        .describe(
+          "The Beat it joins (id, index or name). Every Part lives in a Beat, which decides which steps it is on the floor for; leave it out and a new Beat is made for it in `step`"
+        ),
       ...stepArg,
       ...posArgs,
     },
@@ -1415,7 +1463,8 @@ export const TOOLS: ToolDef[] = [
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
         const variant = poseVariant(plan, stepId, a.variant, a.beat);
-        return {
+        const beat = beatFor(plan, a.mech, stepId, a.text);
+        return [...beat.prelude, {
           op: "add_entity",
           stepId,
           variant,
@@ -1424,12 +1473,12 @@ export const TOOLS: ToolDef[] = [
             text: a.text,
             fontSize: a.size,
             color: a.color,
-            steps: stepId ? [stepId] : "all",
+            mech: beat.mech,
             ...positionOf(plan, a),
           },
-        };
+        }];
       });
-      return `Added text ${idOf(res.values[0])}`;
+      return `Added text ${idOf(res.values.at(-1))}`;
     },
   }),
 
@@ -1442,6 +1491,12 @@ export const TOOLS: ToolDef[] = [
       to: z.string(),
       style: z.enum(TETHER_STYLES).optional(),
       color: z.string().optional(),
+      mech: z
+        .string()
+        .optional()
+        .describe(
+          "The Beat it joins (id, index or name). Every Part lives in a Beat, which decides which steps it is on the floor for; leave it out and a new Beat is made for it in `step`"
+        ),
       ...stepArg,
     },
     async run(ctx, a) {
@@ -1449,7 +1504,8 @@ export const TOOLS: ToolDef[] = [
         const stepId = stepIdOf(plan, a.step);
         const variant = poseVariant(plan, stepId, a.variant, a.beat);
         const visible = scenePlan(plan, stepId, variant);
-        return {
+        const beat = beatFor(plan, a.mech, stepId, "Tether");
+        return [...beat.prelude, {
           op: "add_entity",
           stepId,
           variant,
@@ -1459,11 +1515,11 @@ export const TOOLS: ToolDef[] = [
             to: resolveRef(visible, a.to).id,
             style: a.style,
             color: a.color,
-            steps: stepId ? [stepId] : "all",
+            mech: beat.mech,
           },
-        };
+        }];
       });
-      return `Added tether ${idOf(res.values[0])}`;
+      return `Added tether ${idOf(res.values.at(-1))}`;
     },
   }),
 
@@ -1513,6 +1569,12 @@ export const TOOLS: ToolDef[] = [
         .boolean()
         .optional()
         .describe("Aimed kinds: reach the arena wall (default true) instead of using length/radius"),
+      mech: z
+        .string()
+        .optional()
+        .describe(
+          "The Beat it joins (id, index or name). Every Part lives in a Beat, which decides which steps it is on the floor for; leave it out and a new Beat is made for it in `step`"
+        ),
       ...stepArg,
     },
     async run(ctx, a) {
@@ -1541,12 +1603,12 @@ export const TOOLS: ToolDef[] = [
         const variant = poseVariant(plan, stepId, a.variant, a.beat);
         const visible = scenePlan(plan, stepId, variant);
         const source = a.from ? resolveRef(visible, a.from).id : undefined;
-        const steps = stepId ? [stepId] : "all";
+        const beat = beatFor(plan, a.mech, stepId, a.name ?? a.kind);
         labels = [];
 
         if (a.pick) {
           const count = a.count ?? 1;
-          return Array.from({ length: count }, (_, i) => {
+          return [...beat.prelude, ...Array.from({ length: count }, (_, i) => {
             const rank = i + 1;
             labels.push(count > 1 ? `${a.pick} #${rank}` : (a.pick as string));
             return {
@@ -1556,13 +1618,13 @@ export const TOOLS: ToolDef[] = [
               spec: baitSpec(a.kind, { pick: a.pick!, rank, of: a.of }, source, {
                 ...props,
                 name: a.name ? (count > 1 ? `${a.name} ${rank}` : a.name) : undefined,
-                steps,
+                mech: beat.mech,
               }),
             } satisfies Op;
-          });
+          })];
         }
 
-        return named.map((ref) => {
+        return [...beat.prelude, ...named.map((ref) => {
           const target = resolveRef(visible, ref);
           labels.push(target.name ?? target.id);
           return {
@@ -1572,13 +1634,13 @@ export const TOOLS: ToolDef[] = [
             spec: baitSpec(a.kind, target.id, source, {
               ...props,
               name: a.name ? `${a.name} ${target.name ?? ref}` : undefined,
-              steps,
+              mech: beat.mech,
             }),
           } satisfies Op;
-        });
+        })];
       });
 
-      const ids = res.values.map((v: unknown) => idOf(v));
+      const ids = res.values.slice(res.values.length - labels.length).map((v: unknown) => idOf(v));
       const what = labels.map((l, i) => `${l} [${ids[i]}]`).join(", ");
       return a.pick
         ? `Added ${ids.length} ${a.kind} bait${ids.length > 1 ? "s" : ""} on the ${a.pick} ${a.of ?? "player"}${ids.length > 1 ? "s" : ""}: ${what}. They re-target themselves whenever the party moves.`
@@ -1729,6 +1791,12 @@ export const TOOLS: ToolDef[] = [
       icon: z.string().describe("Asset key, e.g. marker/attack1, or an image URL"),
       name: z.string().optional(),
       size: z.number().positive().optional(),
+      mech: z
+        .string()
+        .optional()
+        .describe(
+          "The Beat it joins (id, index or name). Every Part lives in a Beat, which decides which steps it is on the floor for; leave it out and a new Beat is made for it in `step`"
+        ),
       ...stepArg,
       ...posArgs,
     },
@@ -1738,7 +1806,8 @@ export const TOOLS: ToolDef[] = [
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
         const variant = poseVariant(plan, stepId, a.variant, a.beat);
-        return {
+        const beat = beatFor(plan, a.mech, stepId, a.name ?? "Icon");
+        return [...beat.prelude, {
           op: "add_entity",
           stepId,
           variant,
@@ -1747,12 +1816,12 @@ export const TOOLS: ToolDef[] = [
             src: a.icon,
             name: a.name,
             size: a.size,
-            steps: stepId ? [stepId] : "all",
+            mech: beat.mech,
             ...positionOf(plan, a),
           },
-        };
+        }];
       });
-      return `Added icon ${idOf(res.values[0])}`;
+      return `Added icon ${idOf(res.values.at(-1))}`;
     },
   }),
 
@@ -1845,7 +1914,7 @@ export const PLAN_PRIMER = `Raid plans are top-down diagrams of an FFXIV arena.
 Coordinates are arena units with the origin at the arena centre: +x is east (right), +y is south (down).
 A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degrees, 0 = north, increasing clockwise (90 = east).
 Arena distances are yalms: a manual arena.widthYalms wins, supported encounters use known dimensions, and unknown fights default to 40 yalms across. Calibration never changes stored coordinates.
-Entities live in a plan and may appear in one step or all steps; per-step position overrides are how movement is expressed.
+Actors (players, enemies) and waymarks are plan-wide; per-step position overrides are how movement is expressed. Every Part (zone, bait, tether, text, icon) lives in a Beat, which decides the steps it is on the floor for: an add without mech makes a new Beat for it in that step, and merge_mechs folds Beats together.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
 A Beat is one timed card/frame. Its child Variant boxes are mutually exclusive and contain only divergent Beat Parts plus optional sparse actor movement. Shared Parts stay directly on the Beat. Preview choices and edit destinations are separate: passing beat + variant explicitly chooses where an edit is stored, never a saved preview. Saved Routes are non-owning complete Beat-selection maps and cannot contain movement conflicts. Variants exist only on Beats; Mechanic-wide Variants are retired.
 A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest" (plus "count"), which re-targets itself as the party moves. Either way it holds in every step with no overrides to redo.

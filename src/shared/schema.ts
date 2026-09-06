@@ -399,6 +399,8 @@ export const StepSchema = z.object({
   id: z.string(),
   name: z.string().default(""),
   notes: z.string().default(""),
+  /** Where the notes card sits on the arena, in arena units. Unset: top-left. */
+  notesPos: z.object({ x: z.number(), y: z.number() }).optional(),
   /**
    * The section of the fight this step is part of, if any. Steps of one
    * mechanic are kept contiguous in `plan.steps`, in the order its variants
@@ -988,9 +990,19 @@ export function authoredEntitiesForStep(
     .map((entity) => resolveEntity(entity, stepId, variantId));
 }
 
+/**
+ * A creature on the floor: someone the fight moves around, shared by the whole
+ * plan and posed step by step. An anchor is deliberately not one — it is a
+ * place a mechanic comes out of, so it belongs to that mechanic's Beat and
+ * lives and dies with it.
+ */
+export function isActor(entity: Entity): boolean {
+  return entity.type === "player" || (entity.type === "enemy" && entity.role !== "anchor");
+}
+
 /** Actors and waymarks never enter a Beat content snapshot. */
 export function isBeatPart(entity: Entity): boolean {
-  return entity.type !== "marker" && entity.type !== "player" && entity.type !== "enemy";
+  return entity.type !== "marker" && !isActor(entity);
 }
 
 /** The owning Beat and local Variant for a globally unique Variant id. */
@@ -1225,12 +1237,21 @@ export function mechSpan(plan: Plan, mech: Mech): string[] {
 /** What a mech is called: its own name, or the first thing dropped into it. */
 export function mechLabel(plan: Plan, mech: Mech): string {
   if (mech.name) return mech.name;
+  // An anchor is where a Beat fires from, never what it is: a Beat holding a
+  // bait anchor and a beam is "Beam". It only names the lane when it is alone.
+  const mine = (e: Entity) => e.mech === mech.id;
+  const named = (e: Entity) => mine(e) && e.type !== "enemy";
+  const detached = plan.steps.flatMap((step) => Object.values(step.variantScenes ?? {}).flat());
   const first =
-    plan.entities.find((e) => e.mech === mech.id) ??
-    plan.steps
-      .flatMap((step) => Object.values(step.variantScenes ?? {}).flat())
-      .find((e) => e.mech === mech.id);
-  return first?.bond?.label ?? first?.name ?? "Mech";
+    plan.entities.find(named) ??
+    detached.find(named) ??
+    plan.entities.find(mine) ??
+    detached.find(mine);
+  if (!first) return "Beat";
+  // A dropped Part rarely has a name; what it is still says what the Beat is.
+  const kind = first.type === "zone" ? first.shape : first.type;
+  const label = first.bond?.label ?? first.name ?? kind;
+  return label.charAt(0).toUpperCase() + label.slice(1);
 }
 
 /** Does this entity exist in the given step? */
@@ -1510,12 +1531,10 @@ export function entitiesForStep(
     // before it goes off a mech is a telegraph on the floor, so it is drawn
     // faint until the step it resolves in, where it reads as the hit it is.
     // Colour, most particular first: what you set on the thing, then a colour
-    // picked for the mech by hand, then the family the shape belongs to, then
-    // the mech's own stand-in colour for everything that has no family —
-    // anchors, tethers, the marks that are not shapes.
-    const dressed = raw.color
-      ? undefined
-      : mech?.color ?? zoneFamilyColor(plan, raw) ?? (mech ? mechColor(plan, mech) : undefined);
+    // picked for the mech by hand, then the family the shape belongs to. A
+    // plain Beat — one made for a drop, with no colour of its own — leaves
+    // everything else as drawn: a tether still says green or red for itself.
+    const dressed = raw.color ? undefined : mech?.color ?? zoneFamilyColor(plan, raw);
     const e =
       dressed || mech
         ? ({

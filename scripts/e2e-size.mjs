@@ -7,6 +7,7 @@
  *   node scripts/e2e-size.mjs http://localhost:59577
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -41,8 +42,8 @@ await page.waitForTimeout(900);
 
 const canvas = page.locator("canvas").first();
 const chip = (label) => page.locator("div", { hasText: new RegExp("^" + label + "$") }).last();
-const box = await canvas.boundingBox();
-const scale = box.width / 1000;
+let box = await canvas.boundingBox();
+let scale = viewScale(box.width);
 const inCanvas = (x, y) => ({ x: box.width / 2 + x * scale, y: box.height / 2 + y * scale });
 const screen = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 
@@ -50,11 +51,54 @@ const screen = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box
 await page.getByRole("button", { name: "PF positions" }).click();
 await page.waitForTimeout(600);
 
+/* --- a multi-selection resizes as one ------------------------------------ */
+
+let doc = await load();
+const markerIds = doc.entities.filter((e) => e.type === "marker").map((e) => e.id);
+if (markerIds.length) {
+  await api("/api/plans/" + planId + "/ops", {
+    method: "POST",
+    body: JSON.stringify({ ops: [{ op: "delete_entities", ids: markerIds }] }),
+  });
+  await page.reload();
+  await page.waitForSelector("canvas");
+  await page.waitForTimeout(500);
+  doc = await load();
+}
+const mtBefore = doc.entities.find((e) => e.name === "M1");
+const otBefore = doc.entities.find((e) => e.name === "M2");
+const h1Before = doc.entities.find((e) => e.name === "H1");
+await page.mouse.move(box.x + 8, box.y + 8);
+await page.mouse.down();
+await page.mouse.move(box.x + box.width - 8, box.y + box.height - 8, { steps: 8 });
+await page.mouse.up();
+await page.waitForTimeout(150);
+const mtBeforePose = mtBefore.overrides?.[doc.steps[0].id] ?? mtBefore;
+const selectedProbe = screen(mtBeforePose.x, mtBeforePose.y);
+await page.mouse.move(selectedProbe.x, selectedProbe.y);
+await page.mouse.wheel(0, -120);
+await page.waitForTimeout(700);
+doc = await load();
+const mtSelected = doc.entities.find((e) => e.id === mtBefore.id);
+const otSelected = doc.entities.find((e) => e.id === otBefore.id);
+const h1Unselected = doc.entities.find((e) => e.id === h1Before.id);
+if (
+  mtSelected.size !== Math.round(mtBefore.size * 1.08) ||
+  otSelected.size !== Math.round(otBefore.size * 1.08) ||
+  h1Unselected.size !== Math.round(h1Before.size * 1.08)
+)
+  fail("wheel over a marquee selection did not resize all selected players: " + mtSelected.size + "/" + otSelected.size + "/" + h1Unselected.size);
+else console.log("wheel over one selected player resized the whole marquee selection");
+
+// Leave no token selected before probing bonded shapes below.
+await page.mouse.click(box.x + 4, box.y + 4);
+await page.waitForTimeout(150);
+
 /* --- a set resizes as one ------------------------------------------------- */
 
 await chip("Circle").dragTo(chip("Supports"));
 await page.waitForTimeout(900);
-let doc = await load();
+doc = await load();
 const set = doc.entities.filter((e) => e.type === "zone" && e.shape === "circle" && e.bond);
 if (set.length !== 4) fail("Supports should hold 4 circles, got " + set.length);
 const mt = doc.entities.find((e) => e.name === "MT");
@@ -81,6 +125,9 @@ const back = doc.entities.find((e) => e.id === set[0].id).radius;
 if (Math.abs(back - before) > 3) fail("scrolling back down left the circle at " + back);
 else console.log("and scrolling back down undid it: " + back);
 
+// The group row lists the sets of the open Beat, so open the set's Beat first.
+await page.locator(`[data-mech="${set[0].mech}"]`).click();
+await page.waitForTimeout(300);
 await page.getByTitle("Remove this circle from the supports").click();
 await page.waitForTimeout(600);
 
@@ -95,6 +142,9 @@ else if (!(donut.innerRadius > 0 && donut.innerRadius < donut.radius))
   fail("the donut has no hole: " + donut.radius + "/" + donut.innerRadius);
 else console.log("a donut on bare floor: radius " + donut.radius + ", hole " + donut.innerRadius);
 
+// Every drop grew the rail by a Beat lane, so measure the floor afresh.
+box = await canvas.boundingBox();
+scale = viewScale(box.width);
 // A point in the ring, outside the hole and clear of everyone.
 await page.mouse.move(...Object.values(screen(0, -(donut.radius + donut.innerRadius) / 2)));
 for (let i = 0; i < 4; i++) await page.mouse.wheel(0, -120);

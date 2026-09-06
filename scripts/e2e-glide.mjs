@@ -283,24 +283,5 @@ else if (!seenBack.every(([, o], i) => i === 0 || o <= seenBack[i - 1][1] + 0.00
   fail("walking back, the puddle did not fade steadily");
 else console.log("and walking back up, it fades out instead: a hit rewound is a hit unmade");
 
-/* --- A and D walk sideways the same way ------------------------------------ */
-
-await page.locator("nav [data-step]").first().click();
-await page.waitForTimeout(300);
-await page.getByTitle(/Another way this mechanic goes/).click();
-await page.waitForTimeout(900);
-doc = await load();
-const reading = doc.mechanics[0].variants[1].id;
-await ops({ op: "update_entity", id: mt, patch: { x: 400, y: -400 }, stepId: one, variant: reading });
-await page.waitForTimeout(700);
-await page.mouse.click(700, 700);
-await page.waitForTimeout(300);
-const sideways = page.evaluate(() => new Promise((r) => setTimeout(r, 0))).then(() => track(700));
-await page.keyboard.press("d");
-const across = await sideways;
-const crossed = across.filter(([, px]) => px > across[0][1] + 5 && px < across[across.length - 1][1] - 5);
-if (crossed.length < 4) fail("D snapped to the other reading: " + crossed.length + " frames");
-else console.log("D glides too: the same step, going the other way, over " + crossed.length + " frames");
-
 await browser.close();
 console.log(process.exitCode ? "FAILED" : "OK - " + base + "/p/" + planId);

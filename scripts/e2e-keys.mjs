@@ -6,6 +6,7 @@
  *   node scripts/e2e-keys.mjs http://localhost:59577
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -57,7 +58,7 @@ await page.waitForSelector("canvas");
 await page.waitForTimeout(900);
 
 const box = await page.locator("canvas").first().boundingBox();
-const scale = box.width / 1000;
+const scale = viewScale(box.width);
 const screen = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 
 /* --- copy and paste under the cursor -------------------------------------- */
@@ -115,7 +116,8 @@ await api("/api/plans/" + planId + "/ops", {
   body: JSON.stringify({
     ops: [{
       op: "add_entity",
-      spec: { type: "enemy", name: "clipboard boss", x: 220, y: -250, size: 70, color: "#cc3355" },
+      // Clear of every party token: R2 stands at (247, -247).
+      spec: { type: "enemy", name: "clipboard boss", x: 150, y: -100, size: 70, color: "#cc3355" },
     }],
   }),
 });
@@ -140,7 +142,7 @@ await api("/api/plans/" + planId + "/ops", {
 });
 await page.waitForTimeout(650);
 
-const bossPoint = screen(220, -250);
+const bossPoint = screen(150, -100);
 await page.mouse.click(bossPoint.x, bossPoint.y);
 await page.waitForTimeout(250);
 await page.keyboard.press("Control+c");
@@ -153,7 +155,7 @@ const copiedBoss = bosses.find((e) => e.id !== bossId);
 const copiedBeam = beams.find((e) => e.id !== beams[0].id);
 if (bosses.length !== 2 || beams.length !== 2 || !copiedBoss || !copiedBeam)
   fail("deep copy made " + bosses.length + " bosses and " + beams.length + " assigned baits");
-else if (copiedBoss.x !== 280 || copiedBoss.y !== -190)
+else if (copiedBoss.x !== 210 || copiedBoss.y !== -40)
   fail("the deep-copied source did not receive the standard offset");
 else if (copiedBeam.anchor?.from !== copiedBoss.id || copiedBeam.anchor?.to !== sourceId)
   fail("the copied bait was not remapped to its copied source: " + JSON.stringify(copiedBeam.anchor));
@@ -166,7 +168,8 @@ await page.waitForTimeout(600);
 
 // The beam body is clear of both endpoints here. Copying it directly clears
 // the clipboard, so the following paste must do nothing.
-const beamPoint = screen(43, -156);
+// A third of the way from the boss (150, -100) toward the puddle (-250, 0).
+const beamPoint = screen(34, -71);
 await page.mouse.click(beamPoint.x, beamPoint.y);
 await page.waitForTimeout(250);
 const beforeBaitCopy = (await load()).entities.length;
@@ -177,6 +180,11 @@ if ((await load()).entities.length !== beforeBaitCopy)
   fail("a baited entity entered the clipboard directly");
 else console.log("baited entities are blacklisted as standalone clipboard roots");
 
+// The beam is still selected, and the inspector stands in for the panel
+// that holds the waymark button while anything is: click bare floor first.
+const clearPoint = screen(100, 150);
+await page.mouse.click(clearPoint.x, clearPoint.y);
+await page.waitForTimeout(250);
 await page.getByRole("button", { name: "move waymarks" }).click();
 const markerPoint = screen(250, 0);
 await page.mouse.click(markerPoint.x, markerPoint.y);
@@ -236,21 +244,7 @@ await press("w");
 if (!(await on()).includes("1.")) fail("W past the first step went to " + (await on()));
 else console.log("and it stops at the first step rather than falling off the fight");
 
-// Two readings of the mechanic this step is in, so there is a sideways to go.
-await page.getByTitle(/Another way this mechanic goes/).click();
-await page.waitForTimeout(900);
 const at = await on();
-if ((await playing()).trim() !== "A") fail("the mechanic opened playing " + (await playing()));
-await page.mouse.click(600, 500);
-await page.waitForTimeout(300);
-await press("d");
-if ((await playing()).trim() !== "B") fail("D moved to reading " + (await playing()));
-else if ((await on()) !== at) fail("D also moved off the step, onto " + (await on()));
-else console.log("D moves to the next reading, on the same step: B");
-
-await press("a");
-if ((await playing()).trim() !== "A") fail("A moved to reading " + (await playing()));
-else console.log("A moves back: the two readings of the step you are standing on");
 
 // And none of it while you are typing: WASD in a name field is four letters.
 const field = page.locator("input").first();
@@ -259,7 +253,6 @@ await field.fill("");
 await field.type("swad");
 await page.waitForTimeout(400);
 if ((await on()) !== at) fail("typing in a field walked the steps, landing on " + (await on()));
-else if ((await playing()).trim() !== "A") fail("typing in a field changed the reading");
 else console.log("typing 'swad' in a text field is four letters, not four moves");
 
 console.log(process.exitCode ? "FAILED" : "OK - " + base + "/p/" + planId);

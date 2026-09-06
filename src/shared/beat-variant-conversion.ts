@@ -6,6 +6,7 @@ import {
   beatVariantLabel,
   entitiesForStep,
   entityInStep,
+  isActor,
   isBeatPart,
   mechanicLabel,
   mechLabel,
@@ -59,7 +60,7 @@ export interface LegacyConversionResult {
 
 const fresh = (prefix: string) => `${prefix}_${nanoid(8)}`;
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
-const actor = (entity: Entity) => entity.type === "player" || entity.type === "enemy";
+const actor = isActor;
 
 /** Authored comparisons ignore storage overlays after they have been resolved. */
 function contentShape(entity: Entity): Entity {

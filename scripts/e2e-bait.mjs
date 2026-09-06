@@ -9,6 +9,7 @@
  * Needs DEV_AUTH=true (local sign-in) — same as the other e2e scripts.
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 
@@ -132,7 +133,7 @@ if (!beamBefore) fail("no beam entity resolved");
 const box = await page.locator("canvas").first().boundingBox();
 const doc = await api("/api/plans/" + planId).then((p) => p.plan ?? p);
 const mt = doc.entities.find((e) => e.name === "MT");
-const scale = box.width / doc.arena.width;
+const scale = viewScale(box.width, doc.arena.width);
 const screen = (x, y) => ({
   x: box.x + box.width / 2 + x * scale,
   y: box.y + box.height / 2 + y * scale,
@@ -169,10 +170,12 @@ if (donutAfter.x !== donutBefore.x || donutAfter.y !== donutBefore.y)
 /* --- a bait is draggable: the drop becomes an offset from its anchor ------- */
 const h1 = await pose("H1");
 const donutStart = await pose("Donut H1");
-// Grab the donut on its ring, well away from any token: the canvas picks the
-// smallest thing under the pointer, so over a player you would get the player.
-const grab = screen(donutStart.x + 300, donutStart.y);
-const drop = screen(donutStart.x + 300, donutStart.y + 160);
+// Grab the donut on its annulus at a point nothing else covers: the canvas
+// picks the smallest thing under the pointer, so over a player you get the
+// player, 300 east of H1 sits inside the boss's grab disc, R1's puddle owns
+// the north-west quadrant, and the MT beam sweeps the south-west corridor.
+const grab = screen(donutStart.x - 110, donutStart.y - 140);
+const drop = screen(donutStart.x - 110, donutStart.y + 20);
 await page.mouse.move(grab.x, grab.y);
 await page.mouse.down();
 await page.mouse.move(drop.x, drop.y, { steps: 20 });
@@ -240,9 +243,15 @@ const beforeAdd = (await api("/api/plans/" + planId).then((p) => p.plan ?? p)).e
 const canvas = page.locator("canvas").first();
 const chip = (label) => page.locator("div", { hasText: new RegExp("^" + label + "$") }).last();
 const cbox = await canvas.boundingBox();
-const spot = { x: cbox.width / 2 + 220, y: cbox.height / 2 - 220 };
+// Arena units, not pixels: the floor is whatever the rail leaves it.
+const spot = { x: cbox.width / 2 + 220 * (viewScale(cbox.width)), y: cbox.height / 2 - 220 * (viewScale(cbox.width)) };
 await chip("Bait anchor").dragTo(canvas, { targetPosition: spot });
 await page.waitForTimeout(500);
+// The dropped anchor comes back selected, and the inspector replaces the
+// palette while anything is selected. Click empty floor (the SE corner is
+// clear of every bait and token this plan has) to bring the palette back.
+await page.mouse.click(cbox.x + cbox.width / 2 + 420 * (viewScale(cbox.width)), cbox.y + cbox.height / 2 + 300 * (viewScale(cbox.width)));
+await page.waitForTimeout(300);
 await chip("Beam").dragTo(canvas, { targetPosition: spot });
 await page.waitForTimeout(600);
 const afterDoc = await api("/api/plans/" + planId).then((p) => p.plan ?? p);
@@ -259,12 +268,19 @@ const doc2 = await api("/api/plans/" + planId).then((p) => p.plan ?? p);
 const step2 = doc2.steps[1].id;
 const mtId = doc2.entities.find((e) => e.name === "MT").id;
 await ops(planId, [{ op: "update_entity", id: mtId, patch: { x: 400, y: -100 }, stepId: step2 }]);
+// The beam lives in the Beat its add made, which spans step 1 only: stretch
+// that Beat into step 2 so the bait is on the floor there to follow MT.
+await ops(planId, [
+  { op: "update_mech", mechId: doc2.entities.find((e) => e.name === "Beam MT").mech, patch: { boom: step2 } },
+]);
 
+// A Beat aims its Parts at its snapshot: MT walking off in step 2 does not
+// swing a beam that already took its picture in step 1.
 const step2Beam = await pose("Beam MT", 1);
-const want2 = bearing(400, -100);
-if (off(step2Beam.rotation, want2) > 6)
-  fail("step 2 beam is at " + step2Beam.rotation + "deg, expected ~" + Math.round(want2));
-else console.log("step 2 beam follows the step-2 pose: " + step2Beam.rotation + "deg");
+const snapshot = bearing(moved.x, moved.y);
+if (off(step2Beam.rotation, snapshot) > 6)
+  fail("step 2 beam is at " + step2Beam.rotation + "deg, expected the snapshot ~" + Math.round(snapshot));
+else console.log("step 2 beam holds the snapshot aim while MT walks away: " + step2Beam.rotation + "deg");
 
 const step1Beam = await pose("Beam MT", 0);
 if (off(step1Beam.rotation, bearing(moved.x, moved.y)) > 6)

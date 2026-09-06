@@ -57,6 +57,21 @@ async function signSession(env: AppEnv, userId: string): Promise<string> {
   return `${body}.${await hmac(env, body)}`;
 }
 
+/** Turn a token identity into the browser session used by the editor. */
+export async function setUserSession(
+  c: Parameters<typeof setCookie>[0],
+  env: AppEnv,
+  userId: string
+): Promise<void> {
+  setCookie(c, SESSION_COOKIE, await signSession(env, userId), {
+    httpOnly: true,
+    secure: c.req.url.startsWith("https"),
+    sameSite: "Lax",
+    path: "/",
+    maxAge: SESSION_TTL,
+  });
+}
+
 async function verifySession(env: AppEnv, token: string): Promise<string | null> {
   const [body, sig] = token.split(".");
   if (!body || !sig) return null;
@@ -122,6 +137,29 @@ export async function issueToken(env: AppEnv, userId: string, label: string) {
 /* --------------------------------------------------------------- routes */
 
 export const authRoutes = new Hono<{ Bindings: AppEnv }>();
+
+/** Redeem an edit-link token once, then keep a clean plan URL in the address bar. */
+authRoutes.get("/edit-link", async (c) => {
+  const token = c.req.query("token");
+  const next = c.req.query("next") ?? "/";
+  if (!token?.startsWith("rp_") || !next.startsWith("/p/")) return c.text("Invalid edit link", 400);
+  const { user } = await authenticate(
+    new Request(`${c.req.url.split("?")[0]}?token=${encodeURIComponent(token)}`),
+    c.env
+  );
+  if (!user || !user.id.startsWith("editlink:")) return c.text("This edit link is invalid", 403);
+  const planId = user.id.slice("editlink:".length);
+  if (next !== `/p/${planId}`) return c.text("This edit link belongs to another plan", 403);
+  // Keep an existing signed-in person's identity; otherwise use the link's
+  // plan-scoped guest identity. This avoids unexpectedly signing teammates out.
+  const current = await authenticate(new Request(c.req.url.split("?")[0], { headers: c.req.raw.headers }), c.env);
+  if (current.user && !current.user.id.startsWith("editlink:")) {
+    await registry(c.env).share(planId, current.user.id, "editor");
+  } else {
+    await setUserSession(c, c.env, user.id);
+  }
+  return c.redirect(next);
+});
 
 authRoutes.get("/discord", async (c) => {
   const env = c.env;

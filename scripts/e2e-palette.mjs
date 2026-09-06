@@ -6,6 +6,7 @@
  *   node scripts/e2e-palette.mjs http://localhost:59577
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -44,7 +45,7 @@ const chip = (label) => page.locator("div", { hasText: new RegExp("^" + label + 
 /** Arena units -> a position inside the canvas box, for dragTo. */
 async function at(x, y) {
   const box = await canvas.boundingBox();
-  const scale = box.width / 1000;
+  const scale = viewScale(box.width);
   return { x: box.width / 2 + x * scale, y: box.height / 2 + y * scale };
 }
 
@@ -52,6 +53,11 @@ async function at(x, y) {
 async function dropOnFloor(label, x, y) {
   await chip(label).dragTo(canvas, { targetPosition: await at(x, y) });
   await page.waitForTimeout(500);
+  // Free/source drops select what they create for immediate editing. Return
+  // to the palette before the next palette gesture in this end-to-end tour.
+  const box = await canvas.boundingBox();
+  await page.mouse.click(box.x + 8, box.y + 8);
+  await page.waitForTimeout(150);
 }
 
 /* --- an anchor lands where you dropped it --------------------------------- */
@@ -63,7 +69,6 @@ if (!anchor) fail("dragging the bait anchor onto the floor placed nothing");
 else if (Math.hypot(anchor.x - 200, anchor.y + 150) > 25)
   fail("the anchor landed at " + anchor.x + "," + anchor.y + " instead of 200,-150");
 else console.log("bait anchor placed where it was dropped: " + anchor.x + "," + anchor.y);
-
 /* --- a beam dropped ON the anchor is baited off it ------------------------- */
 
 // Somebody has to be nearest: put M1 next to the anchor and everyone else far.
@@ -203,7 +208,7 @@ const ghostAt = await page.evaluate(
   ghost.id
 );
 const cbox = await canvas.boundingBox();
-const cscale = cbox.width / 1000;
+const cscale = viewScale(cbox.width);
 const onScreen = (x, y) => ({ x: cbox.x + cbox.width / 2 + x * cscale, y: cbox.y + cbox.height / 2 + y * cscale });
 const grab = onScreen(ghostAt.x, ghostAt.y);
 await page.mouse.move(grab.x, grab.y);
@@ -217,7 +222,10 @@ if (stillThere.x !== ghost.x || stillThere.y !== ghost.y || stillThere.overrides
   fail("a bonded circle moved when dragged: " + stillThere.x + "," + stillThere.y);
 else console.log("a shape owned by a group cannot be dragged out of it");
 
-// And the group's own row is what takes the whole set away.
+// And the group's own row is what takes the whole set away. The row lists
+// the sets of the open Beat, so open the set's Beat first.
+await page.locator(`[data-mech="${ghost.mech}"]`).click();
+await page.waitForTimeout(300);
 await page.getByTitle("Remove this circle from the supports").click();
 await page.waitForTimeout(700);
 doc = await load();
@@ -225,14 +233,17 @@ const left = doc.entities.filter((e) => e.bond && e.bond.group === "supports");
 if (left.length) fail("removing the set from the Supports row left " + left.length + " behind");
 else console.log("the Supports row removed all four at once");
 
-/* --- a tether dropped on one player is finished by clicking another ------ */
+/* --- a tether dropped on one object is finished by picking any other ----- */
+
+await page.mouse.click(cbox.x + 8, cbox.y + 8);
+await page.waitForTimeout(150);
 
 const [m2Point, h1Point] = await page.evaluate(
   (playerIds) => playerIds.map((id) => window.Konva.stages[0].findOne("#" + id).getAbsolutePosition()),
   [ids.M2, ids.H1]
 );
 await page.locator("div", { hasText: /^Together tether$/ }).last().dragTo(canvas, { targetPosition: m2Point });
-await page.getByText(/Click the player for the other end/).waitFor();
+await page.getByText(/Pick any other object for the other end/).waitFor();
 const tetherCanvasBox = await canvas.boundingBox();
 // Hold the mutation response long enough to prove the line does not depend on
 // the Worker round trip. It should be painted from the client-ID operation.
@@ -265,6 +276,34 @@ if (directTether) {
     body: JSON.stringify({ ops: [{ op: "delete_entities", ids: [directTether.id] }] }),
   });
   await page.waitForTimeout(400);
+  await page.mouse.click(cbox.x + 8, cbox.y + 8);
+  await page.waitForTimeout(150);
+}
+
+// Non-player endpoints use the same gesture. The anchor overlaps the beams it
+// emits, so this also checks that the smaller, deliberate target wins.
+const [anchorPoint, m2Again] = await page.evaluate(
+  (entityIds) => entityIds.map((id) => window.Konva.stages[0].findOne("#" + id).getAbsolutePosition()),
+  [anchor.id, ids.M2]
+);
+await page.locator("div", { hasText: /^Go-far tether$/ }).last().dragTo(canvas, { targetPosition: anchorPoint });
+await page.getByText(/Pick any other object for the other end/).waitFor();
+await page.mouse.click(tetherCanvasBox.x + m2Again.x, tetherCanvasBox.y + m2Again.y);
+await page.waitForTimeout(700);
+doc = await load();
+const objectTether = doc.entities.find(
+  (e) => e.type === "tether" && !e.bond && e.from === anchor.id && e.to === ids.M2 && e.style === "far"
+);
+if (!objectTether) fail("dropping a tether on an anchor then picking M2 did not create anchor-M2");
+else console.log("a tether can connect a non-player object to another entity");
+if (objectTether) {
+  await api("/api/plans/" + planId + "/ops", {
+    method: "POST",
+    body: JSON.stringify({ ops: [{ op: "delete_entities", ids: [objectTether.id] }] }),
+  });
+  await page.waitForTimeout(400);
+  await page.mouse.click(cbox.x + 8, cbox.y + 8);
+  await page.waitForTimeout(150);
 }
 
 /* --- player tethers pair supports to damagers and report their range ------ */
@@ -319,6 +358,21 @@ await page.waitForTimeout(600);
 tetherStroke = await page.evaluate((id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke(), mtTether.id);
 if (tetherStroke !== "#f05b67") fail("failed Together tether was " + tetherStroke + " instead of red");
 else console.log("Together tether turns red outside its configured range");
+
+// A deliberately chosen color is semantic and must not be replaced by the
+// automatic range status colors.
+await api("/api/plans/" + planId + "/ops", {
+  method: "POST",
+  body: JSON.stringify({ ops: [{ op: "update_entity", id: mtTether.id, patch: { color: "#c084fc" } }] }),
+});
+await page.waitForFunction(
+  (id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke() === "#c084fc",
+  mtTether.id,
+  { timeout: 3000 }
+).catch(() => {});
+tetherStroke = await page.evaluate((id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke(), mtTether.id);
+if (tetherStroke !== "#c084fc") fail("custom tether color was replaced by status color: " + tetherStroke);
+else console.log("a custom tether color overrides red/green range status");
 
 const chevrons = await page.evaluate(() => window.Konva.stages[0].find(".tether-chevron").length);
 if (chevrons < 4) fail("directional tether chevrons were not drawn");
@@ -413,6 +467,10 @@ else {
   else console.log("an individual tether retargets to arbitrary players in the current step");
 }
 
+// The retargeted tether is still selected, and the inspector stands in for
+// the palette while anything is: click bare floor to get the chips back.
+await page.mouse.click(cbox.x + 8, cbox.y + 8);
+await page.waitForTimeout(200);
 await page.locator("div", { hasText: /^Go-far tether$/ }).last().dragTo(chip("Damagers"));
 await page.waitForTimeout(700);
 doc = await load();

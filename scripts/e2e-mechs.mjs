@@ -93,6 +93,21 @@ else console.log("a new mech snapshots where you opened it: " + doc.mechs[0].id)
 // It is open, so the arena says so and what you drop lands in it.
 if (!(await page.locator("text=/Filling/").count())) fail("nothing said the slot was open");
 
+// A Beat is also a drag surface, but a plain press must not wait for release
+// before opening the editor. Close it, then inspect the UI with the pointer
+// still held down; this catches the old click path that felt several beats late.
+const beatBox = page.locator(`[data-mech="${mechId}"]`);
+await beatBox.click();
+const beatRect = await beatBox.boundingBox();
+await page.mouse.move(beatRect.x + beatRect.width / 2, beatRect.y + beatRect.height / 2);
+await page.mouse.down();
+if (!(await page.locator("text=/Filling/").count()))
+  fail("pressing a Beat did not open it until pointer release");
+await page.mouse.up();
+if (!(await page.locator("text=/Filling/").count()))
+  fail("a Beat opened on press but closed again on the same release");
+else console.log("pressing a Beat opens it before pointer release");
+
 /* --- everything dropped while it is open joins it ------------------------- */
 
 await page.locator("div", { hasText: /^Donut$/ }).last().dragTo(chip("Party"));

@@ -9,6 +9,7 @@
  *   node scripts/e2e-click.mjs http://localhost:59577
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -38,7 +39,7 @@ await page.waitForTimeout(900);
 const box = await page.locator("canvas").first().boundingBox();
 const doc = await api("/api/plans/" + id).then((p) => p.plan ?? p);
 const mt = doc.entities.find((e) => e.name === "MT");
-const scale = box.width / doc.arena.width;
+const scale = viewScale(box.width, doc.arena.width);
 
 await page.mouse.click(box.x + box.width / 2 + mt.x * scale, box.y + box.height / 2 + mt.y * scale);
 await page.waitForTimeout(300);

@@ -211,7 +211,7 @@ const PublicOpSchema = z.discriminatedUnion("op", [
   strict({ op: z.literal("reorder_entity"), id, where: z.enum(["front", "back", "forward", "backward"]), ...context }),
   strict({ op: z.literal("add_step"), name: z.string().optional(), notes: z.string().optional(), index: z.number().int().optional(), mechanic: id.optional() }),
   strict({ op: z.literal("duplicate_step"), stepId: id, name: z.string().optional() }),
-  strict({ op: z.literal("update_step"), stepId: id, patch: strict({ name: z.string().optional(), notes: z.string().optional() }) }),
+  strict({ op: z.literal("update_step"), stepId: id, patch: strict({ name: z.string().optional(), notes: z.string().optional(), notesPos: strict({ x: z.number(), y: z.number() }).optional() }) }),
   strict({ op: z.literal("delete_step"), stepId: id }),
   strict({ op: z.literal("move_step"), stepId: id, index: z.number().int() }),
   strict({ op: z.literal("add_mechanic"), name: z.string().optional(), after: id.optional(), stepIds: ids.optional() }),
@@ -239,7 +239,8 @@ const PublicOpSchema = z.discriminatedUnion("op", [
   strict({ op: z.literal("update_beat_variant_route"), routeId: id, patch: strict({ name: z.string().optional(), selections: beatSelections.optional() }) }),
   strict({ op: z.literal("delete_beat_variant_route"), routeId: id }),
   strict({ op: z.literal("set_default_beat_variant_route"), routeId: id.optional() }),
-  strict({ op: z.literal("add_mech"), name: z.string().optional(), snap: id.optional(), boom: id.optional(), color: z.string().optional() }),
+  strict({ op: z.literal("add_mech"), id: id.optional(), name: z.string().optional(), snap: id.optional(), boom: id.optional(), color: z.string().optional(), plain: z.boolean().optional() }),
+  strict({ op: z.literal("merge_mechs"), into: id, mechIds: ids }),
   strict({ op: z.literal("update_mech"), mechId: id, patch: strict({ name: z.string().optional(), snap: id.optional(), boom: id.optional(), color: z.string().optional(), debuffs: debuffs.optional() }) }),
   strict({ op: z.literal("delete_mech"), mechId: id, keepEntities: z.boolean().optional() }),
   strict({ op: z.literal("assign_mech"), ids, mechId: id.nullable(), ...context }),
@@ -312,8 +313,13 @@ export function validatePublicOp(plan: Plan, op: Op): void {
     validateStepRefs(plan, op.patch.steps);
   }
   if (op.op === "add_mech") {
+    if (op.id && plan.mechs.some((mech) => mech.id === op.id)) throw new Error(`Mech id ${op.id} is already in use`);
     for (const stepId of [op.snap, op.boom])
       if (stepId && !plan.steps.some((step) => step.id === stepId)) throw new Error(`No step ${stepId}`);
+  }
+  if (op.op === "merge_mechs") {
+    for (const mechId of [op.into, ...op.mechIds])
+      if (!plan.mechs.some((mech) => mech.id === mechId)) throw new Error(`No mech ${mechId}`);
   }
   if (op.op === "update_mech") {
     if (!plan.mechs.some((mech) => mech.id === op.mechId)) throw new Error(`No mech ${op.mechId}`);
@@ -325,8 +331,18 @@ export function validatePublicOp(plan: Plan, op: Op): void {
 /** Validate one wire batch, including identities introduced inside the batch. */
 export function validatePublicOps(plan: Plan, ops: Op[]): void {
   const introduced = new Set<string>();
+  const introducedMechs = new Set<string>();
   for (const op of ops) {
+    // A drop is one batch: the Beat it makes and the Parts that join it.
+    if (op.op === "add_entity" && op.spec.mech && introducedMechs.has(op.spec.mech)) {
+      validatePublicOp(plan, { ...op, spec: { ...op.spec, mech: undefined } });
+      continue;
+    }
     validatePublicOp(plan, op);
+    if (op.op === "add_mech" && op.id) {
+      if (introducedMechs.has(op.id)) throw new Error(`Mech id ${op.id} is repeated in this batch`);
+      introducedMechs.add(op.id);
+    }
     if (op.op === "add_entity" && op.spec.id) {
       if (introduced.has(op.spec.id)) throw new Error(`Entity id ${op.spec.id} is repeated in this batch`);
       introduced.add(op.spec.id);

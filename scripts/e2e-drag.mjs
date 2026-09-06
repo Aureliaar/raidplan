@@ -10,6 +10,7 @@
  * Needs the dev-mode local sign-in (no Discord credentials configured).
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:5173").replace(/\/$/, "");
 const DRAG_PX = { x: 60, y: -45 };
@@ -56,7 +57,7 @@ const before = await read();
 const step = before.steps[0].id;
 const box = await page.locator("canvas").first().boundingBox();
 const size = box.width;
-const scale = size / Math.max(before.arena.width, before.arena.height);
+const scale = viewScale(size, Math.max(before.arena.width, before.arena.height));
 const expected = { x: Math.round(DRAG_PX.x / scale), y: Math.round(DRAG_PX.y / scale) };
 
 let failed = 0;

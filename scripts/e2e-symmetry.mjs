@@ -6,6 +6,7 @@
  *   node scripts/e2e-symmetry.mjs http://localhost:5173
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:5173").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -51,7 +52,7 @@ await page.waitForTimeout(1000);
 
 const canvas = page.locator("canvas").first();
 let box = await canvas.boundingBox();
-let scale = box.width / 1000;
+let scale = viewScale(box.width);
 const at = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 const read = async () => (await api(`/api/plans/${id}`)).plan;
 let plan = await read();
@@ -122,7 +123,7 @@ await page.reload();
 await page.waitForSelector("canvas");
 await page.waitForTimeout(700);
 box = await canvas.boundingBox();
-scale = box.width / 1000;
+scale = viewScale(box.width);
 await page.locator("header select").selectOption("all");
 const dragPlayer = async (name, dx, dy) => {
   const current = await read();

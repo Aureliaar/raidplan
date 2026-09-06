@@ -3,6 +3,7 @@ import type { Plan, PlanRole, PlanSummary, User } from "../shared/schema";
 import type { HistoryResult, PlanHistory } from "../shared/history";
 import { prepareBackground } from "./background-image";
 import type { FFLogsDebuffDump } from "../shared/fflogs";
+import type { FightLibraryEntry } from "../shared/fight-library";
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, {
@@ -31,6 +32,24 @@ export const api = {
       body: JSON.stringify({ code }),
     }),
 
+  /** The per-fight debuff library, and the fight a plan reads its statuses from. */
+  importDebuffs: (dump: FFLogsDebuffDump) =>
+    req<{ entry: FightLibraryEntry; added: number }>("/api/debuffs", {
+      method: "POST",
+      body: JSON.stringify(dump),
+    }),
+  debuffLibrary: () => req<FightLibraryEntry[]>("/api/debuffs"),
+  debuffFight: (key: string) => req<FFLogsDebuffDump>(`/api/debuffs/${encodeURIComponent(key)}`),
+  planDebuffs: (planId: string) =>
+    req<{ key: string | null; dump: FFLogsDebuffDump | null; library: FightLibraryEntry[] }>(
+      `/api/plans/${planId}/debuffs`,
+    ),
+  usePlanDebuffFight: (planId: string, key: string) =>
+    req<{ key: string; dump: FFLogsDebuffDump }>(`/api/plans/${planId}/debuffs`, {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
+
   uploadBackground: async (file: File) => {
     const prepared = await prepareBackground(file);
     const uploaded = await req<{ url: string; width: number; height: number }>("/api/backgrounds", {
@@ -51,6 +70,8 @@ export const api = {
     req<{ id: string }>("/api/plans", { method: "POST", body: JSON.stringify(body) }),
   getPlan: (id: string) =>
     req<{ plan: Plan; role: PlanRole; meta: { isPublic: boolean } | null }>(`/api/plans/${id}`),
+  duplicatePlan: (id: string) =>
+    req<{ id: string }>(`/api/plans/${id}/duplicate`, { method: "POST" }),
   deletePlan: (id: string) => req<{ ok: true }>(`/api/plans/${id}`, { method: "DELETE" }),
   saveEncounter: (id: string) =>
     req<{ encounter: string; markers: number }>(`/api/plans/${id}/encounter/save`, { method: "POST" }),
@@ -63,6 +84,8 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ userId, role, remove: role === null }),
     }),
+  createEditLink: (id: string) =>
+    req<{ url: string }>(`/api/plans/${id}/edit-link`, { method: "POST" }),
   collaborators: (id: string) =>
     req<{ userId: string; role: PlanRole; name: string | null }[]>(`/api/plans/${id}/collaborators`),
   /** Every mutation in the app goes through here. */

@@ -8,6 +8,7 @@
  *   node scripts/e2e-source.mjs http://localhost:59577
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -44,15 +45,26 @@ await page.waitForTimeout(900);
 const canvas = page.locator("canvas").first();
 const chip = (label) => page.locator("div", { hasText: new RegExp("^" + label + "$") }).last();
 let box = await canvas.boundingBox();
-let scale = box.width / 1000;
+let scale = viewScale(box.width);
 const inCanvas = (x, y) => ({ x: box.width / 2 + x * scale, y: box.height / 2 + y * scale });
 const screen = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 
 // Two objects on the floor, neither of them a boss — this plan has no enemy.
+// A drop comes back selected, and the inspector replaces the palette while
+// anything is selected: click bare floor in the NW corner to get it back.
+const clearSelection = async () => {
+  // Every drop grows the rail by a Beat lane, so measure the floor afresh.
+  box = await canvas.boundingBox();
+  scale = viewScale(box.width);
+  await page.mouse.click(box.x + 8, box.y + 8);
+  await page.waitForTimeout(200);
+};
 await chip("Bait anchor").dragTo(canvas, { targetPosition: inCanvas(-260, -260) });
 await page.waitForTimeout(500);
+await clearSelection();
 await chip("Bait anchor").dragTo(canvas, { targetPosition: inCanvas(260, -60) });
 await page.waitForTimeout(500);
+await clearSelection();
 
 let doc = await load();
 const first = doc.entities.find((e) => e.name === "anchor 1");
@@ -65,12 +77,17 @@ else console.log("two anchors placed, no boss anywhere: " + first.name + ", " + 
 // A beam dropped on the second one comes out of *that* one.
 await chip("Beam").dragTo(canvas, { targetPosition: inCanvas(second.x, second.y) });
 await page.waitForTimeout(600);
+await clearSelection();
 doc = await load();
 const newest = doc.entities.filter((e) => e.anchor).at(-1);
 if (!newest || newest.anchor.from !== second.id)
   fail("the beam fires from " + (newest && newest.anchor.from) + " instead of the anchor it was dropped on");
 else console.log("a beam dropped on an anchor fires from it: " + newest.name);
 
+// Every drop grew the rail by a Beat lane, so the floor is smaller than it
+// was measured: take its measure again before aiming at anything on it.
+box = await canvas.boundingBox();
+scale = viewScale(box.width);
 const at = screen(second.x, second.y);
 
 // Drag the source: the beam it fires must swing from the new origin, live.

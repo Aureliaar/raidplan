@@ -167,54 +167,8 @@ if (!(await page.getByText("Donut ×8", { exact: true }).count()))
 else console.log("group-card sets follow the cast currently selected");
 await page.getByRole("button", { name: "done editing Beat" }).click();
 
-/* --- another reading of the mechanic copies nothing ----------------------- */
-
-const sharedBefore = stepsOf(doc, mechanicId).length;
-await page.getByTitle(/Another way this mechanic goes/).click();
-await page.waitForTimeout(900);
-doc = await load();
-const witchHunt = () => doc.mechanics.find((m) => m.id === mechanicId);
-const variants = witchHunt().variants;
-const [A, B] = variants.map((v) => v.id);
-if (variants.length !== 2) fail("the first + gave " + variants.length + " readings, expected A and B");
-else if (stepsOf(doc, mechanicId).length !== sharedBefore)
-  fail("adding a reading copied steps: " + stepsOf(doc, mechanicId).length + " now");
-else if (doc.mechs.length !== 1) fail("adding a reading copied the cast: " + doc.mechs.length + " casts");
-else console.log("the first + gave the mechanic two readings, its two steps shared by both");
-
-/* --- F2 on the pill renames the reading you are playing -------------------- */
-
-await page.getByRole("button", { name: "B", exact: true }).click();
-await page.waitForTimeout(500);
-await page.keyboard.press("F2");
-const vname = page.getByTitle("Rename variant");
-await vname.waitFor();
-await vname.fill("Far first");
-await vname.press("Enter");
-await page.waitForTimeout(700);
-doc = await load();
-if (witchHunt().variants.find((v) => v.id === B)?.name !== "Far first")
-  fail("F2 on the pill did not rename the reading");
-else console.log('F2 on the pill renamed the reading: "Far first"');
-
-// Emptied, it goes back to being the second reading of the mechanic.
-await page.getByRole("button", { name: "Far first", exact: true }).click();
-await page.waitForTimeout(400);
-await page.keyboard.press("F2");
-await vname.waitFor();
-await vname.fill("");
-await vname.press("Enter");
-await page.waitForTimeout(700);
-doc = await load();
-if (witchHunt().variants.find((v) => v.id === B)?.name) fail("clearing the name did not stick");
-else if (!(await page.getByRole("button", { name: "B", exact: true }).count()))
-  fail("a nameless second reading is not called B again");
-else console.log("cleared, it is B again");
-
 /* --- a cast still drags across its section's rows ------------------------- */
 
-await page.getByRole("button", { name: "A", exact: true }).click();
-await page.waitForTimeout(500);
 const box = page.getByTitle(/snapshots in step 1, goes off in step 1/);
 if (!(await box.count())) fail("no cast box beside the open section's rows");
 else {
@@ -236,8 +190,12 @@ else {
 
 /* --- filling follows the cast's inclusive span, then closes --------------- */
 
-await page.locator(`[data-mech="${mechId}"]`).click();
-await page.waitForTimeout(200);
+// Pressing on the box opened it, and the drag left it open; a click on an
+// open Beat closes it, so only reach for it when it is closed.
+if (!(await page.getByRole("button", { name: "done editing Beat" }).count())) {
+  await page.locator(`[data-mech="${mechId}"]`).click();
+  await page.waitForTimeout(200);
+}
 if (!(await page.getByRole("button", { name: "done editing Beat" }).count()))
   fail("selecting the cast did not open it for filling");
 
@@ -259,221 +217,11 @@ else if (await page.getByRole("button", { name: "done editing Beat" }).count())
   fail("the cast stayed selected after navigating outside its span");
 else console.log("filling stays open on both boundary steps and closes outside the cast's span");
 
-// Return to the cast's section for the remaining reading and timing checks.
+// Return to the cast's section for the remaining checks.
 await page.keyboard.press("s");
 await page.waitForTimeout(200);
 if (await page.getByRole("button", { name: "done editing Beat" }).count())
   fail("the cast became selected again after returning to its span");
-
-/* --- a cast is what a reading owns ---------------------------------------- */
-
-/** Carry a cast box onto one of the reading pills, or onto "both". */
-async function carryOnto(label) {
-  const box = await page.locator(`nav [data-mech="${mechId}"]`).boundingBox();
-  // The A pill is always there, so it is where the drag aims first; "both" only
-  // appears once a cast is in the hand.
-  const anchor = await page.locator("nav [data-variant]").first().boundingBox();
-  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(anchor.x + anchor.width / 2, anchor.y + anchor.height / 2, { steps: 10 });
-  const to = await page.getByRole("button", { name: label, exact: true }).boundingBox();
-  await page.mouse.move(to.x + to.width / 2, to.y + to.height / 2, { steps: 8 });
-  await page.mouse.up();
-  await page.waitForTimeout(900);
-}
-
-await page.getByRole("button", { name: "A", exact: true }).click();
-await page.waitForTimeout(400);
-await carryOnto("B");
-doc = await load();
-if (doc.mechs.find((m) => m.id === mechId)?.variant !== B)
-  fail("carrying the cast onto B gave it " + doc.mechs.find((m) => m.id === mechId)?.variant);
-else console.log("carrying a cast box onto a reading: it only goes off that way");
-
-/* --- and the rail says so by where the box now sits ------------------------ */
-
-/** The rail's areas, left to right: what happens either way, then each reading. */
-const areas = async () =>
-  Promise.all(
-    (await page.locator("nav [data-area]").all()).map(async (el) => ({
-      variant: await el.getAttribute("data-area"),
-      name: (await el.innerText()).trim(),
-      box: await el.boundingBox(),
-    }))
-  );
-
-/** Which area a cast's box is standing in, by where it is on screen. */
-const areaOf = async (id) => {
-  const box = await page.locator(`nav [data-mech="${id}"]`).boundingBox();
-  const mid = box.x + box.width / 2;
-  return (await areas()).find((a) => mid >= a.box.x - 1 && mid <= a.box.x + a.box.width + 1);
-};
-
-const three = await areas();
-if (three.map((a) => a.name).join("|") !== "SHARED|A|B")
-  fail("the rail's areas are " + three.map((a) => a.name).join("|") + ", expected SHARED|A|B");
-else console.log("the rail is three areas: shared, then one per reading");
-
-if ((await areaOf(mechId))?.variant !== B)
-  fail("the cast is B's but its box is not in B's area");
-else console.log("the box moved into B's area: where it sits is who it is for");
-
-/** How much of the cast is on the floor in a step, in one reading. */
-const shapesIn = (stepId, variantId) =>
-  page.evaluate(
-    async ([id, sid, mid, vid]) => {
-      const d = await (await fetch("/api/plans/" + id)).json().then((p) => p.plan ?? p);
-      const mod = await import("/src/shared/schema.ts");
-      return mod
-        .entitiesForStep(d, sid, undefined, { [mid]: vid })
-        .filter((e) => e.shape === "donut").length;
-    },
-    [planId, stepId, mechanicId, variantId]
-  );
-
-const snapStep = doc.mechs.find((m) => m.id === mechId).snap;
-const [inA, inB] = [await shapesIn(snapStep, A), await shapesIn(snapStep, B)];
-if (inB !== 8) fail("the cast's donuts are not on the floor in B: " + inB);
-else if (inA !== 0) fail("the cast still lands in A: " + inA + " donuts");
-else console.log("eight donuts in B, none in A, in the very same step");
-
-// And the steps are untouched by any of it: a reading does not own them.
-if (stepsOf(doc, mechanicId).length !== 2)
-  fail("putting a cast in a reading changed the steps: " + stepsOf(doc, mechanicId).length);
-else console.log("the mechanic still has its two steps, both played either way");
-
-await carryOnto("both");
-doc = await load();
-if (doc.mechs.find((m) => m.id === mechId)?.variant)
-  fail("carrying it onto 'both' did not put it back in both readings");
-else console.log("carried onto 'both', it goes off whichever way the mechanic goes");
-
-if ((await areaOf(mechId))?.variant !== "")
-  fail("back in both readings, the box did not return to the shared area");
-else console.log("and its box is back in the shared area");
-
-/** Carry a cast box sideways into an area, holding the row it is already on. */
-async function carryInto(variant) {
-  const box = await page.locator(`nav [data-mech="${mechId}"]`).boundingBox();
-  const to = (await areas()).find((a) => a.variant === (variant ?? ""));
-  const y = box.y + box.height - 6;
-  await page.mouse.move(box.x + box.width / 2, y);
-  await page.mouse.down();
-  await page.mouse.move(to.box.x + to.box.width / 2, y, { steps: 12 });
-  await page.mouse.up();
-  await page.waitForTimeout(900);
-}
-
-const spanBefore = (({ snap, boom }) => ({ snap, boom }))(doc.mechs.find((m) => m.id === mechId));
-await carryInto(A);
-doc = await load();
-const moved = doc.mechs.find((m) => m.id === mechId);
-if (moved?.variant !== A) fail("dragging the box into A's area gave it " + moved?.variant);
-else if (moved.snap !== spanBefore.snap || moved.boom !== spanBefore.boom)
-  fail("dragging sideways also re-timed the cast");
-else if ((await areaOf(mechId))?.variant !== A) fail("the box did not stay in A's area");
-else console.log("dragged sideways into A's area: the cast is A's, timed as it was");
-
-await carryInto(undefined);
-doc = await load();
-if (doc.mechs.find((m) => m.id === mechId)?.variant)
-  fail("dragging it back into the shared area did not put it in both readings");
-else console.log("and dragged back into the shared area, it happens either way again");
-
-/* --- a crowded shared area still reaches the far, empty reading ------------ */
-
-// Two casts in the same rows make the shared area two lanes wide. What used to
-// go wrong here: the box leaving shared shrank it, every area slid a lane left,
-// and the reading you were aiming at was no longer under the pointer.
-const rows2 = stepsOf(doc, mechanicId);
-await ops({ op: "add_mech", name: "Crowd", snap: rows2[0].id, boom: rows2[1].id });
-await page.waitForTimeout(900);
-doc = await load();
-const second = doc.mechs.find((m) => m.id !== mechId)?.id;
-if (!second) fail("the second cast was never added");
-await carryInto(B);
-doc = await load();
-if (doc.mechs.find((m) => m.id === mechId)?.variant !== B)
-  fail("with two casts sharing the rows, the box never reached B's area");
-else console.log("out of a two-lane shared area and into B, the far empty one");
-
-await ops({ op: "delete_mech", mechId: second });
-await ops({ op: "gate_mech", mechId: mechId });
-await page.waitForTimeout(900);
-doc = await load();
-
-/* --- and where the party stands is the reading's too, quietly ------------- */
-
-const mt = doc.entities.find((e) => e.name === "MT");
-const first = stepsOf(doc, mechanicId)[0];
-/** Where an entity is drawn in a step, in one reading of its mechanic. */
-const drawnIn = (stepId, entityId, variantId) =>
-  page.evaluate(
-    async ([id, sid, eid, mid, vid]) => {
-      const d = await (await fetch("/api/plans/" + id)).json().then((p) => p.plan ?? p);
-      const mod = await import("/src/shared/schema.ts");
-      const e = mod.entitiesForStep(d, sid, undefined, { [mid]: vid }).find((x) => x.id === eid);
-      return e ? { x: Math.round(e.x), y: Math.round(e.y) } : null;
-    },
-    [planId, stepId, entityId, mechanicId, variantId]
-  );
-
-await page.getByRole("button", { name: "A", exact: true }).click();
-await page.waitForTimeout(400);
-await page.getByRole("button", { name: "1. Step 1" }).click();
-await page.waitForTimeout(500);
-
-const home = await drawnIn(first.id, mt.id, A);
-const canvas = page.locator("canvas").first();
-const cbox = await canvas.boundingBox();
-const scale = cbox.width / 1000;
-const onScreen = (p) => ({
-  x: cbox.x + cbox.width / 2 + p.x * scale,
-  y: cbox.y + cbox.height / 2 + p.y * scale,
-});
-const from = onScreen(home);
-await page.mouse.move(from.x, from.y);
-await page.mouse.down();
-await page.mouse.move(from.x - 160, from.y - 120, { steps: 14 });
-await page.mouse.up();
-await page.waitForTimeout(900);
-
-const movedInA = await drawnIn(first.id, mt.id, A);
-const stillInB = await drawnIn(first.id, mt.id, B);
-doc = await load();
-const authoredA = stepsOf(doc, mechanicId).find((step) => step.id === first.id)?.variantScenes?.[A];
-if (Math.hypot(movedInA.x - home.x, movedInA.y - home.y) < 50)
-  fail("dragging MT while A was playing did not move it: " + JSON.stringify(movedInA));
-else if (stillInB.x !== home.x || stillInB.y !== home.y)
-  fail("the move leaked into B: " + JSON.stringify(stillInB) + " vs " + JSON.stringify(home));
-else if (!authoredA?.some((entity) => entity.id === mt.id))
-  fail("the authored A scene did not materialize MT");
-else
-  console.log(
-    "MT moved to " + JSON.stringify(movedInA) + " in A and stayed at " +
-      JSON.stringify(stillInB) + " in B, same step, nothing asked"
-  );
-
-/* --- deleting a reading takes the casts only it had ----------------------- */
-
-// One cast that is B's alone, to watch go.
-await carryOnto("B");
-doc = await load();
-const donutCount = () => doc.entities.filter((e) => e.mech === mechId).length;
-if (doc.mechs.find((m) => m.id === mechId)?.variant !== B) fail("the cast is not B's again");
-
-await page.getByRole("button", { name: "B", exact: true }).click();
-await page.waitForTimeout(500);
-await page.getByTitle("Delete this reading and the casts only it has").click();
-await page.waitForTimeout(900);
-doc = await load();
-const left = stepsOf(doc, mechanicId);
-if (witchHunt().variants.length !== 1 || witchHunt().variants[0].id !== A)
-  fail("deleting B did not retain the one detached reading losslessly");
-else if (left.length !== 2) fail("deleting B took steps with it: " + left.length + " left");
-else if (doc.mechs.length || donutCount())
-  fail("deleting B left the cast that was only its: " + doc.mechs.length + " casts");
-else console.log("deleting B took its cast, retained detached A, and left both steps alone");
 
 /* --- and a mechanic is its steps ------------------------------------------ */
 

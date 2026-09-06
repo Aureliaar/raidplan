@@ -85,10 +85,11 @@ function summarize(op: Op | Op[]): string {
     case "add_mech": return "Added a cast";
     case "update_mech": return "Updated a cast";
     case "delete_mech": return "Deleted a cast";
+    case "merge_mechs": return "Merged casts";
     case "assign_mech": return "Assigned objects to a cast";
     case "add_waymarks": return "Added waymarks";
     case "apply_encounter": return "Applied encounter setup";
-    case "add_party": return "Added party";
+    case "add_party": return "Restored party";
     case "arrange_party": return "Arranged party";
   }
 }

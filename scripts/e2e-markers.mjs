@@ -8,6 +8,7 @@
  *   node scripts/e2e-markers.mjs http://localhost:59577
  */
 import { chromium } from "playwright";
+import { viewScale } from "./view.mjs";
 
 const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
 const browser = await chromium.launch();
@@ -46,7 +47,7 @@ await page.waitForTimeout(900);
 
 const canvas = page.locator("canvas").first();
 const box = await canvas.boundingBox();
-const scale = box.width / 1000;
+const scale = viewScale(box.width);
 const screen = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 
 let doc = await load();
@@ -77,6 +78,28 @@ await page.waitForTimeout(300);
 if ((await page.locator('[data-panel="palette"]').count()) !== 1)
   fail("clicking a frozen waymark selected something");
 else console.log("clicking a frozen waymark selects nothing");
+
+// A player visibly on top of a waymark is still direct-manipulable. The mark
+// remains inert; only a bare mark owns an otherwise-empty gesture.
+const overlapId = "player_marker_overlap";
+await ops([{
+  op: "add_entity",
+  spec: { id: overlapId, type: "player", job: "BRD", name: "OVER MARK", x: markerA.x, y: markerA.y },
+}]);
+await page.waitForTimeout(500);
+const overlapWant = { x: markerA.x + 180, y: markerA.y + 120 };
+await drag(screen(markerA.x, markerA.y), screen(overlapWant.x, overlapWant.y));
+doc = await load();
+const overlap = doc.entities.find((e) => e.id === overlapId);
+const overlapPose = { ...overlap, ...(overlap?.overrides?.[step1] ?? {}) };
+a = doc.entities.find((e) => e.id === markerA.id);
+if (!overlap || Math.hypot(overlapPose.x - overlapWant.x, overlapPose.y - overlapWant.y) > 25)
+  fail("a player on top of a frozen waymark could not be dragged");
+else if (a.x !== markerA.x || a.y !== markerA.y)
+  fail("dragging a player on a waymark moved the waymark too");
+else console.log("a player on top of a frozen waymark remains draggable");
+await ops([{ op: "delete_entities", ids: [overlapId] }]);
+await page.waitForTimeout(400);
 
 // Up on the waymark layer it moves, and every other thing freezes instead.
 await page.getByRole("button", { name: "move waymarks" }).click();

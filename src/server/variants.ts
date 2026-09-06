@@ -161,6 +161,8 @@ function variantsTouched(plan: Plan, op: Op): (string | undefined)[] {
       ];
     case "delete_mech":
       return [mechOf(plan, op.mechId)?.variant];
+    case "merge_mechs":
+      return [op.into, ...op.mechIds].map((id) => mechOf(plan, id)?.variant);
     case "assign_mech": {
       const entities = op.ids.map((id) => entityOf(plan, id, op.stepId, op.variant));
       const nonMarkers = entities.filter((entity) => entity?.type !== "marker");
