@@ -60,7 +60,6 @@ const where = async (stepId) =>
 const doc = await load();
 const [one, two] = doc.steps.map((s) => s.id);
 const before = await where(one);
-const inStepTwoBefore = await where(two);
 
 /* --- the card names the four of them --------------------------------------- */
 
@@ -94,14 +93,18 @@ if (G2.some((n) => after[n].x !== before[n].x || after[n].y !== before[n].y))
   fail("moving G1 also moved G2");
 else console.log("and G2 stayed exactly where it was");
 
-/* --- it is a move in this step, like any other ------------------------------ */
+/* --- it is one declaration, and the steps after it follow ------------------- */
 
 const stepTwo = await where(two);
-const untouched = G1.every(
-  (n) => stepTwo[n].x === inStepTwoBefore[n].x && stepTwo[n].y === inStepTwoBefore[n].y
-);
-if (!untouched) fail("moving G1 in step 1 moved them in step 2 as well");
-else console.log("step 2 is untouched: the group moved in the step you were standing in");
+if (!G1.every((n) => stepTwo[n].x === after[n].x && stepTwo[n].y === after[n].y))
+  fail("step 2 did not follow the group: " + JSON.stringify(G1.map((n) => [stepTwo[n], after[n]])));
+else console.log("step 2 says nothing about them, so the group is still where step 1 put it");
+
+const settled = await load();
+const alsoWritten = settled.entities.filter((e) => G1.includes(e.name) && e.overrides?.[two]);
+if (alsoWritten.length)
+  fail("moving G1 in step 1 also wrote step 2: " + alsoWritten.map((e) => e.name).join());
+else console.log("and step 2 was not written to in order to make that happen");
 
 /* --- and G2 answers to its own card ---------------------------------------- */
 
@@ -126,6 +129,28 @@ const healed = await where(one);
 if (diameter(["H1", "H2"], healed) > 29)
   fail("the healers did not stack tightly: " + JSON.stringify([healed.H1, healed.H2]));
 else console.log("the healers stack within " + Math.round(diameter(["H1", "H2"], healed)) + " arena units");
+
+/* --- and clicking a card selects those people ------------------------------ */
+
+// Clicking is the other half of the card: it hands you the same people the
+// drag would carry, so the next thing you do lands on all of them at once.
+await healers.click();
+await page.waitForTimeout(400);
+await page.keyboard.press("Delete");
+await page.waitForTimeout(900);
+
+const afterDelete = await where(one);
+if (afterDelete.H1 || afterDelete.H2)
+  fail("clicking Healers then Delete left " + Object.keys(afterDelete).join());
+else if (Object.keys(afterDelete).length !== Object.keys(healed).length - 2)
+  fail("the Healers click took people who are not healers: " + Object.keys(afterDelete).join());
+else console.log("clicking Healers selected exactly H1 and H2");
+
+await page.keyboard.press("Control+z");
+await page.waitForTimeout(900);
+const restored = await where(one);
+if (!restored.H1 || !restored.H2) fail("undo did not bring the healers back");
+else console.log("and undo brings them back");
 
 await browser.close();
 console.log(process.exitCode ? "FAILED" : "OK - " + base + "/p/" + planId);

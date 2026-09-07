@@ -29,6 +29,7 @@ import {
   composeBeatVariantEntities,
   defaultBeatVariantSelections,
   entitiesForStep,
+  isFanCopy,
   hydratePlan,
   isActor,
   mechLabel,
@@ -50,6 +51,7 @@ import {
   defaultStepVariantSelections,
   stepVariantLabel,
   stepVariantOwner,
+  stepVariantSetIncludes,
   stepVariants,
 } from "../shared/step-variants";
 import type { PaletteKind, PaletteMechanicKind, PaletteSourceKind } from "../shared/ops";
@@ -68,6 +70,7 @@ import {
 } from "../shared/ops";
 import { jobLabel, roleOf } from "../shared/jobs";
 import { debuffDress } from "../shared/debuffs";
+import { type FightLibraryEntry, fightForEncounter } from "../shared/fight-library";
 import { DebuffPanel } from "./DebuffPanel";
 import { assetUrl } from "../shared/assets";
 import { arenaCalibration } from "../shared/arena-calibration";
@@ -122,6 +125,27 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * they are frozen until you come up to their layer on purpose.
    */
   const [layer, setLayer] = useState<EditLayer>("step");
+  /**
+   * Chips beyond the selection: a leader and a chip in the margin for every
+   * floor item of a kind. The party and everything else toggle separately, so
+   * a mechanic can be read off its chips without eight player chips in the way.
+   */
+  const [chips, setChips] = useState({ party: false, others: false });
+  /** Starts a selection sweep from beside the canvas; the Scene fills it in. */
+  const sweep = useRef<((ev: MouseEvent) => void) | null>(null);
+  useEffect(() => {
+    const onKey = (ev: KeyboardEvent) => {
+      const el = ev.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
+      const key = ev.key.toLowerCase();
+      if (key !== "c" && key !== "v") return;
+      ev.preventDefault();
+      setChips((on) => (key === "c" ? { ...on, others: !on.others } : { ...on, party: !on.party }));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const [error, setError] = useState("");
   const [note, setNote] = useState("");
   const [connected, setConnected] = useState(false);
@@ -170,6 +194,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [focusedBeat, setFocusedBeat] = useState<string | null>(null);
   /** The debuff mech whose deal is open in the popup, if any. */
   const [debuffFor, setDebuffFor] = useState<string | null>(null);
+  /** The fights the debuff library holds, so the encounter field names one. */
+  const [fightLibrary, setFightLibrary] = useState<FightLibraryEntry[]>([]);
   const stageBox = useRef<HTMLDivElement>(null);
   const clipboard = useRef<EntityClipboard | null>(null);
   /** The freshest plan, for handlers that fire faster than React re-renders. */
@@ -183,7 +209,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   /** Preserve the order gestures were made in, even if fetches would race. */
   const mutationTail = useRef<Promise<void>>(Promise.resolve());
   /** Wheel notches land far faster than a round trip, so they are pooled. */
-  const pendingResize = useRef<{ ids: string[]; factor: number; what: "size" | "opacity" } | null>(null);
+  const pendingResize = useRef<{
+    ids: string[];
+    factor: number;
+    what: "size" | "opacity";
+    /** The token the pointer was on, which the party's one size follows. */
+    lead: string;
+  } | null>(null);
   const resizeTimer = useRef<number | null>(null);
   const historyRefreshTimer = useRef<number | null>(null);
   /** Stable for this browser tab, so edits are automatically grouped as one work session. */
@@ -673,7 +705,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           entitiesForStep(plan!, step?.id, undefined, shown).map((candidate) => [candidate.id, candidate])
         );
         const snapshot = (candidate: Entity): ClipboardEntity => {
-          const authored = resolveEntity(candidate, step?.id, playing);
+          const authored = resolveEntity(plan!, candidate, step?.id, playing);
           const {
             id: _id,
             overrides: _overrides,
@@ -855,6 +887,22 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     }
   }, [mech, plan, step, selectedMechIsHere]);
 
+  // The library is small and shared; one read per editor keeps the encounter
+  // field able to say which fight it lands on.
+  useEffect(() => {
+    let live = true;
+    void api
+      .debuffLibrary()
+      .then((entries) => live && setFightLibrary(entries))
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  /** The library fight this plan's encounter name resolves to, if any. */
+  const encounterFight = fightForEncounter(fightLibrary, plan?.encounter);
+
   if (error && !plan) return <div className="p-8 text-red-400">{error}</div>;
   if (!plan || !step) return <div className="p-8 text-ink-400">Loading plan…</div>;
 
@@ -886,7 +934,14 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const editingVariantOwner = editingBeatVariant
     ? stepVariantOwner(plan, editingBeatVariant)
     : undefined;
-  const editingVariant = editingVariantOwner?.variant.id;
+  // A Variant edit destination only holds on the Steps its split actually
+  // reaches. Carried past them it would file an ordinary drag as that box's
+  // movement, and a box counts as present wherever it owns movement — so the
+  // stray pose then pins the actor there and swallows every later drag.
+  const editingVariant =
+    editingVariantOwner && stepVariantSetIncludes(plan, editingVariantOwner.step, step.id)
+      ? editingVariantOwner.variant.id
+      : undefined;
 
   /** Pointer position, in arena units, from a point over the stage. */
   function arenaPointAt(clientX: number, clientY: number): { x: number; y: number } {
@@ -958,10 +1013,21 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         .filter((entity) => requested.has(entity.id) && entity.bond)
         .map((entity) => entity.bond!.id)
     );
+    // The party is drawn at one size: a token is a person, and one person
+    // bigger than another says something the plan does not mean. So sizing any
+    // player sizes them all, whichever one the pointer happened to be over.
+    const party =
+      what === "size" &&
+      editableScene.some((entity) => entity.type === "player" && requested.has(entity.id));
     // Preserve bonded-set behavior inside a multi-selection. Scene order keeps
     // the pooled gesture key stable when the pointer crosses selected faces.
     const ids = editableScene
-      .filter((entity) => requested.has(entity.id) || (entity.bond && bonds.has(entity.bond.id)))
+      .filter(
+        (entity) =>
+          requested.has(entity.id) ||
+          (entity.bond && bonds.has(entity.bond.id)) ||
+          (party && entity.type === "player")
+      )
       .map((entity) => entity.id);
     if (!ids.length) return;
     // Pointing somewhere else mid-spin: land what is owed before starting again.
@@ -971,7 +1037,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     )
       flushResize();
     const carried = pendingResize.current?.factor ?? 1;
-    pendingResize.current = { ids, factor: carried * factor, what };
+    pendingResize.current = { ids, factor: carried * factor, what, lead: requestedIds[0] };
     if (resizeTimer.current === null) resizeTimer.current = window.setTimeout(flushResize, 90);
   }
 
@@ -986,9 +1052,18 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       scope === "step" && playing
         ? authoredEntitiesForStep(current, step!.id, playing)
         : current.entities;
+    // What the party lands on: the wheeled token's new size, copied onto every
+    // other player so the spin unifies them instead of scaling each one apart.
+    const lead = editableScene.find((x) => x.id === job.lead);
+    const partySize =
+      job.what === "size" && lead?.type === "player"
+        ? (resizeSpec(lead, job.factor).size as number | undefined)
+        : undefined;
     const edits = job.ids.flatMap((id) => {
       const e = editableScene.find((x) => x.id === id);
       if (!e) return [];
+      if (partySize !== undefined && e.type === "player")
+        return e.size === partySize ? [] : [{ op: "update_entity" as const, id, patch: { size: partySize } }];
       // Opacity is one number on everything; size is whatever meaningful
       // dimension the entity has (the required range for a tether). Either way
       // the wheel says "by this much", never "to this".
@@ -1025,26 +1100,71 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           : e.role !== "anchor" && e.icon === `actor/enemy_${kind === "boss" ? "large" : "medium"}`)
     ).length;
     const name = kind === "anchor" ? `anchor ${matching + 1}` : `${kind} ${matching + 1}`;
-    const res = await run({
-      op: "add_entity",
-      spec: paletteSpec(kind, { x, y, name, ...stamp() }) as never,
-    });
-    const created = res.values[0] as { id: string } | null;
+    // A boss and its adds are the cast: they are there all fight. An anchor is
+    // not a creature but a place a mechanic fires from, so it is a Part and
+    // lives in a Beat — left unnamed, because whatever is baited off it says
+    // what the Beat is far better than "bait anchor" does.
+    const beat = kind === "anchor" ? beatForDrop("") : undefined;
+    const res = await run([
+      ...(beat?.ops ?? []),
+      {
+        op: "add_entity",
+        spec: paletteSpec(kind, { x, y, name, ...stamp(beat) }) as never,
+      },
+    ]);
+    const created = res.values[beat?.ops.length ?? 0] as { id: string } | null;
     if (created) setSelected(created.id);
     return created?.id;
   }
 
   /**
    * What an aimed mechanic comes out of when you drop it on a group: the boss,
-   * failing that any object already on the floor, failing that an anchor placed
-   * in the middle — a protean has to be thrown from somewhere.
+   * failing that any object already on the floor. Nothing at all means one has
+   * to be made — a protean has to be thrown from somewhere.
    */
-  async function sourceForAimed() {
+  function enemyForAimed(): Entity | undefined {
     const enemies = authoredScene.filter((e) => e.type === "enemy");
-    const boss = enemies
-      .filter((e) => e.role !== "anchor")
-      .sort((a, b) => b.size - a.size)[0] ?? enemies[0];
-    return boss ? boss.id : await placeSource("anchor", 0, 0);
+    return (
+      enemies.filter((e) => e.role !== "anchor").sort((a, b) => b.size - a.size)[0] ?? enemies[0]
+    );
+  }
+
+  /**
+   * The source a drop fires from, as ops in the drop's own batch: an existing
+   * object, an anchor placed in the middle when the floor is empty, or one
+   * already there that nothing had claimed. Either way it ends up in the Beat
+   * the shapes go into, so the thing they come out of is on the floor for
+   * exactly as long as they are, and goes when the Beat goes.
+   */
+  function sourceInBeat(
+    host: Entity | undefined,
+    beat: { mech: string }
+  ): { id: string; ops: Op[] } {
+    if (host)
+      return {
+        id: host.id,
+        ops:
+          host.type === "enemy" && host.role === "anchor" && !host.mech
+            ? [{ op: "assign_mech", ids: [host.id], mechId: beat.mech }]
+            : [],
+      };
+    const id = `enemy_${crypto.randomUUID()}`;
+    const matching = authoredScene.filter((e) => e.type === "enemy" && e.role === "anchor").length;
+    return {
+      id,
+      ops: [
+        {
+          op: "add_entity",
+          spec: paletteSpec("anchor", {
+            id,
+            x: 0,
+            y: 0,
+            name: `anchor ${matching + 1}`,
+            ...stamp(beat),
+          }) as never,
+        },
+      ],
+    };
   }
 
   /**
@@ -1055,6 +1175,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    */
   function tetherEndAt(pt: { x: number; y: number }): string | undefined {
     return entitiesForStep(plan!, step!.id, undefined, shown)
+      // A counted bait's extra shapes are drawn, not authored: a tether cannot
+      // be tied to one of them, only to the bait itself.
+      .filter((entity) => !isFanCopy(entity.id))
       .filter((entity) => entity.type !== "tether")
       .map((entity) => {
         const radius =
@@ -1163,16 +1286,19 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       }
       const people = membersOf(target.group);
       if (!people.length) return setError(`No ${target.group} in this step to bind to`);
-      const from = paletteNeedsSource(kind) ? await sourceForAimed() : undefined;
       // One drop, one thing — the eight shapes it draws are that thing's faces.
       const bond = {
         id: "bond_" + Math.random().toString(36).slice(2, 10),
         group: target.group,
         label: PALETTE_LABEL[kind],
       };
-      const beat = beatForDrop(PALETTE_LABEL[kind]);
+      const host = paletteNeedsSource(kind) ? enemyForAimed() : undefined;
+      const beat = beatForDrop(PALETTE_LABEL[kind], host);
+      const source = paletteNeedsSource(kind) ? sourceInBeat(host, beat) : undefined;
+      const from = source?.id;
       await run([
         ...beat.ops,
+        ...(source?.ops ?? []),
         ...people.map((p) => ({
           op: "add_entity" as const,
           spec: paletteBait(kind, p.id, from, {
@@ -1194,26 +1320,42 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     }
     if (target.at === "source") {
       if (isPaletteTether(kind)) return setError("Drop this tether on its first object");
-      const taken = authoredScene.filter(
+      // Two proteans off the same orb are one mechanic that hits two people, not
+      // two mechanics each remembering its slot in the targeting. So a second
+      // drop of the same kind on the same source raises that bait's count, and
+      // you keep editing the one thing.
+      const already = authoredScene.find(
         (e) =>
           e.type === "zone" &&
           e.shape === SHAPE_OF[kind] &&
-          e.anchor &&
+          e.anchor?.pick &&
           (e.anchor.from === target.id || e.anchor.near === target.id)
-      ).length;
-      const rank = Math.min(8, taken + 1);
-      const beat = beatForDrop(PALETTE_LABEL[kind]);
+      );
+      if (already?.anchor) {
+        if (already.anchor.count >= 8) return setError("A bait can cover at most eight targets");
+        await run({
+          op: "update_entity",
+          id: already.id,
+          patch: { anchor: { ...already.anchor, count: already.anchor.count + 1 } },
+        });
+        setSelected(already.id);
+        return;
+      }
+      const host = authoredScene.find((e) => e.id === target.id);
+      const beat = beatForDrop(PALETTE_LABEL[kind], host);
+      const source = sourceInBeat(host, beat);
       const res = await run([
         ...beat.ops,
+        ...source.ops,
         {
           op: "add_entity",
-          spec: paletteBait(kind, { pick: "closest", rank }, target.id, {
-            name: `${PALETTE_LABEL[kind]} ${rank}`,
+          spec: paletteBait(kind, { pick: "closest" }, source.id, {
+            name: PALETTE_LABEL[kind],
             ...stamp(beat),
           }) as never,
         },
       ]);
-      const created = res.values[beat.ops.length] as { id: string } | null;
+      const created = res.values[beat.ops.length + source.ops.length] as { id: string } | null;
       if (created) setSelected(created.id);
       return;
     }
@@ -1278,8 +1420,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * drop with nothing open is one batch: the Beat, then what went into it.
    * The id is minted here so the batch is optimistic like any other add.
    */
-  function beatForDrop(name: string): { mech: string; ops: Op[] } {
+  function beatForDrop(name: string, host?: Entity): { mech: string; ops: Op[] } {
     if (openMech) return { mech: openMech.id, ops: [] };
+    // Dropped on an anchor that already lives in a Beat: the source and what
+    // it throws are one mechanic, so they share one Beat and one timing rather
+    // than drifting apart the moment either span is edited.
+    if (host?.type === "enemy" && host.role === "anchor" && host.mech)
+      return { mech: host.mech, ops: [] };
     const id = `mech_${crypto.randomUUID()}`;
     // Named after what went into it, so the rail reads "Circle", "Stack ×8".
     return { mech: id, ops: [{ op: "add_mech", id, name, snap: step!.id, plain: true }] };
@@ -1444,12 +1591,25 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         <input
           className="field max-w-[180px]"
           placeholder="encounter"
-          title="The fight this plan is for — plans sharing it share their waymarks"
+          list="encounter-fights"
+          title={
+            "The fight this plan is for — plans sharing it share their waymarks. " +
+            (encounterFight
+              ? `Statuses come from ${encounterFight.name}.`
+              : "No fight in the debuff library answers to this name yet.")
+          }
           value={plan.encounter}
           disabled={!editable}
           onChange={(e) => setPlan({ ...plan, encounter: e.target.value })}
           onBlur={(e) => run({ op: "set_meta", encounter: e.target.value })}
         />
+        {/* The library's fights, so naming the encounter is also the act of
+            choosing whose statuses the debuff Beats deal. */}
+        <datalist id="encounter-fights">
+          {fightLibrary.map((entry) => (
+            <option key={entry.key} value={entry.name} />
+          ))}
+        </datalist>
         <span className="text-xs text-ink-400">
           rev {plan.rev} · {connected ? "live" : "offline"} · {role}
         </span>
@@ -1481,6 +1641,46 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           </div>
         )}
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          <div
+            className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-md border border-ink-600 bg-ink-900/70 p-0.5 shadow-inner"
+            role="group"
+            aria-label="Chips"
+          >
+            {(
+              [
+                {
+                  which: "others" as const,
+                  key: "C",
+                  label: "Chips",
+                  title:
+                    "A leader and a chip in the margin for everything on the floor except the party. Click a chip to select it, shift-click to add (C)",
+                },
+                {
+                  which: "party" as const,
+                  key: "V",
+                  label: "Party chips",
+                  title:
+                    "A leader and a chip in the margin for every party member. Click a chip to select it, shift-click to add (V)",
+                },
+              ]
+            ).map((mode) => (
+              <button
+                key={mode.which}
+                type="button"
+                className={`flex items-center justify-center gap-1 whitespace-nowrap rounded px-1.5 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-300 ${
+                  chips[mode.which]
+                    ? "bg-blue-500/25 font-semibold text-blue-100 shadow-sm"
+                    : "text-ink-400 hover:bg-ink-700 hover:text-ink-200"
+                }`}
+                title={mode.title}
+                aria-pressed={chips[mode.which]}
+                onClick={() => setChips((on) => ({ ...on, [mode.which]: !on[mode.which] }))}
+              >
+                <kbd className="text-[10px] font-normal text-ink-400">{mode.key}</kbd>
+                <span>{mode.label}</span>
+              </button>
+            ))}
+          </div>
           {editable && (
             <>
               <div
@@ -1695,7 +1895,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           onHighlight={setHighlight}
         />
 
-        <CanvasArea>
+        <CanvasArea onMouseDown={(ev) => sweep.current?.(ev.nativeEvent)}>
           {(size) => (
             <div
               ref={stageBox}
@@ -1777,6 +1977,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 symmetryCount={symmetryCount}
                 symmetryKind={symmetryKind}
                 layer={layer}
+                chips={chips}
+                sweep={sweep}
                 highlight={highlight}
                 glide={glide}
                 onward={onward}
@@ -1961,9 +2163,15 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                     setCarryGroup(g);
                   }}
                   onDragEnd={() => setCarryGroup(null)}
+                  // Clicking the chip is how you get hold of the group without
+                  // moving it: the same people the drag would carry, selected.
+                  onClick={() => {
+                    const ids = membersOf(g).map((e) => e.id);
+                    if (ids.length) setSelection(ids);
+                  }}
                   title={
                     people > 0
-                      ? `Drag this onto the floor to stack the ${GROUP_LABEL[g]} tightly there. Drop a mechanic here to give one to each of them`
+                      ? `Click to select the ${GROUP_LABEL[g]}. Drag this onto the floor to stack them tightly there. Drop a mechanic here to give one to each of them`
                       : `Drop a mechanic here to give one to each of the ${g}`
                   }
                   onDragOver={(ev) => {
@@ -2014,7 +2222,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                       <button
                         className="ml-auto text-ink-400 hover:text-red-300"
                         title={`Remove this ${b.label.toLowerCase()} from the ${g}`}
-                        onClick={() => {
+                        onClick={(ev) => {
+                          ev.stopPropagation();
                           setHighlight(null);
                           void run({ op: "delete_entities", ids: b.ids });
                         }}
@@ -2333,7 +2542,14 @@ function HistoryPanel({
 }
 
 /** Measures its box and hands the child a square canvas size. */
-function CanvasArea({ children }: { children: (size: number) => React.ReactNode }) {
+function CanvasArea({
+  children,
+  onMouseDown,
+}: {
+  children: (size: number) => React.ReactNode;
+  /** A mouse-down on the bare area beside the canvas. */
+  onMouseDown?(ev: React.MouseEvent<HTMLDivElement>): void;
+}) {
   const ref = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState(600);
   useLayoutEffect(() => {
@@ -2346,7 +2562,13 @@ function CanvasArea({ children }: { children: (size: number) => React.ReactNode 
     return () => observer.disconnect();
   }, []);
   return (
-    <div ref={ref} className="flex min-w-0 flex-1 items-center justify-center">
+    <div
+      ref={ref}
+      className="flex min-w-0 flex-1 items-center justify-center"
+      onMouseDown={(ev) => {
+        if (ev.target === ev.currentTarget) onMouseDown?.(ev);
+      }}
+    >
       {children(size)}
     </div>
   );
