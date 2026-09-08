@@ -72,6 +72,7 @@ import { jobLabel, roleOf } from "../shared/jobs";
 import { debuffDress } from "../shared/debuffs";
 import { type FightLibraryEntry, fightForEncounter } from "../shared/fight-library";
 import { DebuffPanel } from "./DebuffPanel";
+import { readViewParams, writeViewParams } from "./view-url";
 import { assetUrl } from "../shared/assets";
 import { arenaCalibration } from "../shared/arena-calibration";
 import {
@@ -95,6 +96,11 @@ type EntityClipboard = {
  * is posted as an op, so both paths run identical server code.
  */
 export function Editor({ planId, user }: { planId: string; user: User | null }) {
+  /**
+   * What the link said to look at. Read once: from here on the address bar
+   * follows the editor, not the other way round.
+   */
+  const [initialView] = useState(readViewParams);
   const [plan, setPlan] = useState<Plan | null>(null);
   const [role, setRole] = useState<PlanRole>("viewer");
   const [stepIndex, setStepIndex] = useState(0);
@@ -111,7 +117,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * decides what the canvas draws, because a shared step can hold a different
    * set of positions in each reading.
    */
-  const [shown, setShown] = useState<Record<string, string>>({});
+  const [shown, setShown] = useState<Record<string, string>>(initialView.shown);
   /**
    * Bumped on every keyboard walk of the fight. A click means "show me that",
    * and shows it; a keypress means "and then this happens", so the canvas walks
@@ -187,7 +193,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * The mech slot being filled. Everything dropped while one is open joins it,
    * which is what makes a mech a thing you author rather than a thing you tag.
    */
-  const [mech, setMech] = useState<string | null>(null);
+  const [mech, setMech] = useState<string | null>(initialView.mech);
   /** Explicit edit destination inside the selected Beat; preview is separate. */
   const [editingBeatVariant, setEditingBeatVariant] = useState<string | null>(null);
   /** Last preview chip focused; A/D may use it without changing edit destination. */
@@ -196,6 +202,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [debuffFor, setDebuffFor] = useState<string | null>(null);
   /** The fights the debuff library holds, so the encounter field names one. */
   const [fightLibrary, setFightLibrary] = useState<FightLibraryEntry[]>([]);
+  /** One-shot: the link decides the first Step, and after that the editor does. */
+  const viewRestored = useRef(false);
   const stageBox = useRef<HTMLDivElement>(null);
   const clipboard = useRef<EntityClipboard | null>(null);
   /** The freshest plan, for handlers that fire faster than React re-renders. */
@@ -268,8 +276,15 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       }
     }
     planRef.current = visible;
+    // The linked Step is resolved with the first plan that arrives, in the same
+    // batch as it, so nothing ever renders — or reacts — at Step 1 first.
+    if (!viewRestored.current) {
+      viewRestored.current = true;
+      const at = visible.steps.findIndex((s) => s.id === initialView.step);
+      if (at >= 0) setStepIndex(at);
+    }
     setPlan(visible);
-  }, []);
+  }, [initialView]);
 
   useAgent({
     agent: "plan-agent",
@@ -310,6 +325,22 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
 
   const editable = role !== "viewer";
   const step = plan?.steps[Math.min(stepIndex, (plan?.steps.length ?? 1) - 1)];
+
+  /**
+   * The address bar mirrors where you are looking, so F5 lands back on this
+   * frame and the link hands it to someone else. Readings of Variant splits
+   * that no longer exist are dropped rather than carried along.
+   */
+  useEffect(() => {
+    if (!plan) return;
+    const owners = new Map(
+      plan.steps.map((owner) => [owner.id, new Set(stepVariants(owner).map((v) => v.id))])
+    );
+    const shownNow = Object.fromEntries(
+      Object.entries(shown).filter(([owner, variant]) => owners.get(owner)?.has(variant))
+    );
+    writeViewParams({ step: step?.id ?? null, mech, shown: shownNow });
+  }, [plan, step?.id, mech, shown]);
 
   const run = useCallback(
     async (ops: Op | Op[], expandSymmetry = true) => {

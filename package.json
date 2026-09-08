@@ -37,6 +37,7 @@
     "e2e:step-scope": "node scripts/e2e-step-scope.mjs",
     "e2e:step-variants": "node scripts/e2e-step-variants.mjs",
     "e2e:variant-delete": "node scripts/e2e-variant-delete.mjs",
+    "e2e:view-url": "node scripts/e2e-view-url.mjs",
     "mcp": "node scripts/mcp-call.mjs",
     "preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1",
