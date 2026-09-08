@@ -1,5 +1,5 @@
 import type { Entity, Plan, ZoneEntity } from "./schema";
-import { entitiesForStep } from "./schema";
+import { entitiesForStep, fanOwnerId } from "./schema";
 
 /**
  * Who a zone actually catches.
@@ -93,7 +93,13 @@ export function playersHit(
   shown?: Record<string, string>
 ): Entity[] {
   const drawn = entitiesForStep(plan, stepId, undefined, shown);
-  const zone = drawn.find((e) => e.id === zoneId);
-  if (!zone || zone.type !== "zone") return [];
-  return drawn.filter((e) => e.type === "player" && zoneCovers(zone, e.x, e.y));
+  // A counted bait draws one shape per rank it covers. All of them are the same
+  // mechanic, so "who does this catch" is the union across its copies.
+  const shapes = drawn.filter(
+    (e): e is ZoneEntity => e.type === "zone" && fanOwnerId(e.id) === zoneId
+  );
+  if (!shapes.length) return [];
+  return drawn.filter(
+    (e) => e.type === "player" && shapes.some((shape) => zoneCovers(shape, e.x, e.y))
+  );
 }

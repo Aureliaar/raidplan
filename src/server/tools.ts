@@ -30,6 +30,7 @@ import {
   beatVariantLabel,
   composeBeatVariantEntities,
   defaultBeatVariantSelections,
+  freezeStep,
   mechLabel,
   mechSpan,
   mechanicLabel,
@@ -771,7 +772,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "list_mechs",
     description:
-      "List the plan's mechanics: which step each one snapshots in, which step it goes off in, and how many shapes it holds.",
+      "List the plan's mechanics: which step each one snapshots in, which step it goes off in, which step its baits stop following in, and how many shapes it holds.",
     schema: { plan_id: z.string() },
     async run(ctx, a) {
       const { plan } = await load(ctx, a.plan_id, "view");
@@ -784,7 +785,8 @@ export const TOOLS: ToolDef[] = [
         .map(
           (m, i) =>
             `${i + 1}. ${mechLabel(plan, m)} [${m.id}] — snapshots in ${stepName(m.snap)}, ` +
-            `goes off in ${stepName(m.boom)}, ${mechSpan(plan, m).length} steps on the floor, ` +
+            `goes off in ${stepName(m.boom)}, freezes in ${stepName(freezeStep(plan, m))}, ` +
+            `${mechSpan(plan, m).length} steps on the floor, ` +
             `${new Set([
               ...plan.entities.filter((e) => e.mech === m.id).map((e) => e.id),
               ...plan.steps.flatMap((step) =>
@@ -907,6 +909,32 @@ export const TOOLS: ToolDef[] = [
         };
       });
       return "Variant split collapsed; the chosen box is now Shared.";
+    },
+  }),
+
+  def({
+    name: "reset_step_variant_movement",
+    description:
+      "Discard a Step Variant box's actor movement at one Step so those actors follow Shared again. Name an actor to release just that one.",
+    schema: {
+      plan_id: z.string(),
+      step: z.string(),
+      owner_step: z.string(),
+      variant: z.string(),
+      actor: z.string().optional(),
+    },
+    async run(ctx, a) {
+      await edit(ctx, a.plan_id, (plan) => {
+        const ownerStepId = stepVariantOwnerIdOf(plan, a.owner_step);
+        const stepId = stepIdOf(plan, a.step)!;
+        return {
+          op: "clear_step_variant_movement",
+          stepId,
+          variantId: stepVariantIdOf(plan, ownerStepId, a.variant),
+          actorId: a.actor ? resolveRef(scenePlan(plan, stepId), a.actor).id : undefined,
+        };
+      });
+      return "Following Shared movement again.";
     },
   }),
 
@@ -1138,6 +1166,7 @@ export const TOOLS: ToolDef[] = [
       name: z.string().optional().describe("Defaults to whatever goes in it first"),
       snapshot_in: z.string().optional().describe("Step id, index or name. Defaults to the first step"),
       goes_off_in: z.string().optional().describe("Step id, index or name. Defaults to the snapshot step"),
+      freezes_in: z.string().optional().describe("Step id, index or name: the last step its baits and anchors follow their targets in. Only a Beat of three or more steps has a choice — it must sit between the snapshot and the step before it goes off. Defaults to the snapshot step"),
       color: z.string().optional().describe("Hex colour its shapes are drawn in. Defaults to the least-used of the palette"),
     },
     async run(ctx, a) {
@@ -1146,6 +1175,7 @@ export const TOOLS: ToolDef[] = [
         name: a.name,
         snap: stepIdOf(plan, a.snapshot_in) ?? plan.steps[0]?.id,
         boom: stepIdOf(plan, a.goes_off_in),
+        freeze: stepIdOf(plan, a.freezes_in),
         color: a.color,
       }));
       const mech = res.values[0] as { id: string };
@@ -1155,13 +1185,15 @@ export const TOOLS: ToolDef[] = [
 
   def({
     name: "update_mech",
-    description: "Rename a mechanic, recolour it, or move where it snapshots or goes off.",
+    description:
+      "Rename a mechanic, recolour it, or move where it snapshots, freezes or goes off. Its baits and anchors follow their targets up to the step it freezes in and hold that pose from there to the explosion; pass an empty string to freeze at the snapshot again. Only a Beat spanning three or more steps has anywhere to put the marker.",
     schema: {
       plan_id: z.string(),
       mech: z.string().describe("Mech id, 1-based index or name"),
       name: z.string().optional(),
       snapshot_in: z.string().optional().describe("Step id, index or name"),
       goes_off_in: z.string().optional().describe("Step id, index or name"),
+      freezes_in: z.string().optional().describe('Step id, index or name: the last step its baits and anchors follow their targets in. Must be between the snapshot and the step before it goes off; "" freezes at the snapshot'),
       color: z.string().optional().describe("Hex colour its shapes are drawn in"),
     },
     async run(ctx, a) {
@@ -1174,11 +1206,15 @@ export const TOOLS: ToolDef[] = [
           name: a.name,
           snap: stepIdOf(plan, a.snapshot_in),
           boom: stepIdOf(plan, a.goes_off_in),
+          freeze: a.freezes_in === "" ? "" : stepIdOf(plan, a.freezes_in),
           color: a.color,
         },
       }));
       const m = res.plan.mechs.find((x) => x.id === mechId)!;
-      return `${mechLabel(res.plan, m)} is on the floor for ${mechSpan(res.plan, m).length} step(s).`;
+      return (
+        `${mechLabel(res.plan, m)} is on the floor for ${mechSpan(res.plan, m).length} step(s), ` +
+        `and its baits follow until step ${res.plan.steps.findIndex((s) => s.id === freezeStep(res.plan, m)) + 1}.`
+      );
     },
   }),
 
@@ -1282,14 +1318,25 @@ export const TOOLS: ToolDef[] = [
     name: "add_enemy",
     description:
       "Add a boss, an add, or any object a mechanic comes out of — an orb, a portal, a crystal. " +
-      "Small ones (size ~60, ring off) are what you point a bait's `from` at when the source is not the boss.",
+      "Small ones (size ~60) are what you point a bait's `from` at when the source is not the boss. " +
+      "`anchor` makes a bare point instead of a creature: not part of the cast but a Part like any shape, " +
+      "so it lives in a Beat and is on the floor for exactly as long as what it fires.",
     schema: {
       plan_id: z.string(),
       name: z.string().optional(),
+      anchor: z
+        .boolean()
+        .optional()
+        .describe("A bare bait anchor — a place a mechanic fires from, drawn as a reticle"),
+      mech: z
+        .string()
+        .optional()
+        .describe(
+          "With `anchor`: the Beat it joins (id, index or name); leave it out and a new Beat is made for it in `step`"
+        ),
       size: z.number().positive().optional().describe("Hitbox radius in arena units"),
       icon: z.string().optional().describe("Override the art, e.g. actor/enemy2 (see list_assets)"),
       rotation: z.number().optional().describe("Facing in degrees, 0 = north"),
-      ring: z.boolean().optional().describe("Draw the hitbox ring — off suits small objects"),
       color: z.string().optional(),
       ...stepArg,
       ...posArgs,
@@ -1298,18 +1345,27 @@ export const TOOLS: ToolDef[] = [
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
         const variant = poseVariant(plan, stepId, a.variant, a.beat);
-        return { op: "add_entity", stepId, variant, spec: {
-          type: "enemy",
-          name: a.name,
-          size: a.size,
-          icon: a.icon,
-          rotation: a.rotation,
-          ring: a.ring,
-          color: a.color,
-          ...positionOf(plan, a),
-        } };
+        // Only an anchor takes a Beat: a boss and its adds are the cast, there
+        // for the whole fight, and belong to no one mechanic.
+        const beat = a.anchor ? beatFor(plan, a.mech, stepId, a.name ?? "anchor") : undefined;
+        return [
+          ...(beat?.prelude ?? []),
+          { op: "add_entity" as const, stepId, variant, spec: {
+            type: "enemy",
+            name: a.name,
+            // An anchor is a reticle, not a creature: no art, no facing.
+            ...(a.anchor ? { role: "anchor", showFacing: false } : {}),
+            size: a.size ?? (a.anchor ? 60 : undefined),
+            icon: a.icon,
+            rotation: a.rotation,
+            color: a.color,
+            mech: beat?.mech,
+            declaredIn: beat ? stepId : undefined,
+            ...positionOf(plan, a),
+          } },
+        ];
       });
-      return `Added enemy ${idOf(res.values[0])}`;
+      return `Added enemy ${idOf(res.values.at(-1))}`;
     },
   }),
 
@@ -1529,7 +1585,7 @@ export const TOOLS: ToolDef[] = [
       "A mechanic that belongs to whoever it targets, not to a spot on the floor. The shape is " +
       "re-solved every time the plan is drawn, so it stays true as the party moves — in every " +
       "step, with no overrides to maintain. Give it either `on` (named players: one bait each) " +
-      "or `pick` (closest/farthest, with `count` baits covering the closest N), which is what a " +
+      "or `pick` (closest/farthest, where `count` is how many of them one bait covers), which is what a " +
       "proximity-baited mechanic actually does: rearrange the party and the AoE re-targets. " +
       "kinds: beam and cone fire from `from` through the target (out to the wall by default); " +
       "donut, spread, puddle, stack, tower, proximity sit on the target; tether links the two.",
@@ -1550,7 +1606,9 @@ export const TOOLS: ToolDef[] = [
         .min(1)
         .max(8)
         .optional()
-        .describe("With `pick`: how many, so `closest` + 2 covers the two nearest players"),
+        .describe(
+          "With `pick`: how many targets this one bait covers, so `closest` + 2 is a single bait on the two nearest players"
+        ),
       of: z.enum(["player", "enemy", "any"]).optional().describe("With `pick`: what counts as a target"),
       from: z
         .string()
@@ -1607,21 +1665,24 @@ export const TOOLS: ToolDef[] = [
         labels = [];
 
         if (a.pick) {
+          // Several targets is one bait with a count, not one bait per slot of
+          // the targeting: the mechanic is a single thing the plan can restyle,
+          // move or retarget in one edit.
           const count = a.count ?? 1;
-          return [...beat.prelude, ...Array.from({ length: count }, (_, i) => {
-            const rank = i + 1;
-            labels.push(count > 1 ? `${a.pick} #${rank}` : (a.pick as string));
-            return {
+          labels.push(count > 1 ? `${count} ${a.pick}` : (a.pick as string));
+          return [
+            ...beat.prelude,
+            {
               op: "add_entity",
               stepId,
               variant,
-              spec: baitSpec(a.kind, { pick: a.pick!, rank, of: a.of }, source, {
+              spec: baitSpec(a.kind, { pick: a.pick, count, of: a.of }, source, {
                 ...props,
-                name: a.name ? (count > 1 ? `${a.name} ${rank}` : a.name) : undefined,
+                name: a.name,
                 mech: beat.mech,
               }),
-            } satisfies Op;
-          })];
+            } satisfies Op,
+          ];
         }
 
         return [...beat.prelude, ...named.map((ref) => {
@@ -1642,9 +1703,12 @@ export const TOOLS: ToolDef[] = [
 
       const ids = res.values.slice(res.values.length - labels.length).map((v: unknown) => idOf(v));
       const what = labels.map((l, i) => `${l} [${ids[i]}]`).join(", ");
-      return a.pick
-        ? `Added ${ids.length} ${a.kind} bait${ids.length > 1 ? "s" : ""} on the ${a.pick} ${a.of ?? "player"}${ids.length > 1 ? "s" : ""}: ${what}. They re-target themselves whenever the party moves.`
-        : `Added ${ids.length} ${a.kind} bait${ids.length > 1 ? "s" : ""}: ${what}. They follow their targets — no need to reposition them per step.`;
+      if (a.pick) {
+        const covered = a.count ?? 1;
+        const who = `the ${covered > 1 ? `${covered} ` : ""}${a.pick} ${a.of ?? "player"}${covered > 1 ? "s" : ""}`;
+        return `Added one ${a.kind} bait on ${who}: ${what}. It draws ${covered > 1 ? `${covered} shapes` : "one shape"} and re-targets itself whenever the party moves.`;
+      }
+      return `Added ${ids.length} ${a.kind} bait${ids.length > 1 ? "s" : ""}: ${what}. They follow their targets — no need to reposition them per step.`;
     },
   }),
 
@@ -1914,8 +1978,9 @@ export const PLAN_PRIMER = `Raid plans are top-down diagrams of an FFXIV arena.
 Coordinates are arena units with the origin at the arena centre: +x is east (right), +y is south (down).
 A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degrees, 0 = north, increasing clockwise (90 = east).
 Arena distances are yalms: a manual arena.widthYalms wins, supported encounters use known dimensions, and unknown fights default to 40 yalms across. Calibration never changes stored coordinates.
-Actors (players, enemies) and waymarks are plan-wide; per-step position overrides are how movement is expressed. Every Part (zone, bait, tether, text, icon) lives in a Beat, which decides the steps it is on the floor for: an add without mech makes a new Beat for it in that step, and merge_mechs folds Beats together.
+Actors (players, enemies) and waymarks are plan-wide; per-step position overrides are how movement is expressed. Every Part (zone, bait, tether, text, icon, bait anchor) lives in a Beat, which decides the steps it is on the floor for: an add without mech makes a new Beat for it in that step, and merge_mechs folds Beats together.
+A Beat's baits and anchors follow their targets up to the step it freezes in (update_mech freezes_in, the snapshot by default) and are drawn where they stood there from then until it goes off. Only a Beat of three or more steps has anywhere to put that marker.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
 A Beat is one timed card/frame. Its child Variant boxes are mutually exclusive and contain only divergent Beat Parts plus optional sparse actor movement. Shared Parts stay directly on the Beat. Preview choices and edit destinations are separate: passing beat + variant explicitly chooses where an edit is stored, never a saved preview. Saved Routes are non-owning complete Beat-selection maps and cannot contain movement conflicts. Variants exist only on Beats; Mechanic-wide Variants are retired.
-A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest" (plus "count"), which re-targets itself as the party moves. Either way it holds in every step with no overrides to redo.
+A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest", which re-targets itself as the party moves. A mechanic that catches several people is one bait with "count" — it draws that many shapes, over the ranks after "rank" — not one bait per target. Either way it holds in every step with no overrides to redo.
 Real FFXIV art is bundled: job/role tokens, waymarks A-D and 1-4, field markers (attack1-8, bind, ignore, limit cut, tankbuster) and arena backdrops. Call list_assets to browse it.`;

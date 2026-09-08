@@ -387,6 +387,8 @@ export const ARENA_BACKGROUNDS: readonly { key: string; label: string }[] = [
 
 /* ------------------------------------------------------------------ lookups */
 
+import { roleOf } from "./jobs";
+
 /**
  * Resolve anything an entity may carry in an image field to a URL:
  * an asset key ("marker/attack1"), an absolute URL, or a ready-made path.
@@ -405,10 +407,10 @@ const PARTY_SLOT_ICONS: Record<string, string> = {
   T2: "actor/tank2",
   H1: "actor/healer1",
   H2: "actor/healer2",
-  M1: "actor/dps1",
-  M2: "actor/dps2",
-  R1: "actor/dps3",
-  R2: "actor/dps4",
+  M1: "actor/melee1",
+  M2: "actor/melee2",
+  R1: "actor/ranged1",
+  R2: "actor/ranged2",
   // The older dps names, in the order a party list uses: melees first.
   D1: "actor/dps1",
   D2: "actor/dps2",
@@ -430,9 +432,12 @@ const ROLE_ICONS: Record<string, string> = {
 export function jobIconKey(job: string, name?: string): string {
   const upper = job.toUpperCase();
   if (ASSETS[`actor/${upper}`]) return `actor/${upper}`;
-  if (name && PARTY_SLOT_ICONS[name.toUpperCase()]) return PARTY_SLOT_ICONS[name.toUpperCase()];
-  if (PARTY_SLOT_ICONS[upper]) return PARTY_SLOT_ICONS[upper];
-  return ROLE_ICONS[job.toLowerCase()] ?? "actor/any";
+  const role = ROLE_ICONS[roleOf(job)];
+  const slot =
+    (name && PARTY_SLOT_ICONS[name.toUpperCase()]) || PARTY_SLOT_ICONS[upper] || undefined;
+  // A generic D1..D4 slot loses to a job that already says melee / ranged / caster.
+  if (slot && !(slot.startsWith("actor/dps") && role && role !== ROLE_ICONS.dps)) return slot;
+  return role ?? "actor/any";
 }
 
 /** Enemy art scales with hitbox size, the way XIVPlan's presets do. */

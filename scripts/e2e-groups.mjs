@@ -1,8 +1,9 @@
 /**
  * The light parties are things you move, not eight people you move one at a
- * time. "G1 goes north" is one drag: carry the G1 card onto the floor and the
- * four of them stack tightly there — and it is a move in this step,
- * in this reading, exactly as dragging one of them by hand would be.
+ * time. "G1 goes north" is one drag: carry the G1 row out of the Groups
+ * popover onto the floor and the four of them stack tightly there — and it is
+ * a move in this step, in this reading, exactly as dragging one of them by
+ * hand would be.
  *
  *   node scripts/e2e-groups.mjs http://localhost:59577
  */
@@ -61,11 +62,21 @@ const doc = await load();
 const [one, two] = doc.steps.map((s) => s.id);
 const before = await where(one);
 
-/* --- the card names the four of them --------------------------------------- */
+/* --- the groups popover names the four of them ----------------------------- */
 
-const card = page.locator("div").filter({ hasText: /^G1\d+ players$/ }).last();
-const g1Text = await card.innerText();
-if (!/4 players/.test(g1Text)) fail("the G1 card counts " + g1Text.replace(/\n/g, " "));
+// The groups are no longer a column of cards standing beside the arena: the
+// rail of drop targets pops out over the arena only while something is in
+// hand, and everything else about a group lives in this popover.
+const row = (g) => page.locator(`[data-group-row=${g}]`);
+const openGroups = async () => {
+  if (await row("party").count()) return;
+  await page.getByRole("button", { name: "Groups" }).click();
+  await row("party").waitFor();
+};
+
+await openGroups();
+const g1Text = await row("g1").innerText();
+if (!/4 players/.test(g1Text)) fail("the G1 row counts " + g1Text.replace(/\n/g, " "));
 else console.log("G1 is four people: " + g1Text.replace(/\n/g, " "));
 
 /* --- and carrying it onto the floor moves all four -------------------------- */
@@ -74,7 +85,7 @@ const stage = page.locator("canvas").first();
 const box = await stage.boundingBox();
 // North-west of centre, well clear of where the party starts.
 const to = { x: box.x + box.width * 0.28, y: box.y + box.height * 0.24 };
-await card.dragTo(stage, { targetPosition: { x: box.width * 0.28, y: box.height * 0.24 } });
+await row("g1").dragTo(stage, { targetPosition: { x: box.width * 0.28, y: box.height * 0.24 } });
 await page.waitForTimeout(1200);
 
 const after = await where(one);
@@ -84,7 +95,7 @@ const moved = G1.map((n) => ({ x: after[n].x - before[n].x, y: after[n].y - befo
 const diameter = (names, poses) =>
   Math.max(...names.flatMap((a) => names.map((b) => Math.hypot(poses[a].x - poses[b].x, poses[a].y - poses[b].y))));
 
-if (!moved.some((d) => Math.hypot(d.x, d.y) > 50)) fail("dragging the G1 card moved nobody");
+if (!moved.some((d) => Math.hypot(d.x, d.y) > 50)) fail("dragging the G1 row moved nobody");
 else if (diameter(G1, after) > 41)
   fail("G1 did not stack tightly: " + JSON.stringify(G1.map((n) => after[n])));
 else console.log("all four of G1 are stacked within " + Math.round(diameter(G1, after)) + " arena units");
@@ -106,14 +117,14 @@ if (alsoWritten.length)
   fail("moving G1 in step 1 also wrote step 2: " + alsoWritten.map((e) => e.name).join());
 else console.log("and step 2 was not written to in order to make that happen");
 
-/* --- and G2 answers to its own card ---------------------------------------- */
+/* --- and G2 answers to its own row ---------------------------------------- */
 
-const card2 = page.locator("div").filter({ hasText: /^G2\d+ players$/ }).last();
-await card2.dragTo(stage, { targetPosition: { x: box.width * 0.74, y: box.height * 0.76 } });
+await openGroups();
+await row("g2").dragTo(stage, { targetPosition: { x: box.width * 0.74, y: box.height * 0.76 } });
 await page.waitForTimeout(1200);
 const last = await where(one);
 const shifted = G2.map((n) => ({ x: last[n].x - after[n].x, y: last[n].y - after[n].y }));
-if (!shifted.some((d) => Math.hypot(d.x, d.y) > 50)) fail("dragging the G2 card moved nobody");
+if (!shifted.some((d) => Math.hypot(d.x, d.y) > 50)) fail("dragging the G2 row moved nobody");
 else if (diameter(G2, last) > 41)
   fail("G2 did not stack tightly: " + JSON.stringify(G2.map((n) => last[n])));
 else if (G1.some((n) => last[n].x !== after[n].x || last[n].y !== after[n].y))
@@ -122,19 +133,20 @@ else console.log("G2 goes its own way and stacks within " + Math.round(diameter(
 
 /* --- healer group drags make an even tighter pair ------------------------- */
 
-const healers = page.locator("div").filter({ hasText: /^Healers\d+ players$/ }).last();
-await healers.dragTo(stage, { targetPosition: { x: box.width * 0.5, y: box.height * 0.5 } });
+await openGroups();
+await row("healers").dragTo(stage, { targetPosition: { x: box.width * 0.5, y: box.height * 0.5 } });
 await page.waitForTimeout(1200);
 const healed = await where(one);
 if (diameter(["H1", "H2"], healed) > 29)
   fail("the healers did not stack tightly: " + JSON.stringify([healed.H1, healed.H2]));
 else console.log("the healers stack within " + Math.round(diameter(["H1", "H2"], healed)) + " arena units");
 
-/* --- and clicking a card selects those people ------------------------------ */
+/* --- and clicking a row selects those people ------------------------------- */
 
-// Clicking is the other half of the card: it hands you the same people the
+// Clicking is the other half of the row: it hands you the same people the
 // drag would carry, so the next thing you do lands on all of them at once.
-await healers.click();
+await openGroups();
+await row("healers").click();
 await page.waitForTimeout(400);
 await page.keyboard.press("Delete");
 await page.waitForTimeout(900);

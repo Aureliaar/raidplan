@@ -55,16 +55,20 @@ let box = await canvas.boundingBox();
 let scale = viewScale(box.width);
 const at = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 const read = async () => (await api(`/api/plans/${id}`)).plan;
+// A drag is a declaration in the step you are on, so read the step's pose.
+const posed = (source, name) => {
+  const entity = source.entities.find((e) => e.name === name);
+  return entity && { ...entity, ...(entity.overrides?.[source.steps[0].id] ?? {}) };
+};
 let plan = await read();
-let mt = plan.entities.find((e) => e.name === "MT");
-let ot = plan.entities.find((e) => e.name === "OT");
+let mt = posed(plan, "MT");
+let ot = posed(plan, "OT");
 
 // Key 2 enables two-way; Q changes the transform to rotation. These players
 // were made through the API and therefore deliberately have no saved group.
 await page.mouse.click(800, 500);
 await page.keyboard.press("2");
 await page.keyboard.press("q");
-await page.locator("header select").selectOption("all");
 const from = at(-220, -120);
 const to = at(120, -220);
 await page.mouse.move(from.x, from.y);
@@ -94,8 +98,8 @@ await page.mouse.up();
 await page.waitForTimeout(700);
 
 plan = await read();
-mt = plan.entities.find((e) => e.name === "MT");
-ot = plan.entities.find((e) => e.name === "OT");
+mt = posed(plan, "MT");
+ot = posed(plan, "OT");
 if (Math.hypot(mt.x - 120, mt.y + 220) > 8) fail(`MT orbited to ${mt.x},${mt.y}`);
 if (Math.hypot(ot.x + 120, ot.y - 220) > 8)
   fail(`same-role rotational counterpart moved to ${ot.x},${ot.y}`);
@@ -108,8 +112,9 @@ await api(`/api/plans/${id}/ops`, {
   method: "POST",
   body: JSON.stringify({
     ops: [
-      { op: "update_entity", id: mt.id, patch: { x: -140, y: -140 } },
-      { op: "update_entity", id: ot.id, patch: { x: 140, y: 140 } },
+      // The drags above declared poses in this step; put the pair back there.
+      { op: "update_entity", id: mt.id, patch: { x: -140, y: -140 }, stepId: plan.steps[0].id },
+      { op: "update_entity", id: ot.id, patch: { x: 140, y: 140 }, stepId: plan.steps[0].id },
       { op: "add_entity", spec: { type: "player", job: "WHM", name: "H1", x: 140, y: -140 } },
       { op: "add_entity", spec: { type: "player", job: "SCH", name: "H2", x: -140, y: 140 } },
       { op: "add_entity", spec: { type: "player", job: "BRD", name: "R1", x: -270, y: -270 } },
@@ -124,7 +129,6 @@ await page.waitForSelector("canvas");
 await page.waitForTimeout(700);
 box = await canvas.boundingBox();
 scale = viewScale(box.width);
-await page.locator("header select").selectOption("all");
 const dragPlayer = async (name, dx, dy) => {
   const current = await read();
   const player = current.entities.find((e) => e.name === name);
@@ -143,8 +147,8 @@ await page.keyboard.press("2");
 await dragPlayer("R1", 20, 20);
 await page.waitForTimeout(600);
 plan = await read();
-let r1 = plan.entities.find((e) => e.name === "R1");
-let r2 = plan.entities.find((e) => e.name === "R2");
+let r1 = posed(plan, "R1");
+let r2 = posed(plan, "R2");
 if (Math.hypot(r2.x - 250, r2.y + 250) > 8)
   fail(`two-way R1/R2 pairing left R1/R2 at ${r1.x},${r1.y} / ${r2.x},${r2.y}`);
 else console.log("two-way symmetry pairs physical-ranged R1 with caster R2");
@@ -156,7 +160,7 @@ plan = await read();
 const damageExpected = { R1: [-230, -230], R2: [230, -230], M1: [230, 230], M2: [-230, 230] };
 if (
   Object.entries(damageExpected).some(([name, [x, y]]) => {
-    const player = plan.entities.find((e) => e.name === name);
+    const player = posed(plan, name);
     return !player || Math.hypot(player.x - x, player.y - y) > 8;
   })
 )
@@ -169,7 +173,7 @@ plan = await read();
 const supportExpected = { MT: [-120, -120], H1: [120, -120], OT: [120, 120], H2: [-120, 120] };
 if (
   Object.entries(supportExpected).some(([name, [x, y]]) => {
-    const player = plan.entities.find((e) => e.name === name);
+    const player = posed(plan, name);
     return !player || Math.hypot(player.x - x, player.y - y) > 8;
   })
 )

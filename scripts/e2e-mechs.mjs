@@ -135,15 +135,16 @@ const inStep = async (sid) => (await drawn(sid)).filter((e) => e.mech === mechId
 if ((await inStep(run_)) !== 0) fail("the mech is on the floor in Run before its explosion was set");
 
 // Say where it goes off by dragging the bottom edge of the box down to Boom.
-const boxOf = (n) => page.getByTitle(new RegExp("snapshots in step [0-9]+, goes off in step " + n));
+const boxOf = (n) => page.getByTitle(new RegExp("casts in step [0-9]+, resolves in step " + n));
 const rowMid = async (label) => {
   const r = await page.getByRole("button", { name: label }).boundingBox();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 };
 async function dragBox(box, grab, toLabel) {
   const b = await box.boundingBox();
-  // The half you take hold of is the end you are dragging.
-  const at = grab === "top" ? b.y + b.height * 0.25 : b.y + b.height * 0.75;
+  // The strip you take hold of is the end you are dragging: 6px at the top for
+  // the cast, 7px at the bottom for the resolve. In between is the whole Beat.
+  const at = grab === "top" ? b.y + 3 : b.y + b.height - 3;
   const to = await rowMid(toLabel);
   await page.mouse.move(b.x + b.width / 2, at);
   await page.mouse.down();
@@ -203,7 +204,7 @@ else console.log("snapshotting in Run instead: it re-aims at the north wall and 
 
 // It spans the rows of the steps it is on the floor for: rows 2 and 3 of four,
 // now that it snapshots in Run and goes off in Boom.
-const box = page.getByTitle(/snapshots in step 2, goes off in step 3/);
+const box = page.getByTitle(/casts in step 2, resolves in step 3/);
 if (!(await box.count())) fail("no mech box spanning steps 2 to 3 beside the step list");
 else {
   const b = await box.boundingBox();
@@ -217,8 +218,8 @@ else {
   else console.log("the box runs from the Run row to the Boom row, alongside the steps");
 }
 
-// A mech is never moved as a block: pulling its lower half down is "it goes off
-// later", and the snapshot stays exactly where it was.
+// The bottom strip is only the resolve: pulling it down is "it goes off later",
+// and the snapshot stays exactly where it was.
 await dragBox(boxOf(3), "bottom", "4. After");
 doc = await load();
 const pulled = doc.mechs[0];

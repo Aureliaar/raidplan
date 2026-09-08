@@ -42,13 +42,16 @@ await api(`/api/plans/${id}/ops`, {
 await page.goto(`${base}/p/${id}`);
 await page.waitForSelector("canvas");
 await page.waitForTimeout(700);
-await page.locator("header select").selectOption("all");
 
 const canvas = page.locator("canvas").first();
 const box = await canvas.boundingBox();
 const scale = viewScale(box.width);
 const at = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 const plan = (await api(`/api/plans/${id}`)).plan;
+// Drags land as a declaration in the step you are on, so read the step's pose.
+const stepId = plan.steps[0].id;
+const pose = (entity) => ({ ...entity, ...(entity.overrides?.[stepId] ?? {}) });
+const at_ = (list, name) => pose(list.find((e) => e.name === name));
 const left = plan.entities.find((e) => e.name === "left");
 const right = plan.entities.find((e) => e.name === "right");
 
@@ -71,9 +74,9 @@ await page.mouse.move(to.x, to.y, { steps: 10 });
 await page.mouse.up();
 await page.waitForTimeout(600);
 const moved = (await api(`/api/plans/${id}`)).plan.entities;
-const movedLeft = moved.find((e) => e.name === "left");
-const movedRight = moved.find((e) => e.name === "right");
-const low = moved.find((e) => e.name === "low");
+const movedLeft = at_(moved, "left");
+const movedRight = at_(moved, "right");
+const low = at_(moved, "low");
 if (Math.hypot(movedLeft.x - (left.x + 70), movedLeft.y - (left.y + 45)) > 8)
   fail(`dragged member moved to ${movedLeft.x},${movedLeft.y}`);
 if (Math.hypot(movedRight.x - (right.x + 70), movedRight.y - (right.y + 45)) > 8)
@@ -91,8 +94,8 @@ await page.mouse.move(orbitTo.x, orbitTo.y, { steps: 12 });
 await page.mouse.up();
 await page.waitForTimeout(600);
 const orbited = (await api(`/api/plans/${id}`)).plan.entities;
-const orbitLeft = orbited.find((e) => e.name === "left");
-const orbitRight = orbited.find((e) => e.name === "right");
+const orbitLeft = at_(orbited, "left");
+const orbitRight = at_(orbited, "right");
 if (Math.hypot(orbitLeft.x + movedLeft.y, orbitLeft.y - movedLeft.x) > 8)
   fail(`rotate mode translated the grabbed member to ${orbitLeft.x},${orbitLeft.y}`);
 if (Math.hypot(orbitRight.x + movedRight.y, orbitRight.y - movedRight.x) > 8)
@@ -109,8 +112,8 @@ await page.mouse.move(radialTo.x, radialTo.y, { steps: 10 });
 await page.mouse.up();
 await page.waitForTimeout(600);
 const scaled = (await api(`/api/plans/${id}`)).plan.entities;
-const scaledLeft = scaled.find((e) => e.name === "left");
-const scaledRight = scaled.find((e) => e.name === "right");
+const scaledLeft = at_(scaled, "left");
+const scaledRight = at_(scaled, "right");
 if (Math.hypot(scaledLeft.x - orbitLeft.x * 1.5, scaledLeft.y - orbitLeft.y * 1.5) > 8)
   fail(`radial adjustment snapped back to ${scaledLeft.x},${scaledLeft.y}`);
 if (Math.hypot(scaledRight.x - orbitRight.x * 1.5, scaledRight.y - orbitRight.y * 1.5) > 8)
@@ -132,6 +135,85 @@ state = await page.evaluate(() => ({
 }));
 if (state.selected !== 3 || state.axis !== 1) fail(`marquee selection state ${JSON.stringify(state)}`);
 else console.log("drag-box replaces the selection and keeps the axis visible");
+
+/* --- a selection carries only what can move ------------------------------- */
+// A tether has no pose of its own and a bait rides whoever it is aimed at, so
+// sweeping either into a selection must leave it exactly as authored: nudging
+// the bait here would stack on the movement it already inherits from its
+// target, and the spread would end up twice as far as the player it marks.
+const clearedIds = (await api(`/api/plans/${id}`)).plan.entities.map((e) => e.id);
+await api(`/api/plans/${id}/ops`, {
+  method: "POST",
+  body: JSON.stringify({
+    ops: [
+      { op: "delete_entities", ids: clearedIds },
+      { op: "add_entity", spec: { type: "player", name: "A", x: -120, y: 300 } },
+      { op: "add_entity", spec: { type: "player", name: "B", x: 120, y: 300 } },
+    ],
+  }),
+});
+const withParty = (await api(`/api/plans/${id}`)).plan.entities;
+const aId = withParty.find((e) => e.name === "A").id;
+const bId = withParty.find((e) => e.name === "B").id;
+await api(`/api/plans/${id}/ops`, {
+  method: "POST",
+  body: JSON.stringify({
+    ops: [
+      {
+        op: "add_entity",
+        spec: {
+          type: "zone",
+          shape: "spread",
+          name: "spread A",
+          radius: 90,
+          x: 0,
+          y: 0,
+          anchor: { to: aId },
+        },
+      },
+      { op: "add_entity", spec: { type: "tether", name: "A-B", from: aId, to: bId } },
+    ],
+  }),
+});
+await page.reload();
+await page.waitForSelector("canvas");
+await page.waitForTimeout(700);
+
+// A marquee over the pair sweeps up the spread and the tether with them.
+const partyA = at(-330, 190);
+const partyB = at(330, 400);
+await page.mouse.move(partyA.x, partyA.y);
+await page.mouse.down();
+await page.mouse.move(partyB.x, partyB.y, { steps: 12 });
+await page.mouse.up();
+await page.waitForTimeout(100);
+// Three rings for the two players and the spread; a tether shows its selection
+// by thickening its own line rather than by wearing a ring.
+const swept = await page.evaluate(() => window.Konva.stages[0].find(".selection").length);
+if (swept !== 3) fail(`marquee over the party ringed ${swept} things, expected 3`);
+
+const grabA = at(-120, 300);
+const dropA = at(-120 + 90, 300 - 60);
+await page.mouse.move(grabA.x, grabA.y);
+await page.mouse.down();
+await page.mouse.move(dropA.x, dropA.y, { steps: 12 });
+await page.mouse.up();
+await page.waitForTimeout(700);
+const carried = (await api(`/api/plans/${id}`)).plan.entities;
+const aAfter = at_(carried, "A");
+const bAfter = at_(carried, "B");
+const spreadAfter = at_(carried, "spread A");
+const tetherAfter = at_(carried, "A-B");
+if (Math.hypot(aAfter.x - -30, aAfter.y - 240) > 8)
+  fail(`grabbed player landed at ${aAfter.x},${aAfter.y}`);
+if (Math.hypot(bAfter.x - 210, bAfter.y - 240) > 8)
+  fail(`the other player did not come along: ${bAfter.x},${bAfter.y}`);
+if (spreadAfter.x !== 0 || spreadAfter.y !== 0)
+  fail(`the bait took a nudge on top of its target: ${spreadAfter.x},${spreadAfter.y}`);
+if (!spreadAfter.anchor || spreadAfter.anchor.to !== aId) fail("the bait lost its anchor");
+if (tetherAfter.x !== 0 || tetherAfter.y !== 0)
+  fail(`the tether was moved to ${tetherAfter.x},${tetherAfter.y}`);
+else console.log("a selection holding a bait and a tether moves only the movable members");
 
 await browser.close();
 if (!process.exitCode) console.log("OK - multi-selection gestures and shared movement");

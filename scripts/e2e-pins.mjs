@@ -42,9 +42,9 @@ const at = (x, y) => ({
 
 await page.mouse.click(...Object.values(at(pose.x, pose.y)));
 await page.waitForTimeout(150);
-// The resize tick rides the selection ring at its south-east point; dragging
-// it away from the token's centre grows the token.
-const ring = (actor.size / 2 + 14) * actor.scale * Math.SQRT1_2;
+// The resize tick rides the hairline hugging the token, at its south-east
+// corner two pixels out; dragging it away from the centre grows the token.
+const ring = (actor.size / 2) * actor.scale + 2 / scale;
 const corner = at(pose.x + ring, pose.y + ring);
 await page.mouse.move(corner.x, corner.y);
 await page.mouse.down();

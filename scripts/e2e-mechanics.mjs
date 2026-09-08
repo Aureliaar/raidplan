@@ -63,6 +63,22 @@ async function dragOnto(from, to) {
   await page.waitForTimeout(800);
 }
 
+/** How many set rows the Groups popover shows for a label right now. */
+const groupSets = async (text) => {
+  // The sets a group carries live in the Groups popover on the Add panel, and
+  // the Add panel is only up when nothing is selected — so put the selection
+  // down first, exactly as a person would before going to look.
+  const cb = await page.locator("canvas").first().boundingBox();
+  await page.mouse.click(cb.x + 8, cb.y + 8);
+  await page.waitForTimeout(250);
+  await page.getByRole("button", { name: "Groups" }).click();
+  await page.waitForTimeout(250);
+  const seen = await page.getByText(text, { exact: true }).count();
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(200);
+  return seen;
+};
+
 /** The step row the rail has selected, which is the step the canvas draws. */
 const selectedRow = () =>
   page.locator('nav button[data-step][aria-current="step"]').first().innerText();
@@ -110,7 +126,7 @@ else console.log('F2 on the heading renamed the mechanic: "Witch Hunt"');
 
 /* --- steps added in a section belong to it -------------------------------- */
 
-await page.getByRole("button", { name: "Add step after this one" }).click();
+await page.locator('[data-current="true"]').getByRole("button", { name: "Add step after this one" }).click();
 await page.waitForTimeout(700);
 doc = await load();
 const mine = stepsOf(doc, mechanicId);
@@ -149,8 +165,8 @@ await page
   .last()
   .dragTo(page.locator("div", { hasText: /^Party$/ }).last());
 await page.waitForTimeout(1100);
-if (!(await page.getByText("Donut ×8", { exact: true }).count()))
-  fail("the open cast's Party set is missing from the group card");
+if (!(await groupSets("Donut ×8")))
+  fail("the open cast's Party set is missing from the Groups popover");
 await page.getByRole("button", { name: "done editing Beat" }).click();
 await page.waitForTimeout(300);
 doc = await load();
@@ -158,18 +174,18 @@ const mechId = doc.mechs[0]?.id;
 const donuts = doc.entities.filter((e) => e.mech === mechId);
 if (donuts.length !== 8) fail("the cast in the section holds " + donuts.length + " shapes");
 else console.log("a cast with eight donuts snapshots in the section's first step");
-if (await page.getByText("Donut ×8", { exact: true }).count())
-  fail("the closed cast's Party set leaked into the unscoped group card");
+if (await groupSets("Donut ×8"))
+  fail("the closed cast's Party set leaked into the unscoped Groups popover");
 await page.locator(`[data-mech="${mechId}"]`).click();
 await page.waitForTimeout(200);
-if (!(await page.getByText("Donut ×8", { exact: true }).count()))
+if (!(await groupSets("Donut ×8")))
   fail("the Party set did not return when its cast was selected again");
-else console.log("group-card sets follow the cast currently selected");
+else console.log("group sets follow the cast currently selected");
 await page.getByRole("button", { name: "done editing Beat" }).click();
 
 /* --- a cast still drags across its section's rows ------------------------- */
 
-const box = page.getByTitle(/snapshots in step 1, goes off in step 1/);
+const box = page.getByTitle(/casts in step 1, resolves in step 1/);
 if (!(await box.count())) fail("no cast box beside the open section's rows");
 else {
   const b = await box.boundingBox();
@@ -274,7 +290,7 @@ else if (!(await page.getByRole("button", { name: "1. Snapshot" }).isVisible()))
   fail("the old plan's steps are not listed inside the section");
 else if (!(await page.getByRole("button", { name: "2. Resolve" }).isVisible()))
   fail("only the first of the old plan's steps is there");
-else if (!(await page.getByTitle(/snapshots in step 1, goes off in step 2/).count()))
+else if (!(await page.getByTitle(/casts in step 1, resolves in step 2/).count()))
   fail("the old plan's cast box is not beside the section's rows");
 else console.log("its steps and its cast box are inside that one section");
 

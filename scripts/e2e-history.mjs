@@ -67,7 +67,14 @@ else console.log("Ctrl+Z and Ctrl+Y drive the persistent stack");
 
 // Make an edit in this tab so it has both sides of the history handoff, then
 // delay the network. Undo and redo should paint their cached target immediately.
+// The plan title reads as text until you click it into a field, and reads as
+// text again once the field commits and closes.
 const nameInput = page.locator("header input").first();
+const planName = async () =>
+  (await nameInput.count())
+    ? await nameInput.inputValue()
+    : await page.locator("header [data-plan-name]").getAttribute("data-plan-name");
+if (!(await nameInput.count())) await page.locator("header [data-plan-name]").click();
 const saved = page.waitForResponse(
   (response) => response.url().includes(`/api/plans/${planId}/ops`) && response.request().method() === "POST"
 );
@@ -84,7 +91,7 @@ const undoSettled = page.waitForResponse(
 );
 await page.getByTitle("Undo (Ctrl+Z)").click();
 await page.waitForTimeout(50);
-if ((await nameInput.inputValue()) !== "second revision")
+if ((await planName()) !== "second revision")
   fail("undo waited for the delayed server response before painting its known snapshot");
 else console.log("undo paints its known snapshot before the server round trip");
 await undoSettled;
@@ -98,7 +105,7 @@ const redoSettled = page.waitForResponse(
 );
 await page.getByTitle("Redo (Ctrl+Y or Ctrl+Shift+Z)").click();
 await page.waitForTimeout(50);
-if ((await nameInput.inputValue()) !== "instant revision")
+if ((await planName()) !== "instant revision")
   fail("redo waited for the delayed server response before painting its known snapshot");
 else console.log("redo paints its known snapshot before the server round trip");
 await redoSettled;

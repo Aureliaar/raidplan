@@ -64,7 +64,7 @@ export type Op =
   | { op: "update_beat_variant_route"; routeId: string; patch: { name?: string; selections?: Record<string, string> } }
   | { op: "delete_beat_variant_route"; routeId: string }
   | { op: "set_default_beat_variant_route"; routeId?: string }
-  | { op: "add_mech"; id?: string; name?: string; snap?: string; boom?: string; color?: string; plain?: boolean }
+  | { op: "add_mech"; id?: string; name?: string; snap?: string; boom?: string; freeze?: string; color?: string; plain?: boolean }
   | { op: "merge_mechs"; into: string; mechIds: string[] }
   | { op: "update_mech"; mechId: string; patch: Partial<Omit<Mech, "id">> }
   | { op: "delete_mech"; mechId: string; keepEntities?: boolean }

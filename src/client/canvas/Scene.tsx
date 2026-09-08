@@ -1,5 +1,6 @@
 import {
   Fragment,
+  type MutableRefObject,
   type ReactNode,
   useEffect,
   useLayoutEffect,
@@ -26,7 +27,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
-import { authoredEntitiesForStep, entitiesForStep } from "../../shared/schema";
+import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy } from "../../shared/schema";
 import { composeStepVariantEntities } from "../../shared/step-variants";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
@@ -114,6 +115,8 @@ export interface SceneProps {
   symmetryCount?: SymmetryCount;
   symmetryKind?: SymmetryKind;
   layer?: EditLayer;
+  /** Which kinds of floor item get a leader and a chip beyond the selection: the party, the rest. */
+  chips?: { party: boolean; others: boolean };
   /** A bond or mech id whose shapes should light up — the row being hovered. */
   highlight?: string | null;
   /** What the party wears while a debuff mech is on the floor, by player id. */
@@ -130,6 +133,12 @@ export interface SceneProps {
    * should not land it again.
    */
   onward?: boolean;
+  /**
+   * Filled with a function that starts a selection sweep from a mouse-down
+   * that landed beside the canvas, so a box can be drawn in from the page
+   * around it: the chips sit at the very edge, and the hand wants room.
+   */
+  sweep?: MutableRefObject<((ev: MouseEvent) => void) | null>;
   /** Intercept a click before normal selection/dragging, for two-click authoring tools. */
   onPick?(id: string): boolean;
   onSelect(ids: string[]): void;
@@ -152,6 +161,14 @@ export interface SceneProps {
 
 /** How long the floor takes to walk into the next step, and its easing. */
 const GLIDE_MS = 260;
+/**
+ * How the chips leave when the floor starts moving and how they come back. Out
+ * quickly, because the picture they describe is already stale; back only after
+ * a wait, so a run of step presses never flickers them in between.
+ */
+const CHIPS_OUT_MS = 120;
+const CHIPS_WAIT_MS = 260;
+const CHIPS_IN_MS = 220;
 const ease = (p: number) => p * p * (3 - 2 * p);
 
 /**
@@ -169,7 +186,7 @@ function useGlide(
   target: Entity[],
   glide: number,
   onward: boolean
-): { entities: Entity[]; going: Set<string>; blast: Map<string, number> } {
+): { entities: Entity[]; going: Set<string>; blast: Map<string, number>; walking: boolean } {
   const [, frame] = useReducer((n: number) => n + 1, 0);
   /** What was on the floor when this move set off, and what is on it right now. */
   const from = useRef(new Map<string, Entity>());
@@ -205,7 +222,7 @@ function useGlide(
   const blast = new Map<string, number>();
   if (p >= 1) {
     drawn.current = new Map(target.map((e) => [e.id, e]));
-    return { entities: target, going, blast };
+    return { entities: target, going, blast, walking: false };
   }
 
   const k = ease(p);
@@ -253,7 +270,107 @@ function useGlide(
   // over the party walking away from it.
   const entities = leaving.length ? [...leaving, ...moving] : moving;
   drawn.current = new Map(entities.map((e) => [e.id, e]));
-  return { entities, going, blast };
+  return { entities, going, blast, walking: true };
+}
+
+/**
+ * The chips stand down while the floor is in motion. A margin full of leaders
+ * and plates relaid under the hand is the readout least worth having then: it
+ * reflows faster than it can be read. So the leaders are cut the instant
+ * something moves and the plates fade out from where they already stood, then
+ * fade back in a beat after everything settles — which also means holding a
+ * step key never flickers them in and out.
+ *
+ * Because they have a canvas to themselves, standing down costs nothing and
+ * being away costs nothing: one redraw to cut the leaders, then a fade the
+ * browser composites, and not a pixel more until they are wanted again.
+ *
+ * Both fades are driven straight at the canvas element rather than through
+ * state: a render per frame is among the costs this is here to avoid.
+ */
+function useChipsFade(moving: boolean) {
+  const layer = useRef<Konva.Layer>(null);
+  const group = useRef<Konva.Group>(null);
+  const leaders = useRef<Konva.Group>(null);
+  /** False while the chips are away: still mounted, just not current or lit. */
+  const [shown, setShown] = useState(true);
+  const raf = useRef(0);
+  const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+
+  /**
+   * Walk the chips' own canvas to `to`. This is a style on the canvas element,
+   * not a Konva opacity: the browser composites it, so a fade costs no drawing
+   * at all — which is the whole point of the chips having a canvas of their
+   * own. Nothing is redrawn between the first frame of the fade and the last.
+   */
+  const fade = (to: number, ms: number, done?: () => void) => {
+    const canvas = layer.current?.getNativeCanvasElement();
+    if (!canvas) return done?.();
+    const from = Number(canvas.style.opacity === "" ? 1 : canvas.style.opacity);
+    const startedAt = performance.now();
+    cancelAnimationFrame(raf.current);
+    const tick = () => {
+      const p = Math.min(1, (performance.now() - startedAt) / ms);
+      canvas.style.opacity = String(from + (to - from) * p);
+      if (p < 1) raf.current = requestAnimationFrame(tick);
+      else done?.();
+    };
+    raf.current = requestAnimationFrame(tick);
+  };
+
+  useEffect(() => {
+    clearTimeout(timer.current);
+    if (moving) {
+      if (!shown) return;
+      // The leaders go at once. A hairline is a line drawn between two places,
+      // and one of them has just started moving out from under it: held for
+      // even a few frames it points at the wrong thing, which is worse than not
+      // being drawn. Cutting them is the one redraw this layer gets; the plates
+      // it fed then fade where they stand, on a canvas nothing touches again.
+      leaders.current?.visible(false);
+      layer.current?.batchDraw();
+      setShown(false);
+      fade(0, CHIPS_OUT_MS);
+      return;
+    }
+    if (shown) return;
+    timer.current = setTimeout(() => setShown(true), CHIPS_WAIT_MS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [moving, shown]);
+
+  // Back on the floor at nothing, walking up to full. The layout is fresh by
+  // now — the render that set this off rebuilt it — so all that is left is to
+  // put the leaders back and let the browser bring the canvas up.
+  useLayoutEffect(() => {
+    if (!shown || !layer.current) return;
+    leaders.current?.visible(true);
+    layer.current.batchDraw();
+    fade(1, CHIPS_IN_MS);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shown]);
+
+  /**
+   * A second layer is a second canvas, stacked over the first and covering the
+   * whole stage. Konva hears the pointer on the container that holds them both
+   * and does its own hit testing across layers, so this canvas never needs to
+   * be a target itself — and left as one it shadows the floor beneath it for
+   * anything that asks the document what is under the cursor. Reasserted on
+   * every render because a resize rebuilds the element.
+   */
+  useLayoutEffect(() => {
+    const canvas = layer.current?.getNativeCanvasElement();
+    if (canvas) canvas.style.pointerEvents = "none";
+  });
+
+  useEffect(
+    () => () => {
+      cancelAnimationFrame(raf.current);
+      clearTimeout(timer.current);
+    },
+    []
+  );
+
+  return { layer, group, leaders, shown };
 }
 
 export function Scene({
@@ -267,10 +384,12 @@ export function Scene({
   symmetryCount = 1,
   symmetryKind = "mirror",
   layer = "step",
+  chips = { party: false, others: false },
   highlight,
   dress,
   glide = 0,
   onward = true,
+  sweep,
   onPick,
   onSelect,
   onMove,
@@ -347,8 +466,51 @@ export function Scene({
   }, [plan, stepId, shown, committed, dragging, layer, symmetryCount, symmetryKind]);
   // What is actually on the floor this frame: the step's shapes, or them on
   // their way there. Everything below reads this, so a walk moves the lot.
-  const { entities, going, blast } = useGlide(settled, glide, onward);
+  const { entities, going, blast, walking } = useGlide(settled, glide, onward);
+  // What actually moves the floor: a walk between steps, or something in the
+  // hand. A marquee is not motion — and sweeping the margin over a run of chips
+  // is how a pile on one tile gets selected, so they have to be there for it.
+  const chipsMoving = walking || !!dragging;
+  const chipsFade = useChipsFade(chipsMoving);
+  /**
+   * The chips as they last stood on a still floor. Laying them out again while
+   * something is moving would be work spent on a readout nobody can read —
+   * plates reflowing down the margin under the hand — so the element from the
+   * last still frame is what stays on screen and fades. Held through a ref and
+   * handed back unchanged, which is React's cue to leave the whole subtree
+   * alone: no layout, no text measuring, no touching a single node. It stays
+   * held while they are away, too: a run of step presses would otherwise relay
+   * the whole margin, once per press, into a canvas nobody can see.
+   */
+  const chipsHeld = useRef<ReactNode>(null);
+  if (!chipsMoving && chipsFade.shown) {
+    chipsHeld.current = (
+      <Chips
+        entities={entities.filter(
+          (e) =>
+            (selectedIds.has(e.id) ||
+              ((e.type === "player" ? chips.party : chips.others) && !frozen(e))) &&
+            e.type !== "tether" &&
+            // The copies of a counted bait share the bait's chip.
+            !isFanCopy(e.id) &&
+            !going.has(e.id)
+        )}
+        selectedIds={selectedIds}
+        pixelsPerUnit={scale}
+        viewHalf={size / 2 / scale}
+        floorHalf={arena.width / 2}
+        dress={dress}
+        leaders={chipsFade.leaders}
+      />
+    );
+  }
   const byId = useMemo(() => new Map(entities.map((e) => [e.id, e])), [entities]);
+  /**
+   * A counted bait is one selectable thing drawn several times, so every copy
+   * answers for the entity it came from: clicking one selects the bait, and all
+   * of them wear the selection outline.
+   */
+  const lit = (e: Entity) => selectedIds.has(fanOwnerId(e.id));
 
   const footprints = useMemo(
     () => new Map(entities.map((e) => [e.id, hitArea(e, byId)])),
@@ -394,12 +556,26 @@ export function Scene({
   // after entities cross one another.
   const selectionPivot = { x: 0, y: 0 };
 
+  /**
+   * What a group drag can carry. A tether is two endpoints with nothing in
+   * between to move, and a bait is owned by whoever it is aimed at rather than
+   * by a coordinate, so it already travels on its own. Selecting either is
+   * still how their shared style becomes editable — the selection just leaves
+   * them where they are.
+   */
+  const carriable = (e: Entity) => !frozen(e) && !e.locked && e.type !== "tether" && !e.anchor;
+
   function beginGroupDrag(id: string, picked: Set<string> = selectedIds) {
     const source = committed.find((e) => e.id === id);
     if (!source) return;
     const members = new Map<string, { x: number; y: number; shownX: number; shownY: number }>();
     for (const e of committed) {
-      if (!picked.has(e.id) || frozen(e) || e.locked || e.type === "tether") continue;
+      // The bait you actually grabbed is the exception: dragging it by hand is
+      // how its nudge off the target is authored. Swept up in a selection it
+      // would instead take that nudge on top of the movement it inherits, so a
+      // marquee over a party would leave every spread doubly displaced.
+      const grabbedBait = e.id === id && !!e.anchor && !frozen(e) && !e.locked;
+      if (!picked.has(e.id) || !(carriable(e) || grabbedBait)) continue;
       const base = anchorBase.get(e.id);
       members.set(e.id, {
         x: e.x - (base?.x ?? 0),
@@ -570,9 +746,13 @@ export function Scene({
     let best: { node: Konva.Group; id: string } | undefined;
     let bestSize = Infinity;
     for (const shape of hits) {
-      const group = shape.findAncestor(".entity", true) as Konva.Group | undefined;
-      const id = group?.id();
-      if (!group || !id) continue;
+      const hitGroup = shape.findAncestor(".entity", true) as Konva.Group | undefined;
+      const hitId = hitGroup?.id();
+      if (!hitGroup || !hitId) continue;
+      // Grabbing copy three of a counted bait grabs the bait: the drag becomes
+      // the one nudge every copy shares, so it is the owner's node that moves.
+      const id = fanOwnerId(hitId);
+      const group = (id === hitId ? hitGroup : (stage.findOne(`#${id}`) as Konva.Group | undefined)) ?? hitGroup;
       // A short tether covers less ground than the tokens it joins, which made
       // the token at either end unclickable — you would grab the tether instead,
       // and tethers do not drag, so the token simply stopped responding. A
@@ -602,6 +782,20 @@ export function Scene({
             (stagePoint.y - size / 2) / scale - entity.y,
           ) <= entity.size * entity.scale * 0.55
       );
+    const additive = "shiftKey" in evt.evt && evt.evt.shiftKey;
+    // A chip stands in for the thing it names: clicking it selects
+    // that thing, and with shift held adds it to (or drops it from) the set.
+    // That is what makes a stack of things on one tile pickable one by one.
+    const chip = evt.target.findAncestor(".chip", true) as Konva.Group | undefined;
+    const chipFor = chip?.getAttr("entityId") as string | undefined;
+    if (chipFor) {
+      if (additive) {
+        onSelect(selected.includes(chipFor) ? selected.filter((id) => id !== chipFor) : [...selected, chipFor]);
+      } else {
+        onSelect([chipFor]);
+      }
+      return;
+    }
     const best = under(evt);
     // A bare waymark is frozen scenery on the Step layer. An editable shape
     // visibly on top of it still wins, though: otherwise a player parked on a
@@ -610,11 +804,11 @@ export function Scene({
       onSelect([]);
       return;
     }
-    const additive = "shiftKey" in evt.evt && evt.evt.shiftKey;
     if (!best) {
-      const point = evt.target.getStage()?.getPointerPosition();
-      if (editable && point && evt.evt instanceof MouseEvent && evt.evt.button === 0) {
-        setMarquee({ from: point, to: point, additive });
+      const stage = evt.target.getStage();
+      const point = stage?.getPointerPosition();
+      if (editable && stage && point && evt.evt instanceof MouseEvent && evt.evt.button === 0) {
+        startMarquee(stage, point, additive);
       } else if (!additive) {
         onSelect([]);
       }
@@ -655,28 +849,78 @@ export function Scene({
     }
   }
 
-  function dragSelection(evt: Konva.KonvaEventObject<MouseEvent>) {
-    if (!marquee) return;
-    const point = evt.target.getStage()?.getPointerPosition();
-    if (point) setMarquee({ ...marquee, to: point });
+  /**
+   * The marquee follows the pointer off the canvas too. A sweep down the
+   * margin's chips runs right along the stage edge, and the stage stops
+   * hearing the mouse the moment it crosses that edge: the box would freeze
+   * there and a release outside would never finish it.
+   */
+  function startMarquee(stage: Konva.Stage, from: { x: number; y: number }, additive: boolean) {
+    let to = from;
+    setMarquee({ from, to, additive });
+    const track = (move: MouseEvent) => {
+      stage.setPointersPositions(move);
+      const point = stage.getPointerPosition();
+      if (!point) return;
+      to = point;
+      setMarquee({ from, to, additive });
+    };
+    const release = () => {
+      window.removeEventListener("mousemove", track);
+      window.removeEventListener("mouseup", release);
+      finishSelection.current(stage, from, to, additive);
+    };
+    window.addEventListener("mousemove", track);
+    window.addEventListener("mouseup", release);
   }
 
-  function finishSelection(evt: Konva.KonvaEventObject<MouseEvent>) {
-    if (!marquee) return;
-    const point = evt.target.getStage()?.getPointerPosition() ?? marquee.to;
-    const left = Math.min(marquee.from.x, point.x);
-    const top = Math.min(marquee.from.y, point.y);
-    const box = { x: left, y: top, width: Math.abs(point.x - marquee.from.x), height: Math.abs(point.y - marquee.from.y) };
-    const hits = entities
-      .filter((e) => !frozen(e))
-      .filter((e) => {
-        const node = evt.target.getStage()?.findOne(`#${e.id}`);
-        if (!node) return false;
-        const r = node.getClientRect();
-        return r.x <= box.x + box.width && r.x + r.width >= box.x && r.y <= box.y + box.height && r.y + r.height >= box.y;
-      })
-      .map((e) => e.id);
-    onSelect(marquee.additive ? [...new Set([...selected, ...hits])] : hits);
+  // Read through a ref at release time, so the sweep settles against the
+  // floor as it is then, not as it was when the button went down.
+  const finishSelection = useRef(finishMarquee);
+  finishSelection.current = finishMarquee;
+
+  const stageRef = useRef<Konva.Stage>(null);
+  useEffect(() => {
+    if (!sweep) return;
+    sweep.current = (ev: MouseEvent) => {
+      const stage = stageRef.current;
+      if (!stage || !editable || ev.button !== 0) return;
+      stage.setPointersPositions(ev);
+      const point = stage.getPointerPosition();
+      if (point) startMarquee(stage, point, ev.shiftKey);
+    };
+    return () => {
+      sweep.current = null;
+    };
+  });
+  function finishMarquee(
+    stage: Konva.Stage,
+    from: { x: number; y: number },
+    point: { x: number; y: number },
+    additive: boolean
+  ) {
+    const left = Math.min(from.x, point.x);
+    const top = Math.min(from.y, point.y);
+    const box = { x: left, y: top, width: Math.abs(point.x - from.x), height: Math.abs(point.y - from.y) };
+    const inBox = (node: Konva.Node | undefined) => {
+      if (!node) return false;
+      const r = node.getClientRect();
+      return r.x <= box.x + box.width && r.x + r.width >= box.x && r.y <= box.y + box.height && r.y + r.height >= box.y;
+    };
+    // A chip stands in for its thing here too: sweeping a box down the margin
+    // over a run of chips is how a pile of things on one tile gets selected.
+    const swept = new Set(
+      stage.find(".chip").filter(inBox).map((chip) => chip.getAttr("entityId") as string)
+    );
+    const hits = [
+      ...new Set(
+        entities
+          .filter((e) => !frozen(e))
+          .filter((e) => swept.has(e.id) || inBox(stage.findOne(`#${e.id}`)))
+          .map((e) => fanOwnerId(e.id))
+      ),
+    ];
+    onSelect(additive ? [...new Set([...selected, ...hits])] : hits);
     setMarquee(null);
   }
 
@@ -700,14 +944,21 @@ export function Scene({
     onResize(ids, evt.evt.deltaY < 0 ? step : 1 / step, evt.evt.ctrlKey ? "opacity" : "size");
   }
 
+  // The one thing the pins are on, if any: its hairline is theirs to draw, so
+  // it can follow a resize or a turn mid-gesture.
+  const pinnedId = (() => {
+    if (!editable || selectedIds.size !== 1) return null;
+    const entity = entities.find((candidate) => selectedIds.has(candidate.id));
+    return entity && !frozen(entity) && !entity.locked && entity.type !== "tether" ? entity.id : null;
+  })();
+
   return (
     <Stage
+      ref={stageRef}
       width={size}
       height={size}
       onMouseDown={pickAt}
       onTouchStart={pickAt}
-      onMouseMove={dragSelection}
-      onMouseUp={finishSelection}
       onWheel={wheelAt}
     >
       <Layer>
@@ -755,11 +1006,26 @@ export function Scene({
               >
                 <GrabTarget entity={e} />
                 <EntityShape entity={e} blast={blast.get(e.id) ?? 0} dress={dress?.get(e.id)} />
-                {/* One selected thing gets the pins' quiet ring instead; a
-                    group shows who is coming along before anything moves. */}
-                {((selectedIds.size > 1 && selectedIds.has(e.id)) ||
-                  (!!highlight && (e.bond?.id === highlight || e.mech === highlight))) && (
-                  <SelectionRing entity={e} />
+                {/* A selected thing wears a hairline in its own colour, hugging
+                    its silhouette; the one under the pins draws it there
+                    instead. A highlighted row's shapes light up in the accent. */}
+                {lit(e) && e.id !== pinnedId ? (
+                  <SilhouetteEdge
+                    name="selection"
+                    silhouette={silhouetteOf(e)}
+                    unit={1 / scale / e.scale}
+                    color={chipColor(e)}
+                  />
+                ) : (
+                  !!highlight &&
+                  (e.bond?.id === highlight || e.mech === highlight) && (
+                    <SilhouetteEdge
+                      silhouette={silhouetteOf(e)}
+                      unit={1 / scale / e.scale}
+                      color={ACCENT}
+                      width={2}
+                    />
+                  )
                 )}
               </Group>
             )
@@ -778,7 +1044,7 @@ export function Scene({
               listening={false}
             >
               <EntityShape entity={e} />
-              <SelectionRing entity={e} />
+              <SilhouetteEdge silhouette={silhouetteOf(e)} unit={1 / scale / e.scale} color={ACCENT} width={2} />
             </Group>
           ))}
           {/*
@@ -897,12 +1163,12 @@ export function Scene({
               kind={symmetryKind}
               count={symmetryCount}
               pivot={selectionPivot}
-              entities={entities.filter((e) => selectedIds.has(e.id))}
+              entities={entities.filter((e) => selectedIds.has(e.id) && carriable(e))}
             />
           )}
-          {editable && selectedIds.size === 1 && (() => {
-            const entity = entities.find((candidate) => selectedIds.has(candidate.id));
-            return entity && !frozen(entity) && !entity.locked && entity.type !== "tether" ? (
+          {pinnedId && (() => {
+            const entity = byId.get(pinnedId);
+            return entity && entity.type !== "tether" ? (
               <SelectionPins
                 entity={entity}
                 pixelsPerUnit={scale}
@@ -911,6 +1177,21 @@ export function Scene({
               />
             ) : null;
           })()}
+        </Group>
+      </Layer>
+      {/* Every selected thing gets a leader out to a chip in the margin: the
+          readout that says what is selected, and stays clickable when the
+          things themselves are piled on one tile.
+
+          It gets a canvas of its own. A Konva layer is only redrawn when
+          something in it changes, so while the floor is moving — and it is the
+          floor that is moving, not the margin — this one is simply left alone,
+          holding the picture it already had. Nothing about a walk or a drag
+          costs it a single pixel, and the fade is done on the canvas element
+          rather than by drawing, so it costs nothing either. */}
+      <Layer ref={chipsFade.layer} listening={chipsFade.shown && !chipsMoving}>
+        <Group x={size / 2} y={size / 2} scaleX={scale} scaleY={scale}>
+          <Group ref={chipsFade.group}>{chipsHeld.current}</Group>
         </Group>
       </Layer>
       {marquee && (
@@ -1000,15 +1281,16 @@ function SelectionPins({
       : null;
   const liveW = boxy ? (live?.width ?? boxy.width) : 0;
   const liveL = boxy ? (live?.length ?? boxy.length) : 0;
-  // The margin follows the dimensions being dragged, not the authored ones,
-  // so the ring keeps hugging the shape mid-gesture.
-  const hint = boxy ? Math.max(liveW, liveL) / 2 : radiusHint(entity);
-  const outerRing = Math.max((hint + 14) * entity.scale * factor, 14 * unit);
-  // A big shape's ring keeps its full margin as long as it fits on screen;
-  // only the viewport edge shrinks it (over the shape's own body if need be).
-  const viewRadius = Math.min(viewHalf - Math.abs(entity.x), viewHalf - Math.abs(entity.y));
-  const maxRing = Math.max(viewRadius - 4, 20 * unit);
-  const ring = Math.min(outerRing, maxRing);
+  // The ticks ride the hairline that hugs the shape, so how far out one sits
+  // depends on which way it faces: a token's corner is further out than its
+  // side. Everything follows the dimensions being dragged, not the authored
+  // ones, so the hairline keeps hugging the shape mid-gesture.
+  const silhouette = silhouetteOf(entity, { width: liveW, length: liveL });
+  const edgeScale = entity.scale * factor;
+  const edgeAt = (dx: number, dy: number) => {
+    const d = Math.max(rayOut(silhouette, edgeScale, rotation, dx, dy) + 2 * unit, 14 * unit);
+    return { x: dx * d, y: dy * d };
+  };
   // No grip may leave the visible floor, wherever its edge or ring point
   // lands: pull it straight back inside, keeping its grab disc whole.
   const clampView = (p: { x: number; y: number }) => ({
@@ -1017,9 +1299,9 @@ function SelectionPins({
   });
   // The resize tick keeps the old corner convention (south-east); the rotate
   // tick rides the ring at the object's facing, so it follows a turn.
-  const resizeAt = clampView({ x: ring * Math.SQRT1_2, y: ring * Math.SQRT1_2 });
+  const resizeAt = clampView(edgeAt(Math.SQRT1_2, Math.SQRT1_2));
   const rotateRad = ((rotation - 90) * Math.PI) / 180;
-  const rotateAt = clampView({ x: ring * Math.cos(rotateRad), y: ring * Math.sin(rotateRad) });
+  const rotateAt = clampView(edgeAt(Math.cos(rotateRad), Math.sin(rotateRad)));
   // A donut's hole and a cone's spread are the values the wheel cannot reach:
   // each gets a tick directly on the edge it edits.
   const donut = entity.type === "zone" && entity.shape === "donut" ? entity : null;
@@ -1220,7 +1502,7 @@ function SelectionPins({
             ? { x: widthAt.x + 16 * unit, y: widthAt.y + 16 * unit }
             : live?.kind === "length"
               ? { x: lengthAt.x + 16 * unit, y: lengthAt.y - 30 * unit }
-              : { x: resizeAt.x + 16 * unit, y: -ring - 30 * unit };
+              : { x: resizeAt.x + 16 * unit, y: edgeAt(0, -1).y - 30 * unit };
   const readout = live && (
     <Group x={readoutAt.x} y={readoutAt.y}>
       <Rect width={54 * unit} height={20 * unit} cornerRadius={5 * unit} fill="#232833" stroke="#2e3543" strokeWidth={1 * unit} />
@@ -1249,13 +1531,13 @@ function SelectionPins({
   const grew = (kind: PinKind) => (hover === kind || live?.kind === kind ? 1.4 : 1);
   return (
     <Group ref={group} name="selection-pins" x={entity.x} y={entity.y}>
-      <Circle
+      <SilhouetteEdge
         name="selection"
-        radius={ring}
-        stroke="rgba(122, 162, 247, 0.55)"
-        strokeWidth={1 * unit}
-        dash={[2 * unit, 5 * unit]}
-        listening={false}
+        silhouette={silhouette}
+        scale={edgeScale}
+        rotation={rotation}
+        unit={unit}
+        color={chipColor(entity)}
       />
       {/* Boxy shapes edit width and length independently on their own
           edges; a uniform corner scale would only fight those grips. */}
@@ -1620,17 +1902,604 @@ function GrabTarget({ entity }: { entity: Entity }) {
   }
 }
 
-function SelectionRing({ entity }: { entity: Entity }) {
-  const r = radiusHint(entity) + 14;
+const ACCENT = "#7aa2f7";
+
+/**
+ * The outline a selection hugs, in the entity's own unscaled, unrotated space:
+ * a token's frame, a telegraph's rim, a beam's box, a cone's wedge. Drawn as a
+ * hairline two pixels outside the thing, so the thing itself stays as drawn.
+ */
+type Silhouette =
+  | { kind: "circle"; r: number }
+  | { kind: "box"; hw: number; hh: number; corner: number }
+  | { kind: "wedge"; r: number; angle: number };
+
+function silhouetteOf(e: Entity, live?: { width?: number; length?: number }): Silhouette {
+  switch (e.type) {
+    case "player":
+      return { kind: "box", hw: e.size / 2, hh: e.size / 2, corner: 8 };
+    case "icon":
+      return { kind: "box", hw: e.size / 2, hh: e.size / 2, corner: 6 };
+    case "marker":
+      return { kind: "circle", r: e.size / 2 };
+    case "enemy":
+      // The reticle's arms reach half again past its ring; the art is a touch
+      // wider than the size it is stamped at.
+      return { kind: "circle", r: e.role === "anchor" ? e.size * 0.55 * 1.5 : e.size * 0.575 };
+    case "zone":
+      switch (e.shape) {
+        case "rect":
+        case "line":
+        case "knockback":
+        case "arrow":
+        case "linestack":
+          return {
+            kind: "box",
+            hw: (live?.width || e.width) / 2,
+            hh: (live?.length || e.length) / 2,
+            corner: 0,
+          };
+        case "cone":
+          return { kind: "wedge", r: e.radius, angle: e.angle };
+        default:
+          return { kind: "circle", r: e.radius };
+      }
+    case "text": {
+      const w = Math.max(e.fontSize * 2, e.text.length * e.fontSize * 0.62);
+      return { kind: "box", hw: w / 2, hh: e.fontSize / 2, corner: 4 };
+    }
+    case "path": {
+      let reach = 0;
+      for (let i = 0; i + 1 < e.points.length; i += 2) {
+        reach = Math.max(reach, Math.hypot(e.points[i], e.points[i + 1]));
+      }
+      return { kind: "circle", r: reach + e.width / 2 };
+    }
+    default:
+      return { kind: "circle", r: radiusHint(e) };
+  }
+}
+
+/**
+ * How far from the centre, along a direction in arena space, the silhouette's
+ * edge lies, for an entity drawn at `scale` and turned by `rotation` degrees.
+ * A wedge answers for its bounding circle; `edgePoint` knows its arc.
+ */
+function rayOut(s: Silhouette, scale: number, rotation: number, dx: number, dy: number): number {
+  if (s.kind !== "box") return s.r * scale;
+  const rad = (-rotation * Math.PI) / 180;
+  const lx = dx * Math.cos(rad) - dy * Math.sin(rad);
+  const ly = dx * Math.sin(rad) + dy * Math.cos(rad);
+  return Math.min(s.hw / Math.max(1e-6, Math.abs(lx)), s.hh / Math.max(1e-6, Math.abs(ly))) * scale;
+}
+
+/** The point `pad` outside the silhouette in a direction, relative to the centre. */
+function edgePoint(
+  s: Silhouette,
+  scale: number,
+  rotation: number,
+  dx: number,
+  dy: number,
+  pad: number
+): { x: number; y: number } {
+  if (s.kind === "wedge") {
+    // The arc spans the facing ± half the spread; a direction outside it
+    // lands on the nearer end of the arc rather than on empty floor.
+    const facing = ((rotation - 90) * Math.PI) / 180;
+    const raw = Math.atan2(dy, dx) - facing;
+    const off = Math.atan2(Math.sin(raw), Math.cos(raw));
+    const half = (s.angle * Math.PI) / 360;
+    const a = facing + Math.max(-half, Math.min(half, off));
+    const d = s.r * scale + pad;
+    return { x: Math.cos(a) * d, y: Math.sin(a) * d };
+  }
+  const d = rayOut(s, scale, rotation, dx, dy) + pad;
+  return { x: dx * d, y: dy * d };
+}
+
+/** How far above and below its centre the silhouette reaches, at `scale` and `rotation`. */
+function extentY(s: Silhouette, scale: number, rotation: number): number {
+  if (s.kind !== "box") return s.r * scale;
+  const rad = (rotation * Math.PI) / 180;
+  return (Math.abs(s.hw * Math.sin(rad)) + Math.abs(s.hh * Math.cos(rad))) * scale;
+}
+
+/**
+ * Where a level line at `dy` below the centre meets the silhouette's flank on
+ * one side, or null when the line misses it. A wedge answers for its arc's
+ * circle, so a leader always has somewhere to leave from.
+ */
+function flankX(s: Silhouette, scale: number, rotation: number, dy: number, side: -1 | 1): number | null {
+  if (s.kind !== "box") {
+    const r = s.r * scale;
+    return Math.abs(dy) > r ? null : side * Math.sqrt(r * r - dy * dy);
+  }
+  const rad = (rotation * Math.PI) / 180;
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const corners = [
+    [-s.hw, -s.hh],
+    [s.hw, -s.hh],
+    [s.hw, s.hh],
+    [-s.hw, s.hh],
+  ].map(([x, y]) => ({ x: (x * cos - y * sin) * scale, y: (x * sin + y * cos) * scale }));
+  let best: number | null = null;
+  for (let i = 0; i < 4; i++) {
+    const a = corners[i];
+    const b = corners[(i + 1) % 4];
+    if ((dy < Math.min(a.y, b.y)) || (dy > Math.max(a.y, b.y))) continue;
+    const x = a.y === b.y ? (side > 0 ? Math.max(a.x, b.x) : Math.min(a.x, b.x)) : a.x + ((dy - a.y) * (b.x - a.x)) / (b.y - a.y);
+    if (best === null || side * x > side * best) best = x;
+  }
+  return best;
+}
+
+/**
+ * The hairline that says "this one": two screen pixels outside the silhouette,
+ * in the thing's own colour. `unit` is one screen pixel in the enclosing
+ * group's units, so the line stays a hairline whatever the group's scale.
+ */
+function SilhouetteEdge({
+  silhouette: s,
+  scale = 1,
+  rotation = 0,
+  unit,
+  color,
+  width = 1.2,
+  opacity = 0.9,
+  name,
+}: {
+  silhouette: Silhouette;
+  scale?: number;
+  rotation?: number;
+  unit: number;
+  color: string;
+  width?: number;
+  opacity?: number;
+  name?: string;
+}) {
+  const pad = 2 * unit;
+  const common = { name, stroke: color, strokeWidth: width * unit, opacity, listening: false };
+  if (s.kind === "circle") return <Circle {...common} radius={s.r * scale + pad} />;
+  if (s.kind === "wedge") {
+    return (
+      <Wedge
+        {...common}
+        radius={s.r * scale + pad}
+        angle={s.angle}
+        rotation={rotation - 90 - s.angle / 2}
+      />
+    );
+  }
+  const w = s.hw * scale + pad;
+  const h = s.hh * scale + pad;
   return (
-    <Circle
-      name="selection"
-      radius={r}
-      stroke="#7aa2f7"
-      strokeWidth={4}
-      dash={[12, 8]}
-      listening={false}
+    <Rect
+      {...common}
+      offsetX={w}
+      offsetY={h}
+      width={2 * w}
+      height={2 * h}
+      rotation={rotation}
+      cornerRadius={s.corner ? s.corner * scale + pad : 0}
     />
+  );
+}
+
+/** The colour a thing is drawn in, which its leader and chip borrow. */
+function chipColor(e: Entity): string {
+  switch (e.type) {
+    case "player":
+      return e.color ?? jobColor(e.job);
+    case "marker":
+      return e.color ?? MARKER_COLORS[e.marker] ?? "#e6edf3";
+    case "enemy":
+      return e.color ?? (e.role === "anchor" ? "#e0b152" : "#c0392b");
+    case "zone":
+      return e.color ?? ZONE_DEFAULT;
+    case "text":
+    case "path":
+      return e.color ?? "#e6edf3";
+    default:
+      return "#e6edf3";
+  }
+}
+
+const SHAPE_NAMES: Partial<Record<ZoneEntity["shape"], string>> = {
+  circle: "AoE",
+  linestack: "Line stack",
+};
+
+/** What a chip says: a name, and the one dimension a raider would ask about. */
+function chipText(e: Entity): { label: string; sub: string } {
+  const cap = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+  switch (e.type) {
+    case "player":
+      // The callout name is the whole identity a raider needs ("R2"); the
+      // job on top of it only makes the chip longer.
+      return { label: e.name || jobLabel(e.job), sub: "" };
+    case "enemy":
+      return {
+        label: e.name || (e.role === "anchor" ? "Anchor" : "Enemy"),
+        sub: e.name && e.role === "anchor" ? "anchor" : "",
+      };
+    case "marker":
+      return { label: e.marker, sub: "waymark" };
+    case "zone": {
+      const k = e.scale;
+      const turn = e.rotation ? ` · ${Math.round(e.rotation)}°` : "";
+      const boxy = ["rect", "line", "knockback", "arrow", "linestack"].includes(e.shape);
+      const sub = boxy
+        ? `${Math.round(e.width * k)} × ${Math.round(e.length * k)}${turn}`
+        : e.shape === "cone"
+          ? `r ${Math.round(e.radius * k)} · ${Math.round(e.angle)}°`
+          : e.shape === "donut"
+            ? `r ${Math.round(e.innerRadius * k)}–${Math.round(e.radius * k)}`
+            : `r ${Math.round(e.radius * k)}`;
+      const many = e.anchor?.pick && e.anchor.count > 1 ? ` · ×${e.anchor.count}` : "";
+      return { label: e.name || e.bond?.label || SHAPE_NAMES[e.shape] || cap(e.shape), sub: sub + many };
+    }
+    case "text":
+      return { label: e.text.length > 18 ? `${e.text.slice(0, 17)}…` : e.text, sub: "text" };
+    case "path":
+      return { label: e.name || "Path", sub: `${Math.floor(e.points.length / 2)} pts` };
+    case "icon":
+      return { label: e.name || "Icon", sub: "" };
+    default:
+      return { label: e.type, sub: "" };
+  }
+}
+
+let measureCtx: CanvasRenderingContext2D | null | undefined;
+/** Width of a run of text in the chip's font, in screen pixels. */
+function textWidth(text: string, font: string): number {
+  if (measureCtx === undefined) {
+    measureCtx =
+      typeof document === "undefined" ? null : document.createElement("canvas").getContext("2d");
+  }
+  if (!measureCtx) return text.length * 7;
+  measureCtx.font = font;
+  return measureCtx.measureText(text).width;
+}
+
+/**
+ * Konva draws a shape that has both a fill and a stroke through a stage-sized
+ * buffer canvas whenever the shape is transparent or carries a shadow, so that
+ * the stroke cannot bleed into the fill underneath it. That buffer is cleared
+ * and composited once per shape per frame, and a step walk or a drag redraws
+ * the whole floor every frame: sixteen such shapes — the party's hitbox pips
+ * and their name labels — were a two-frames-a-second drag on a slow machine,
+ * and turning chips on added twenty more. What the buffer buys is half a
+ * stroke's width of blending under a translucent fill, which no one reading a
+ * plan can see. The frames are worth more.
+ */
+const NO_BUFFER = { perfectDrawEnabled: false, shadowForStrokeEnabled: false } as const;
+
+const CHIP_H = 26;
+const CHIP_GAP = 4;
+const CHIP_PAD = 8;
+const GLYPH = 16;
+/** The debuff badge: taller than the glyph, in the 0.76 ratio of FFXIV status art. */
+const BADGE_H = 22;
+const BADGE_W = BADGE_H * 0.76;
+const LABEL_FONT = "bold 12px Arial";
+const SUB_FONT = "11px Arial";
+
+/** The small picture of what a chip stands for: its art, or its shape in outline. */
+function ChipGlyph({
+  entity: e,
+  unit,
+  color,
+  dress,
+}: {
+  entity: Entity;
+  unit: number;
+  color: string;
+  /** A debuff mech is on the floor: the art the token wears, so the chip matches. */
+  dress?: DebuffDress;
+}) {
+  const g = GLYPH * unit;
+  const line = { stroke: color, strokeWidth: 1.5 * unit, listening: false };
+  switch (e.type) {
+    case "player":
+      return (
+        <Sprite
+          src={assetUrl((dress ? dressIconKey(e, dress.mode) : undefined) ?? e.icon ?? jobIconKey(e.job, e.name))}
+          width={g}
+          height={g}
+          listening={false}
+          fallback={<Circle radius={g * 0.45} fill={color} listening={false} />}
+        />
+      );
+    case "marker":
+      return (
+        <Sprite
+          src={assetUrl(waymarkIconKey(e.marker))}
+          width={g}
+          height={g}
+          listening={false}
+          fallback={<Circle {...line} radius={g * 0.45} />}
+        />
+      );
+    case "enemy":
+      return e.role === "anchor" ? (
+        <Circle {...line} radius={g * 0.4} dash={[2 * unit, 2 * unit]} />
+      ) : (
+        <Sprite
+          src={assetUrl(e.icon ?? enemyIconKey(e.size))}
+          width={g}
+          height={g}
+          listening={false}
+          fallback={<Circle radius={g * 0.45} fill={color} listening={false} />}
+        />
+      );
+    case "icon":
+      return <Sprite src={assetUrl(e.src)} width={g} height={g} listening={false} />;
+    case "zone":
+      if (["rect", "line", "knockback", "arrow", "linestack"].includes(e.shape)) {
+        return (
+          <Rect
+            {...line}
+            width={g * 0.55}
+            height={g * 0.9}
+            offsetX={g * 0.275}
+            offsetY={g * 0.45}
+            rotation={e.rotation}
+            cornerRadius={1 * unit}
+          />
+        );
+      }
+      if (e.shape === "cone") {
+        return (
+          <Wedge
+            {...line}
+            radius={g * 0.5}
+            angle={e.angle}
+            rotation={e.rotation - 90 - e.angle / 2}
+          />
+        );
+      }
+      if (e.shape === "donut") {
+        return <Ring {...line} innerRadius={g * 0.2} outerRadius={g * 0.45} />;
+      }
+      return <Circle {...line} radius={g * 0.45} />;
+    case "path":
+      return (
+        <Line
+          {...line}
+          points={[-g / 2, g / 3, -g / 6, -g / 3, g / 6, g / 3, g / 2, -g / 3]}
+          lineCap="round"
+          lineJoin="round"
+        />
+      );
+    default:
+      return null;
+  }
+}
+
+/**
+ * The selection's readout, outside the floor. Each selected thing gets a
+ * leader in its own colour, running from its silhouette at 45° to a knee and
+ * then level out to the nearer margin, where a chip names it: art or shape,
+ * name, and the one dimension that matters. The chips stack down the margin
+ * so none overlap, whatever is piled up on the floor, and each is a click
+ * target for the thing it names.
+ */
+function Chips({
+  entities,
+  selectedIds,
+  pixelsPerUnit,
+  viewHalf,
+  floorHalf,
+  dress,
+  leaders,
+}: {
+  entities: Entity[];
+  selectedIds: Set<string>;
+  pixelsPerUnit: number;
+  /** Half-extent (arena units) of the visible canvas around the arena centre. */
+  viewHalf: number;
+  /** Half the floor's width: where the margin starts. */
+  floorHalf: number;
+  /** What the party wears while a debuff mech is on the floor, by player id. */
+  dress?: Map<string, DebuffDress> | null;
+  /** The leaders, held apart so they can be cut the instant the floor moves. */
+  leaders?: MutableRefObject<Konva.Group | null>;
+}) {
+  const group = useRef<Konva.Group>(null);
+  const [hover, setHover] = useState<string | null>(null);
+  const unit = 1 / Math.max(0.001, pixelsPerUnit);
+  const px = (n: number) => n * unit;
+  const cursor = (style: string) => {
+    const container = group.current?.getStage()?.container();
+    if (container) container.style.cursor = style;
+  };
+
+  const slots = entities.map((e) => {
+    const { label, sub } = chipText(e);
+    const glyph = e.type !== "text";
+    // A debuffed player carries their status on the chip too, drawn taller
+    // than the token glyph so "who has it" reads without hunting the floor.
+    const worn = dress?.get(e.id);
+    const badge = worn?.debuff?.icon;
+    const labelW = textWidth(label, LABEL_FONT);
+    const subW = sub ? textWidth(sub, SUB_FONT) : 0;
+    const w = px(
+      CHIP_PAD * 2 +
+        (glyph ? GLYPH + 6 : 0) +
+        (badge ? BADGE_W + 6 : 0) +
+        labelW +
+        (sub ? 5 + subW : 0)
+    );
+    const side: -1 | 1 = e.x < 0 ? -1 : 1;
+    // Preferred height: a short 45° run above the top of the shape, so the
+    // leader leaves it diagonally and then runs level to the margin.
+    const reach = extentY(silhouetteOf(e), e.scale, e.rotation);
+    return { e, side, pref: e.y - reach - px(40), y: 0, w, label, sub, glyph, badge, dress: worn, labelW, lane: 0, lanes: 1 };
+  });
+  // Stack each margin's chips from their preferred heights, pushing down to
+  // clear the one above, then back up from the bottom edge if that overflowed.
+  const top = -viewHalf + px(6 + CHIP_H / 2);
+  const bottom = viewHalf - px(6 + CHIP_H / 2);
+  const step = px(CHIP_H + CHIP_GAP);
+  for (const side of [-1, 1]) {
+    const mine = slots.filter((slot) => slot.side === side).sort((a, b) => a.pref - b.pref);
+    let last = -Infinity;
+    for (const slot of mine) {
+      slot.y = Math.max(top, slot.pref, last + step);
+      last = slot.y;
+    }
+    let next = Infinity;
+    for (let i = mine.length - 1; i >= 0; i--) {
+      mine[i].y = Math.min(mine[i].y, next - step, bottom);
+      next = mine[i].y;
+    }
+    // Things piled on one tile would all leave from the same point: fan them
+    // out instead, each a few pixels further down the flank, in chip order,
+    // so their leaders run parallel and never cross.
+    const piles: (typeof mine)[] = [];
+    for (const slot of mine) {
+      const pile = piles.find((members) =>
+        members.some(
+          (other) => Math.abs(other.e.x - slot.e.x) < px(24) && Math.abs(other.e.y - slot.e.y) < px(24)
+        )
+      );
+      if (pile) pile.push(slot);
+      else piles.push([slot]);
+    }
+    for (const pile of piles) {
+      pile.forEach((slot, lane) => {
+        slot.lane = lane;
+        slot.lanes = pile.length;
+      });
+    }
+  }
+
+  // Where each chip and its leader end up, worked out once so the leaders can
+  // be drawn as one group: they are switched off together the moment the floor
+  // starts moving, while the plates stay where they are and fade.
+  const drawn = slots.map((slot) => {
+    const { e, side, y, w } = slot;
+    const silhouette = silhouetteOf(e);
+    // The chip hugs the floor's edge from outside, and only creeps over
+    // the floor when the margin is too narrow for it.
+    const inner = side * (floorHalf + px(12));
+    const outer = side * (viewHalf - px(6));
+    const chipX = side < 0 ? Math.max(inner - w, outer) : Math.min(inner, outer - w);
+    const end = side < 0 ? chipX + w : chipX;
+    // A leader is only ever level or at 45°. It leaves the flank facing
+    // the chip at the chip's own height when that height lies within the
+    // shape, and otherwise from the shape's upper or lower shoulder,
+    // running 45° to a knee and then level. A pile's members leave a
+    // lane apart down the flank.
+    const reach = extentY(silhouette, e.scale, e.rotation);
+    const shoulder = silhouette.kind === "box" ? reach : reach * Math.SQRT1_2;
+    const fan = px(6) * (slot.lane - (y > e.y ? slot.lanes - 1 : 0));
+    const dy = Math.max(-shoulder, Math.min(shoulder, y - e.y + fan));
+    const fx = flankX(silhouette, e.scale, e.rotation, dy, side) ?? 0;
+    const from = { x: e.x + fx + side * px(2), y: e.y + dy };
+    const kx = from.x + side * Math.abs(y - from.y);
+    const points =
+      side * (end - kx) >= 0 ? [from.x, from.y, kx, y, end, y] : [from.x, from.y, end, y];
+    // With every chip showing, the chips are the selection's readout as well as
+    // its targets: a selected one wears the accent, and the others' leaders
+    // step back so the selected ones' stand out.
+    const picked = selectedIds.has(e.id);
+    return {
+      slot,
+      color: chipColor(e),
+      points,
+      chipX,
+      picked,
+      quiet: selectedIds.size > 0 && !picked,
+    };
+  });
+
+  return (
+    <Group ref={group} name="chips">
+      <Group ref={leaders} listening={false}>
+        {drawn.map(({ slot, color, points, quiet }) => (
+          <Line
+            key={slot.e.id}
+            points={points}
+            stroke={color}
+            strokeWidth={px(1.5)}
+            opacity={quiet ? 0.35 : 1}
+            lineCap="round"
+            lineJoin="round"
+            listening={false}
+          />
+        ))}
+      </Group>
+      {drawn.map(({ slot, color, chipX, picked, quiet }) => {
+        const { e, y, w } = slot;
+        const lit = hover === e.id;
+        const badgeX = px(CHIP_PAD + (slot.glyph ? GLYPH + 6 : 0));
+        const textX = badgeX + px(slot.badge ? BADGE_W + 6 : 0);
+        return (
+          <Group
+            key={e.id}
+            name="chip"
+            entityId={e.id}
+            x={chipX}
+            y={y - px(CHIP_H / 2)}
+            opacity={quiet && !lit ? 0.45 : 1}
+            onMouseEnter={() => {
+              setHover(e.id);
+              cursor("pointer");
+            }}
+            onMouseLeave={() => {
+              setHover(null);
+              cursor("");
+            }}
+          >
+            <Rect
+              width={w}
+              height={px(CHIP_H)}
+              cornerRadius={px(5)}
+              fill={picked ? "rgba(122, 162, 247, 0.18)" : lit ? "#2e3543" : "#232833"}
+              stroke={picked ? ACCENT : color}
+              strokeWidth={px(picked ? 2 : 1.2)}
+              shadowColor="#0d1117"
+              shadowBlur={px(6)}
+              shadowOpacity={0.5}
+              {...NO_BUFFER}
+            />
+            {slot.glyph && (
+              <Group x={px(CHIP_PAD + GLYPH / 2)} y={px(CHIP_H / 2)} listening={false}>
+                <ChipGlyph entity={e} unit={unit} color={color} dress={slot.dress} />
+              </Group>
+            )}
+            {slot.badge && (
+              <Group x={badgeX + px(BADGE_W / 2)} y={px(CHIP_H / 2)} listening={false}>
+                <Sprite src={slot.badge} width={px(BADGE_W)} height={px(BADGE_H)} />
+              </Group>
+            )}
+            <Text
+              x={textX}
+              height={px(CHIP_H)}
+              verticalAlign="middle"
+              fontSize={px(12)}
+              fontStyle="bold"
+              fill="#e6ebf2"
+              text={slot.label}
+              listening={false}
+            />
+            {slot.sub && (
+              <Text
+                x={textX + px(slot.labelW + 5)}
+                height={px(CHIP_H)}
+                verticalAlign="middle"
+                fontSize={px(11)}
+                fill="#b8c0cc"
+                text={slot.sub}
+                listening={false}
+              />
+            )}
+          </Group>
+        );
+      })}
+    </Group>
   );
 }
 
@@ -1736,7 +2605,7 @@ function EntityShape({
           height={entity.size}
           fallback={
             <>
-              <Circle radius={r} fill={color} opacity={0.35} stroke={color} strokeWidth={4} />
+              <Circle radius={r} fill={color} opacity={0.35} stroke={color} strokeWidth={4} {...NO_BUFFER} />
               <Label text={entity.marker} size={entity.size * 0.7} color={color} />
             </>
           }
@@ -1759,7 +2628,7 @@ function EntityShape({
             height={entity.size}
             fallback={
               <>
-                <Circle radius={r} fill={color} stroke="#0d1117" strokeWidth={3} />
+                <Circle radius={r} fill={color} stroke="#0d1117" strokeWidth={3} {...NO_BUFFER} />
                 <Label text={jobLabel(entity.job)} size={entity.size * 0.38} color="#0d1117" bold />
               </>
             }
@@ -1769,7 +2638,7 @@ function EntityShape({
             is decoration: this pip is the thing an AoE either covers or does
             not, and without it a beam that clips the art reads as a hit.
           */}
-          <Circle radius={5} fill="#f7fafc" stroke="#0d1117" strokeWidth={2} listening={false} />
+          <Circle radius={5} fill="#f7fafc" stroke="#0d1117" strokeWidth={2} listening={false} {...NO_BUFFER} />
           {/* Role-coloured frame: the job art alone does not read as tank/healer/dps. */}
           <Rect
             x={-r}
@@ -1781,12 +2650,13 @@ function EntityShape({
             cornerRadius={8}
             listening={false}
           />
-          {/* The status this token carries, riding the shoulder. FFXIV status
-              icons are taller than wide; keeping the ratio is what makes the
-              art recognisable at token size. */}
+          {/* The status this token carries, riding the shoulder, drawn as tall
+              as the token itself so it reads at a glance. FFXIV status icons
+              are taller than wide; keeping the ratio is what makes the art
+              recognisable. */}
           {dress?.debuff?.icon && (
-            <Group x={r * 0.78} y={-r * 0.72} listening={false}>
-              <Sprite src={dress.debuff.icon} width={entity.size * 0.5} height={entity.size * 0.66} />
+            <Group x={r * 1.04} y={-r * 0.94} listening={false}>
+              <Sprite src={dress.debuff.icon} width={entity.size * 0.76} height={entity.size} />
             </Group>
           )}
           {/* A genericized token (role, S/D, or generic art) has already
@@ -1840,21 +2710,13 @@ function EntityShape({
       const color = entity.color ?? "#c0392b";
       return (
         <>
-          {entity.ring && <Circle radius={entity.size} stroke={color} strokeWidth={3} dash={[14, 10]} opacity={0.7} />}
-          {/* The enemy art is a square tile; clip it to the hitbox circle. */}
-          <Group
-            clipFunc={(ctx: Konva.Context) => {
-              ctx.arc(0, 0, entity.size * 0.55, 0, Math.PI * 2, false);
-            }}
-          >
-            <Sprite
-              src={assetUrl(entity.icon ?? enemyIconKey(entity.size))}
-              width={entity.size * 1.15}
-              height={entity.size * 1.15}
-              fallback={<Circle radius={entity.size * 0.55} fill={color} />}
-            />
-          </Group>
-          <Circle radius={entity.size * 0.55} stroke="#0d1117" strokeWidth={5} listening={false} />
+          {/* The art is the whole token: stamped as it is, no frame around it. */}
+          <Sprite
+            src={assetUrl(entity.icon ?? enemyIconKey(entity.size))}
+            width={entity.size * 1.15}
+            height={entity.size * 1.15}
+            fallback={<Circle radius={entity.size * 0.55} fill={color} />}
+          />
           {entity.showFacing && (
             <Line
               points={[0, -entity.size * 0.55, 0, -entity.size * 0.55 - 24]}
@@ -1866,7 +2728,7 @@ function EntityShape({
           {entity.name && (
             <EntityName
               text={entity.name}
-              y={entity.size * (entity.ring ? 1.05 : 0.62)}
+              y={entity.size * 0.62}
               rotation={entity.rotation}
               width={400}
               fontSize={38}
@@ -1952,6 +2814,7 @@ function EntityName({
         stroke="#0d1117"
         strokeWidth={strokeWidth}
         fillAfterStrokeEnabled
+        {...NO_BUFFER}
       />
     </Group>
   );

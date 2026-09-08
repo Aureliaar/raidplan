@@ -7,6 +7,7 @@
   --color-ink-600: #2e3543;
   --color-ink-400: #6b7686;
   --color-ink-200: #b8c0cc;
+  --color-ink-100: #dfe5ee;
   --color-accent: #7aa2f7;
 }
 
@@ -59,4 +60,19 @@ body {
 .label {
   @apply text-[11px] uppercase tracking-wide;
   color: var(--color-ink-400);
+}
+
+/* The group drop rail pops out over the arena while something is in hand.
+   It fades rather than appearing hard, and only opacity moves: its box has to
+   be stable the instant it exists, because it is a drop target. */
+.drop-rail {
+  animation: drop-rail-in 120ms ease-out;
+}
+@keyframes drop-rail-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }

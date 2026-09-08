@@ -77,7 +77,7 @@ function directParts(plan: Plan, beat: Mech, stepId: string): Entity[] {
       (entity) =>
         entity.mech === beat.id && isBeatPart(entity) && entityInStep(entity, stepId, plan)
     )
-    .map((entity) => contentShape(resolveEntity(entity, stepId)));
+    .map((entity) => contentShape(resolveEntity(plan, entity, stepId)));
 }
 
 function variantParts(plan: Plan, beat: Mech, stepId: string, variantId: string): Entity[] {
@@ -449,6 +449,7 @@ export function convertLegacyPlan(
       name: legacyMechanics.length === 1 ? "Party movement" : `${mechanicLabel(source, section)} movement`,
       snap: steps[0].id,
       boom: steps[steps.length - 1].id,
+      freeze: "",
       variants,
     };
     movementBeatByMechanic.set(section.id, { beat, local });

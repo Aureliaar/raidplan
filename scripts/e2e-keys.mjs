@@ -201,7 +201,21 @@ await page.getByRole("button", { name: "done with waymarks" }).click();
 /* --- and it keeps out of the text fields ---------------------------------- */
 
 doc = await load();
-const name = page.locator("input").first();
+// The plan title reads as text until you click it, which is what opens the
+// field; after that it is an ordinary input.
+const openPlanName = async () => {
+  const field = page.locator("header input").first();
+  if (!(await field.count())) await page.locator("header [data-plan-name]").click();
+  return page.locator("header input").first();
+};
+/** The plan's name, whether the field is open or the text is back. */
+const planName = async () => {
+  const field = page.locator("header input").first();
+  return (await field.count())
+    ? await field.inputValue()
+    : await page.locator("header [data-plan-name]").getAttribute("data-plan-name");
+};
+const name = await openPlanName();
 await name.click();
 await name.press("Backspace");
 await page.waitForTimeout(400);
@@ -247,13 +261,13 @@ else console.log("and it stops at the first step rather than falling off the fig
 const at = await on();
 
 // And none of it while you are typing: WASD in a name field is four letters.
-const field = page.locator("input").first();
+const field = await openPlanName();
 await field.click();
 await field.fill("");
 await field.type("swad");
 await page.waitForTimeout(400);
 if ((await on()) !== at) fail("typing in a field walked the steps, landing on " + (await on()));
-else console.log("typing 'swad' in a text field is four letters, not four moves");
+else console.log("typing 'swad' in a text field is four letters, not four moves: " + (await planName()));
 
 console.log(process.exitCode ? "FAILED" : "OK - " + base + "/p/" + planId);
 await browser.close();

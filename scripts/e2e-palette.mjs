@@ -95,29 +95,66 @@ else if (beams[0].anchor.pick !== "closest" || beams[0].anchor.rank !== 1)
   fail("the beam is not aimed at the closest player: " + JSON.stringify(beams[0].anchor));
 else console.log("beam dropped on the anchor: " + beams[0].name + " " + JSON.stringify(beams[0].anchor));
 
-// A second one of the same kind on the same anchor takes the second closest.
+// A second one of the same kind on the same anchor widens the bait it already
+// has: one mechanic covering two people, not two mechanics with a slot each.
 await dropOnFloor("Beam", 200, -150);
 doc = await load();
 beams = doc.entities.filter((e) => e.type === "zone" && e.shape === "rect" && e.anchor);
-const ranks = beams.map((b) => b.anchor.rank).sort();
-if (beams.length !== 2 || ranks.join() !== "1,2")
-  fail("a second beam on the anchor should be rank 2, got ranks " + ranks.join());
-else console.log("two beams on one anchor cover the two closest: ranks " + ranks.join());
+if (beams.length !== 1 || beams[0].anchor.count !== 2)
+  fail(
+    "a second beam on the anchor should widen the first: " +
+      beams.length +
+      " baits, count " +
+      beams.map((b) => b.anchor.count).join()
+  );
+else console.log("one beam covering the two closest: count " + beams[0].anchor.count);
 
-// And they really do aim at different people.
+// One selectable, two shapes on the floor, aimed at different people.
 const solved = await page.evaluate(
   ([id]) => {
     const stage = window.Konva.stages[0];
-    const g = stage.findOne("#" + id);
-    return g ? Math.round(g.rotation()) : null;
+    const at = (nodeId) => {
+      const g = stage.findOne("#" + nodeId);
+      return g ? Math.round(g.rotation()) : null;
+    };
+    return [at(id), at(id + "~2")];
   },
-  [beams.find((b) => b.anchor.rank === 1).id]
+  [beams[0].id]
 );
-if (solved === null) fail("the rank-1 beam is not on the canvas");
+if (solved.some((r) => r === null)) fail("the bait drew " + solved.filter((r) => r !== null).length + " of its 2 shapes");
+else if (solved[0] === solved[1]) fail("both shapes of the bait aim the same way: " + solved.join());
+else console.log("the one bait drew two shapes, aimed at " + solved.join("deg and ") + "deg");
+
+// Clicking the second shape selects the bait, not a thing of its own: the bait
+// editor comes up with the count on it.
+const where = await page.evaluate(
+  ([id]) => {
+    const g = window.Konva.stages[0].findOne("#" + id + "~2");
+    const box = g.getClientRect();
+    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  },
+  [beams[0].id]
+);
+const stageBox = await canvas.boundingBox();
+await page.mouse.click(stageBox.x + where.x, stageBox.y + where.y);
+await page.waitForTimeout(400);
+if (!(await page.locator("text=bait target").count()))
+  fail("clicking the second shape of a counted bait did not select the bait");
+else console.log("clicking either shape selects the one bait");
+await page.mouse.click(stageBox.x + 8, stageBox.y + 8);
+await page.waitForTimeout(150);
 
 /* --- a circle on the Supports chip gives each support one ----------------- */
 
-await chip("Supports").dragTo(chip("Supports")); // no-op guard: chip must exist
+// The groups are a popover and a rail that pops out over the arena while
+// something is in hand, so there is no longer a card to no-op against:
+// opening the popover is the guard that the groups are there at all.
+await page.getByRole("button", { name: "Groups" }).click();
+await page.waitForTimeout(250);
+if (!(await page.locator("[data-group-row=supports]").count()))
+  fail("the Groups popover does not list the Supports");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(250);
 const before = (await load()).entities.length;
 await page.locator("div", { hasText: /^Circle$/ }).last().dragTo(chip("Supports"));
 await page.waitForTimeout(700);
@@ -223,11 +260,21 @@ if (stillThere.x !== ghost.x || stillThere.y !== ghost.y || stillThere.overrides
 else console.log("a shape owned by a group cannot be dragged out of it");
 
 // And the group's own row is what takes the whole set away. The row lists
-// the sets of the open Beat, so open the set's Beat first.
+// the sets of the open Beat, so open the set's Beat first, then the Groups
+// popover the rows now live in.
 await page.locator(`[data-mech="${ghost.mech}"]`).click();
 await page.waitForTimeout(300);
+// Opening a Beat selects it, and the aside is the inspector while something
+// is selected. Let it go: the Beat stays open, and the Add panel comes back
+// with the Groups button on it.
+await page.mouse.click(cbox.x + 8, cbox.y + 8);
+await page.waitForTimeout(250);
+await page.getByRole("button", { name: "Groups" }).click();
+await page.waitForTimeout(250);
 await page.getByTitle("Remove this circle from the supports").click();
 await page.waitForTimeout(700);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
 doc = await load();
 const left = doc.entities.filter((e) => e.bond && e.bond.group === "supports");
 if (left.length) fail("removing the set from the Supports row left " + left.length + " behind");
@@ -447,8 +494,9 @@ else {
     fail("range dropdown did not update the whole tether set");
   else console.log("the range dropdown updates all four links in the tether set");
 
-  // An individual link can use arbitrary players, and the ordinary step/all
-  // scope controls whether that pairing is temporary or structural.
+  // An individual link can use arbitrary players. Who a tether joins is the
+  // tether, not the step you happened to type it in: a Part is one thing for
+  // the whole life of its Beat, so the pairing is structural either way.
   const nameInput = page.locator("div.label", { hasText: /^name$/ }).locator("xpath=..").locator("input");
   const selectedName = await nameInput.inputValue();
   const selectedLink = doc.entities.find((e) => e.type === "tether" && e.name === selectedName);
@@ -459,12 +507,11 @@ else {
   await page.waitForTimeout(700);
   doc = await load();
   const retargeted = doc.entities.find((e) => e.id === selectedLink?.id);
-  const stepPair = retargeted?.overrides?.[doc.steps[0].id];
-  if (!retargeted || retargeted.from === ids.M2 || retargeted.to === ids.H1)
-    fail("step-scoped tether retarget changed the base pairing");
-  else if (stepPair?.from !== ids.M2 || stepPair?.to !== ids.H1)
-    fail("tether did not retarget to arbitrary players in this step: " + JSON.stringify(stepPair));
-  else console.log("an individual tether retargets to arbitrary players in the current step");
+  if (!retargeted || retargeted.from !== ids.M2 || retargeted.to !== ids.H1)
+    fail("tether did not retarget to arbitrary players: " + JSON.stringify([retargeted?.from, retargeted?.to]));
+  else if (Object.keys(retargeted.overrides ?? {}).length)
+    fail("retargeting a tether filed the pairing under a step: " + JSON.stringify(retargeted.overrides));
+  else console.log("an individual tether retargets to arbitrary players, on the tether itself");
 }
 
 // The retargeted tether is still selected, and the inspector stands in for

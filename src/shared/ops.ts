@@ -9,6 +9,7 @@ import {
   type Plan,
   type Step,
   type StepVariant,
+  type ZoneEntity,
   type Variant,
   type PropBag,
   type EncounterSetup,
@@ -23,10 +24,13 @@ import {
   PlanSchema,
   entityInStep,
   entitiesForStep,
+  fanOwnerId,
+  isFanCopy,
   mechLabel,
   MECH_COLORS,
   mechColor,
   mechSpan,
+  normalizeFreezes,
   mechanicLabel,
   mechanicSteps,
   materializeVariantStep,
@@ -40,6 +44,7 @@ import {
   poseKey,
   poseStep,
   resolveEntity,
+  stepOwned,
   variantStepScene,
   variantLabel,
 } from "./schema";
@@ -60,7 +65,11 @@ import { zoneCovers } from "./hits";
 export const newId = (prefix: string) => `${prefix}_${nanoid(8)}`;
 
 export function touch(plan: Plan): Plan {
-  return { ...plan, updatedAt: Date.now(), rev: plan.rev + 1 };
+  // Every op lands here, so this is where a Beat's Snap marker is put back
+  // inside its span — a deleted, moved or reordered step, a dragged Beat end
+  // and `update_mech` itself all shorten a span from underneath the marker,
+  // and none of them should have to remember it (cf. `boom` in `removeSteps`).
+  return { ...normalizeFreezes(plan), updatedAt: Date.now(), rev: plan.rev + 1 };
 }
 
 /** Validate the one live Variant ownership model used by this document. */
@@ -165,10 +174,14 @@ const DEFAULTS_BY_TYPE: Record<EntityType, PropBag> = {
 
 /** Build one fully-defaulted authored entity without deciding which scene owns it. */
 function makeEntity(spec: PropBag & { type: EntityType }): Entity {
+  const id = (spec.id as string | undefined) ?? newId(spec.type);
+  // `~` is how a counted bait's drawn copies are named apart from the entity
+  // they come from, so an authored id may never contain one.
+  if (isFanCopy(id)) throw new Error(`An entity id cannot contain "~": ${id}`);
   return EntitySchema.parse({
     ...DEFAULTS_BY_TYPE[spec.type],
     ...spec,
-    id: (spec.id as string | undefined) ?? newId(spec.type),
+    id,
   });
 }
 
@@ -255,7 +268,7 @@ function updateBeatMovement(
   if (!actor || !isActor(actor)) throw new Error(`No shared actor ${id}`);
   if (Object.keys(patch).some((key) => !POSE_KEYS.has(key)))
     throw new Error("Beat Variant actor edits may only change movement");
-  const shared = resolveEntity(actor, stepId);
+  const shared = resolveEntity(plan, actor, stepId);
   const current = beatVariantMovement(plan, stepId, variantId)[id] ?? {
     x: shared.x,
     y: shared.y,
@@ -302,7 +315,7 @@ function sharedEntityInVariantStep(
     ? plan.mechs.find((candidate) => candidate.id === entity.mech)
     : undefined;
   if (mech?.variant && mech.variant !== variantId) return undefined;
-  return EntitySchema.parse({ ...resolveEntity(entity, stepId), overrides: {} });
+  return EntitySchema.parse({ ...resolveEntity(plan, entity, stepId), overrides: {} });
 }
 
 /** Add an entity. `spec.type` is required; everything else is defaulted. */
@@ -407,11 +420,23 @@ export function updateEntity(
 
   let next: Entity;
   if (stepId) {
+    // A step owns where an actor stands and what they are drawn as, and nothing
+    // else: a Beat's Part has one geometry for its whole life, and a person is
+    // one size all fight. So a step-scoped edit of anything else is still an
+    // edit to the thing itself, not a per-step exception to it — which is what
+    // it silently became when the inspector filed every field under the step it
+    // was typed in, leaving the entity's own value shadowed and stale.
     const key = poseKey(stepId);
-    const overrides = { ...current.overrides, [key]: { ...current.overrides?.[key], ...clean } };
-    next = { ...current, overrides } as Entity;
+    const declared: PropBag = {};
+    const owned: PropBag = {};
+    for (const [field, value] of Object.entries(clean))
+      (stepOwned(current, field) ? declared : owned)[field] = value;
+    const overrides = Object.keys(declared).length
+      ? { ...current.overrides, [key]: { ...current.overrides?.[key], ...declared } }
+      : current.overrides;
     // Validate the merged result so a bad override is rejected at write time.
     EntitySchema.parse({ ...current, ...clean, overrides: {} });
+    next = EntitySchema.parse({ ...current, ...owned, overrides });
   } else {
     next = EntitySchema.parse({ ...current, ...clean });
   }
@@ -463,7 +488,7 @@ export function clearOverride(plan: Plan, id: string, stepId: string, variantId?
       );
       const parts = [...detached.content.parts];
       if (shared)
-        parts[index] = EntitySchema.parse({ ...resolveEntity(shared, stepId), overrides: {} });
+        parts[index] = EntitySchema.parse({ ...resolveEntity(plan, shared, stepId), overrides: {} });
       else parts.splice(index, 1);
       return touch(
         replaceBeatContent(detached.plan, stepId, variantId, { ...detached.content, parts })
@@ -842,20 +867,10 @@ export function duplicateStep(plan: Plan, stepId: string, name?: string): { plan
     );
   }
 
-  const entities = plan.entities.map((e) => {
-    const next = { ...e } as Entity;
-    const mine = Object.keys(e.overrides ?? {}).filter((k) => poseStep(k) === stepId);
-    if (mine.length) {
-      const overrides = { ...e.overrides };
-      // Every reading of the step comes along, each still filed under its own
-      // variant: a copy of a step people stand two ways in is the same step.
-      for (const k of mine) overrides[step.id + k.slice(stepId.length)] = { ...e.overrides![k] };
-      next.overrides = overrides;
-    }
-    return next;
-  });
-
-  return { plan: touch({ ...plan, steps, entities }), step };
+  // Nobody's pose is copied across: the new step lands directly after the one
+  // it came from, in the same mechanic, so it already inherits every pose that
+  // step declared. Restating them would only be the same numbers again.
+  return { plan: touch({ ...plan, steps }), step };
 }
 
 export function updateStep(
@@ -1665,7 +1680,7 @@ export function collapseBeatVariants(plan: Plan, beatId: string, variantId: stri
         : []
       : sharedParts
           .filter((part) => entityInStep(part, stepId, plan))
-          .map((part) => EntitySchema.parse({ ...resolveEntity(part, stepId), overrides: {} }));
+          .map((part) => EntitySchema.parse({ ...resolveEntity(plan, part, stepId), overrides: {} }));
     for (const part of parts) {
       if (!appearances.has(part.id)) order.push(part.id);
       const list = appearances.get(part.id) ?? [];
@@ -2022,7 +2037,7 @@ export function deleteVariant(plan: Plan, mechanicId: string, variantId: string)
  */
 export function addMech(
   plan: Plan,
-  opts: { id?: string; name?: string; snap?: string; boom?: string; color?: string; plain?: boolean } = {},
+  opts: { id?: string; name?: string; snap?: string; boom?: string; freeze?: string; color?: string; plain?: boolean } = {},
 ): { plan: Plan; mech: Mech } {
   if (opts.id && plan.mechs.some((m) => m.id === opts.id)) throw new Error(`Mech id ${opts.id} is already in use`);
   const here = opts.snap ?? plan.steps[0]?.id ?? "";
@@ -2040,6 +2055,7 @@ export function addMech(
     name: opts.name ?? "",
     snap: here,
     boom: opts.boom ?? here,
+    freeze: opts.freeze ?? "",
     color,
     variants: [],
   };
@@ -2521,7 +2537,7 @@ const BAIT_DEFAULTS: Record<BaitKind, PropBag & { type: EntityType }> = {
  */
 export function baitSpec(
   kind: BaitKind,
-  target: string | { pick: BaitRule; rank?: number; of?: "player" | "enemy" | "any" },
+  target: string | { pick: BaitRule; rank?: number; count?: number; of?: "player" | "enemy" | "any" },
   sourceId: string | undefined,
   props: PropBag = {}
 ): PropBag & { type: EntityType } {
@@ -2537,7 +2553,12 @@ export function baitSpec(
   spec.anchor = {
     ...(typeof target === "string"
       ? { to: target }
-      : { pick: target.pick, rank: target.rank ?? 1, of: target.of ?? "player" }),
+      : {
+          pick: target.pick,
+          rank: target.rank ?? 1,
+          count: target.count ?? 1,
+          of: target.of ?? "player",
+        }),
     // Aimed kinds fire *from* the source; the rest merely rank their targets by
     // distance to it, which is what "baited off that orb" means for a puddle.
     ...(AIMED.includes(kind) ? { from: sourceId } : sourceId ? { near: sourceId } : {}),
@@ -2572,6 +2593,28 @@ export const PALETTE = [
   "arrow",
 ] as const;
 export type PaletteKind = (typeof PALETTE)[number];
+
+/**
+ * How the Add palette is laid out: captioned groups over the same tiles, in
+ * PALETTE order inside each group. A kind missing from every group still shows
+ * up, under a trailing "Other", so nothing silently disappears.
+ */
+export const PALETTE_GROUPS: { caption: string; kinds: readonly PaletteKind[] }[] = [
+  { caption: "Actors", kinds: ["boss", "add", "anchor"] },
+  { caption: "Zones", kinds: ["circle", "donut", "protean", "beam"] },
+  { caption: "Baits", kinds: ["stack8", "stack4", "stack2", "linestack", "flare"] },
+  { caption: "Tethers & notes", kinds: ["together", "apart", "text", "arrow"] },
+];
+
+/** The groups above plus every palette kind they forgot, in PALETTE order. */
+export function paletteGroups(): { caption: string; kinds: PaletteKind[] }[] {
+  const grouped = new Set(PALETTE_GROUPS.flatMap((g) => g.kinds));
+  const order = (kinds: readonly PaletteKind[]) =>
+    PALETTE.filter((k) => kinds.includes(k));
+  const groups = PALETTE_GROUPS.map((g) => ({ caption: g.caption, kinds: order(g.kinds) }));
+  const rest = PALETTE.filter((k) => !grouped.has(k));
+  return rest.length ? [...groups, { caption: "Other", kinds: rest }] : groups;
+}
 export type PaletteSourceKind = Extract<PaletteKind, "boss" | "add" | "anchor">;
 /** Pure annotations: they never bind to players or sources, only to the floor. */
 export type PaletteCosmeticKind = Extract<PaletteKind, "text" | "arrow">;
@@ -2660,7 +2703,7 @@ const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
   // editor rejects a floor/source drop before it reaches this table.
   together: { type: "tether", from: "", to: "", style: "close", range: 200 },
   apart: { type: "tether", from: "", to: "", style: "far", range: 625 },
-  anchor: { type: "enemy", role: "anchor", size: 60, ring: false, showFacing: false },
+  anchor: { type: "enemy", role: "anchor", size: 60, showFacing: false },
   text: { type: "text", text: "Text", fontSize: 48 },
   arrow: { type: "zone", shape: "arrow", width: 60, length: 300, color: "#e8edf5" },
 };
@@ -2676,7 +2719,7 @@ export function paletteSpec(kind: PaletteKind, props: PropBag = {}): PropBag & {
 /** The same palette item, bound: on a named target, or on whoever is nearest. */
 export function paletteBait(
   kind: PaletteMechanicKind,
-  target: string | { pick: BaitRule; rank?: number; of?: "player" | "enemy" | "any" },
+  target: string | { pick: BaitRule; rank?: number; count?: number; of?: "player" | "enemy" | "any" },
   sourceId: string | undefined,
   props: PropBag = {}
 ): PropBag & { type: EntityType } {
@@ -2741,11 +2784,17 @@ function describeEntity(plan: Plan, e: Entity, scene: Entity[] = plan.entities):
   const who = (id: string) => scene.find((candidate) => candidate.id === id)?.name ?? id;
   // An anchored entity has no pose of its own — reporting coordinates for it
   // would be reporting whatever it was authored with, not where it will land.
-  const whom = (a: NonNullable<Entity["anchor"]>) =>
-    a.pick
-      ? `the ${a.rank > 1 ? `${ordinal(a.rank)} ` : ""}${a.pick} ${a.of === "any" ? "entity" : a.of}` +
-        (a.from ? ` to ${who(a.from)}` : "")
-      : who(a.to);
+  const whom = (a: NonNullable<Entity["anchor"]>) => {
+    if (!a.pick) return who(a.to);
+    const kind = a.of === "any" ? "entit" : a.of === "enemy" ? "enem" : "player";
+    const plural = kind === "player" ? "players" : `${kind}ies`;
+    // One bait covering several ranks reads as the run it is: "the 3 closest".
+    const run =
+      (a.count ?? 1) > 1
+        ? `the ${a.rank > 1 ? `${ordinal(a.rank)} to ${ordinal(a.rank + a.count - 1)} ` : `${a.count} `}${a.pick} ${plural}`
+        : `the ${a.rank > 1 ? `${ordinal(a.rank)} ` : ""}${a.pick} ${kind === "player" ? "player" : `${kind}y`}`;
+    return run + (a.from ? ` to ${who(a.from)}` : "");
+  };
   const at = e.anchor
     ? e.anchor.from
       ? `aimed from ${who(e.anchor.from)} at ${whom(e.anchor)}${e.anchor.extend ? ", to the wall" : ""}`
@@ -2788,7 +2837,14 @@ function describeEntity(plan: Plan, e: Entity, scene: Entity[] = plan.entities):
  */
 function describeHits(e: Entity, items: Entity[]): string {
   if (e.type !== "zone" || e.shape === "arrow") return "";
-  const hit = items.filter((o) => o.type === "player" && zoneCovers(e, o.x, o.y));
+  // A counted bait is several shapes on the floor, so the line reports whoever
+  // any copy of it catches rather than only the first one's victim.
+  const shapes = items.filter(
+    (o): o is ZoneEntity => o.type === "zone" && fanOwnerId(o.id) === e.id
+  );
+  const hit = items.filter(
+    (o) => o.type === "player" && shapes.some((shape) => zoneCovers(shape, o.x, o.y))
+  );
   return hit.length ? ` — hits ${hit.map((h) => h.name ?? h.id).join(", ")}` : " — hits nobody";
 }
 
@@ -2856,6 +2912,9 @@ export function describePlan(
     const items = entitiesForStep(plan, step.id, undefined, shown);
     if (!items.length) lines.push("(empty)");
     for (const e of items) {
+      // The extra shapes of a counted bait are drawn, not authored: listing them
+      // would offer ids nothing can edit. The bait itself says how many.
+      if (isFanCopy(e.id)) continue;
       const base = plan.entities.find((b) => b.id === e.id);
       const moved = base?.overrides?.[step.id] ? " *" : "";
       lines.push(`- [${e.id}]${moved} ${describeEntity(plan, e, items)}${describeHits(e, items)}`);

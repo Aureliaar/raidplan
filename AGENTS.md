@@ -18,6 +18,28 @@ edges, step rows, mechanic sections) follows one release contract, kept in
 
 A new gesture that skips any of these three steps will flicker on release.
 
+## What a Step owns
+
+A Beat is the timing rule. It snapshots on the step it starts in, resolves on
+the step it ends in, and nothing inside it happens at a finer grain — so a Part
+has one pose, one geometry and one colour for its whole life, and per-step
+overrides are for actors only:
+
+- `STEP_FIELDS` in `src/shared/schema.ts` is the whole list: `x`, `y`,
+  `rotation`, `job`, `icon`. Movement, and the token somebody is drawn as
+  while a role callout or a debuff is on them.
+- Everything else belongs to the entity. `updateEntity` routes by
+  `stepOwned()`, so a step-scoped edit of a radius, a colour, a size or a
+  tether's pairing writes the thing itself rather than filing an exception
+  under the step it was typed in.
+- A step that says nothing inherits, field by field, from the last step of the
+  same mechanic that did. The walk stops at the mechanic boundary: a mechanic
+  whose first step leaves someone undeclared opens with them at their base
+  pose. So a drag is a delta, not a snapshot, and `duplicate_step` copies no
+  poses — the copy lands next to its source and inherits them.
+- `settleOverrides()` in `hydratePlan` folds documents written under the old
+  every-property-per-step lens back onto the things they describe.
+
 ## New operations are born client-authoritative
 
 Going forward, design every new op so the client can fully predict its result

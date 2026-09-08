@@ -106,12 +106,16 @@ await page.goto(base + "/p/" + planId);
 await page.waitForSelector("canvas");
 await page.waitForTimeout(800);
 
-const pose = (name, stepIndex = 0) =>
+/**
+ * The pose of a named shape as drawn. `copy` picks among the shapes one bait
+ * with a count puts on the floor: 1 is the closest target, 2 the next.
+ */
+const poseOf = (name, stepIndex = 0, copy = 1) =>
   page.evaluate(
-    async ([id, n, si]) => {
+    async ([id, n, si, nth]) => {
       const doc = await (await fetch("/api/plans/" + id)).json().then((p) => p.plan ?? p);
       const mod = await import("/src/shared/schema.ts");
-      const e = mod.entitiesForStep(doc, doc.steps[si].id).find((x) => x.name === n);
+      const e = mod.entitiesForStep(doc, doc.steps[si].id).filter((x) => x.name === n)[nth - 1];
       if (!e) return null;
       return {
         x: Math.round(e.x),
@@ -120,8 +124,10 @@ const pose = (name, stepIndex = 0) =>
         length: Math.round(e.length ?? 0),
       };
     },
-    [planId, name, stepIndex]
+    [planId, name, stepIndex, copy]
   );
+
+const pose = (name, stepIndex = 0) => poseOf(name, stepIndex, 1);
 
 const bearing = (x, y) => (Math.atan2(x, -y) * 180) / Math.PI;
 const off = (a, b) => Math.abs(((a - b + 540) % 360) - 180);
@@ -217,8 +223,8 @@ await ops(planId, [
   { op: "update_entity", id: idOfName("R2"), patch: { x: 0, y: -90 }, stepId: step1 },
 ]);
 
-const auto1 = await pose("Auto 1");
-const auto2 = await pose("Auto 2");
+const auto1 = await poseOf("Auto", 0, 1);
+const auto2 = await poseOf("Auto", 0, 2);
 if (off(auto1.rotation, bearing(60, 0)) > 6)
   fail("autobait 1 is not on the closest player (M2 at 90deg): it is at " + auto1.rotation + "deg");
 if (off(auto2.rotation, bearing(0, -90)) > 6)
@@ -227,11 +233,11 @@ console.log("autobaits picked the two closest with nobody named: " + auto1.rotat
 
 // Walk somebody else in closer: the bait must switch to them by itself.
 await ops(planId, [{ op: "update_entity", id: idOfName("R1"), patch: { x: -20, y: 0 }, stepId: step1 }]);
-const switched = await pose("Auto 1");
+const switched = await poseOf("Auto", 0, 1);
 if (off(switched.rotation, bearing(-20, 0)) > 6)
   fail("autobait did not re-target to R1 (270deg): it is at " + switched.rotation + "deg");
 else console.log("autobait re-targeted itself to the new closest player: " + switched.rotation + "deg");
-const bumped = await pose("Auto 2");
+const bumped = await poseOf("Auto", 0, 2);
 if (off(bumped.rotation, bearing(60, 0)) > 6)
   fail("autobait 2 did not slide to the now-second-closest M2: " + bumped.rotation + "deg");
 

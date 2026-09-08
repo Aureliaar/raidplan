@@ -19,15 +19,14 @@ import {
 import type { FightLibraryEntry } from "../shared/fight-library";
 import { api } from "./api";
 
-/** A plan whose encounter the library has not been taught, remembered here. */
-const pickedKey = (planId: string) => `raidplan.debuffs.${planId}`;
-
 /**
  * The fight this plan reads its statuses from: whatever the debuff library
  * holds for the encounter the plan names, and the library itself so an author
  * can point at another fight when the name is one it has not seen before.
+ * There is only ever one fight per plan, and the encounter in the header is
+ * what names it — picking here fills that field in rather than going around it.
  */
-function useFightDebuffs(plan: Plan) {
+function useFightDebuffs(plan: Plan, run: (ops: Op | Op[]) => Promise<unknown>) {
   const [library, setLibrary] = useState<FightLibraryEntry[]>([]);
   const [key, setKey] = useState<string | null>(null);
   const [dump, setDump] = useState<FFLogsDebuffDump | null>(null);
@@ -40,10 +39,8 @@ function useFightDebuffs(plan: Plan) {
       .then(async (found) => {
         if (!live) return;
         setLibrary(found.library);
-        const remembered = localStorage.getItem(pickedKey(plan.id));
-        const fallback = remembered && found.library.some((e) => e.key === remembered) ? remembered : null;
-        setKey(found.key ?? fallback);
-        setDump(found.dump ?? (fallback ? await api.debuffFight(fallback) : null));
+        setKey(found.key);
+        setDump(found.dump);
       })
       .catch(() => undefined)
       .finally(() => live && setLoading(false));
@@ -52,10 +49,17 @@ function useFightDebuffs(plan: Plan) {
     };
   }, [plan.id]);
 
-  /** Choosing a fight teaches the library what this plan calls its encounter. */
+  /**
+   * Choosing a fight teaches the library what this plan calls its encounter —
+   * so an unnamed plan takes the fight's own name first, and the link is one
+   * every plan of that encounter then follows.
+   */
   async function choose(next: string) {
+    if (!plan.encounter.trim()) {
+      const named = library.find((entry) => entry.key === next);
+      if (named) await run({ op: "set_meta", encounter: named.name });
+    }
     const chosen = await api.usePlanDebuffFight(plan.id, next);
-    localStorage.setItem(pickedKey(plan.id), next);
     setKey(chosen.key);
     setDump(chosen.dump);
     setLibrary(await api.debuffLibrary());
@@ -96,7 +100,7 @@ export function DebuffPanel({
   run(ops: Op | Op[]): Promise<{ values: unknown[] }>;
   onClose(): void;
 }) {
-  const fight = useFightDebuffs(plan);
+  const fight = useFightDebuffs(plan, run);
   const { dump } = fight;
   const rows = useMemo(() => (dump ? pickerRows(dump) : []), [dump]);
   const deal = mech.debuffs ?? EMPTY;

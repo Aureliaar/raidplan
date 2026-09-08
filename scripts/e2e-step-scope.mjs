@@ -50,7 +50,7 @@ const gotoStep = async (n) => {
 };
 
 // Two steps, then back on step 1.
-await page.getByRole("button", { name: "Add step after this one" }).click();
+await page.locator('[data-current="true"]').getByRole("button", { name: "Add step after this one" }).click();
 await page.waitForTimeout(500);
 let doc = await load();
 const [s1, s2] = doc.steps.map((s) => s.id);

@@ -125,11 +125,19 @@ const back = doc.entities.find((e) => e.id === set[0].id).radius;
 if (Math.abs(back - before) > 3) fail("scrolling back down left the circle at " + back);
 else console.log("and scrolling back down undid it: " + back);
 
-// The group row lists the sets of the open Beat, so open the set's Beat first.
+// The group row lists the sets of the open Beat, so open the set's Beat first,
+// then let the Beat's selection go so the aside is the Add panel again, and
+// open the Groups popover the rows now live in.
 await page.locator(`[data-mech="${set[0].mech}"]`).click();
 await page.waitForTimeout(300);
+await page.mouse.click(box.x + 4, box.y + 4);
+await page.waitForTimeout(250);
+await page.getByRole("button", { name: "Groups" }).click();
+await page.waitForTimeout(250);
 await page.getByTitle("Remove this circle from the supports").click();
 await page.waitForTimeout(600);
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
 
 /* --- the donut chip, and the wheel on a shape of your own ----------------- */
 

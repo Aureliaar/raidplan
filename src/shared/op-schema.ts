@@ -81,7 +81,6 @@ const playerFields = {
 const enemyFields = {
   icon: z.string().optional(),
   size: z.number().positive().optional(),
-  ring: z.boolean().optional(),
   showFacing: z.boolean().optional(),
   role: z.enum(["enemy", "anchor"]).optional(),
 };
@@ -239,9 +238,9 @@ const PublicOpSchema = z.discriminatedUnion("op", [
   strict({ op: z.literal("update_beat_variant_route"), routeId: id, patch: strict({ name: z.string().optional(), selections: beatSelections.optional() }) }),
   strict({ op: z.literal("delete_beat_variant_route"), routeId: id }),
   strict({ op: z.literal("set_default_beat_variant_route"), routeId: id.optional() }),
-  strict({ op: z.literal("add_mech"), id: id.optional(), name: z.string().optional(), snap: id.optional(), boom: id.optional(), color: z.string().optional(), plain: z.boolean().optional() }),
+  strict({ op: z.literal("add_mech"), id: id.optional(), name: z.string().optional(), snap: id.optional(), boom: id.optional(), freeze: z.string().optional(), color: z.string().optional(), plain: z.boolean().optional() }),
   strict({ op: z.literal("merge_mechs"), into: id, mechIds: ids }),
-  strict({ op: z.literal("update_mech"), mechId: id, patch: strict({ name: z.string().optional(), snap: id.optional(), boom: id.optional(), color: z.string().optional(), debuffs: debuffs.optional() }) }),
+  strict({ op: z.literal("update_mech"), mechId: id, patch: strict({ name: z.string().optional(), snap: id.optional(), boom: id.optional(), freeze: z.string().optional(), color: z.string().optional(), debuffs: debuffs.optional() }) }),
   strict({ op: z.literal("delete_mech"), mechId: id, keepEntities: z.boolean().optional() }),
   strict({ op: z.literal("assign_mech"), ids, mechId: id.nullable(), ...context }),
   strict({ op: z.literal("add_waymarks"), distance: z.number().optional() }),
@@ -323,9 +322,11 @@ export function validatePublicOp(plan: Plan, op: Op): void {
   }
   if (op.op === "update_mech") {
     if (!plan.mechs.some((mech) => mech.id === op.mechId)) throw new Error(`No mech ${op.mechId}`);
-    for (const stepId of [op.patch.snap, op.patch.boom])
+    for (const stepId of [op.patch.snap, op.patch.boom, op.patch.freeze])
       if (stepId && !plan.steps.some((step) => step.id === stepId)) throw new Error(`No step ${stepId}`);
   }
+  if (op.op === "add_mech" && op.freeze && !plan.steps.some((step) => step.id === op.freeze))
+    throw new Error(`No step ${op.freeze}`);
 }
 
 /** Validate one wire batch, including identities introduced inside the batch. */

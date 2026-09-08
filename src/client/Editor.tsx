@@ -1,4 +1,4 @@
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useAgent } from "agents/react";
 import { api } from "./api";
@@ -60,6 +60,7 @@ import {
   PALETTE_HINT,
   PALETTE_LABEL,
   PALETTE_TETHER_RANGE_YALMS,
+  paletteGroups,
   isPaletteCosmetic,
   isPaletteSource,
   isPaletteTether,
@@ -107,7 +108,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [selection, setSelection] = useState<string[]>([]);
   const selected = selection.at(-1) ?? null;
   const setSelected = (id: string | null) => setSelection(id ? [id] : []);
-  const [scope, setScope] = useState<"step" | "all">("step");
   const [symmetryCount, setSymmetryCount] = useState<SymmetryCount>(1);
   const [symmetryKind, setSymmetryKind] = useState<SymmetryKind>("mirror");
   /**
@@ -202,6 +202,16 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [debuffFor, setDebuffFor] = useState<string | null>(null);
   /** The fights the debuff library holds, so the encounter field names one. */
   const [fightLibrary, setFightLibrary] = useState<FightLibraryEntry[]>([]);
+  /**
+   * Which header name is a field right now. The title and the encounter read
+   * as text until you click them, so the top row stays one line of reading
+   * rather than two boxes asking to be filled in.
+   */
+  const [headerEditing, setHeaderEditing] = useState<"name" | "encounter" | null>(null);
+  /** The value the field opened with, so Escape can put it back. */
+  const headerBefore = useRef("");
+  /** Set by Escape so the unmount's blur does not commit the abandoned text. */
+  const headerCancelled = useRef(false);
   /** One-shot: the link decides the first Step, and after that the editor does. */
   const viewRestored = useRef(false);
   const stageBox = useRef<HTMLDivElement>(null);
@@ -369,20 +379,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             ? (viewedMechanic.variants.find((variant) => variant.id === shown[viewedMechanic.id]) ??
                 viewedMechanic.variants[0]).id
             : undefined;
-        // Beat Variant content is explicitly Step-scoped even if the shared
-        // editor scope says every Step. Selecting the Beat tab edits Shared.
-        const activeStepId =
-          current?.variantModel === "beat" && viewedVariant
-            ? viewedStepId
-            : scope === "step"
-              ? viewedStepId
-              : undefined;
-        const activeVariant =
-          current?.variantModel === "beat"
-            ? viewedVariant
-            : scope === "step"
-              ? viewedVariant
-              : undefined;
+        const activeStepId = viewedStepId;
+        const activeVariant = viewedVariant;
         const sceneOps = new Set([
           "add_entity",
           "update_entity",
@@ -412,7 +410,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         );
         const contextual = (Array.isArray(ops) ? ops : [ops]).flatMap((op): Op[] => {
           if (!sceneOps.has(op.op)) return [op];
-          // Waymarks are plan-wide even while the editor is in step scope.
+          // Waymarks are plan-wide even while the editor edits one step.
           if (op.op === "add_entity" && op.spec.type === "marker") return [op];
           if (
             (op.op === "update_entity" ||
@@ -556,7 +554,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         throw e;
       }
     },
-    [planId, scope, symmetryCount, symmetryKind, shown, step?.id, showServerPlan, mech, editingBeatVariant]
+    [planId, symmetryCount, symmetryKind, shown, step?.id, showServerPlan, mech, editingBeatVariant]
   );
 
   const travelHistory = useCallback(
@@ -1035,9 +1033,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const current = planRef.current;
     if (!current) return;
     const editableScene =
-      scope === "step" && playing
-        ? authoredEntitiesForStep(current, step!.id, playing)
-        : current.entities;
+      playing ? authoredEntitiesForStep(current, step!.id, playing) : current.entities;
     const requested = new Set(requestedIds);
     const bonds = new Set(
       editableScene
@@ -1080,9 +1076,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     pendingResize.current = null;
     if (!job || !current) return;
     const editableScene =
-      scope === "step" && playing
-        ? authoredEntitiesForStep(current, step!.id, playing)
-        : current.entities;
+      playing ? authoredEntitiesForStep(current, step!.id, playing) : current.entities;
     // What the party lands on: the wheeled token's new size, copied onto every
     // other player so the spin unifies them instead of scaling each one apart.
     const lead = editableScene.find((x) => x.id === job.lead);
@@ -1488,13 +1482,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           },
           // The same bargain as dragging one person: a move belongs to the step
           // you are on, and to the reading you are looking at.
-          stepId: scope === "step" ? step!.id : undefined,
-          variant:
-            plan!.variantModel === "beat"
-              ? editingVariant
-              : scope === "step"
-                ? playing
-                : undefined,
+          stepId: step!.id,
+          variant: plan!.variantModel === "beat" ? editingVariant : playing,
         };
       })
     );
@@ -1541,7 +1530,14 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   paletteMoveRef.current = (kind, clientX, clientY) => {
     const under = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
     const group = under?.closest<HTMLElement>("[data-drop-group]")?.dataset.dropGroup as GroupId | undefined;
-    setHover(group && kind !== "anchor" && !isPaletteCosmetic(kind) ? group : null);
+    const onGroup = !!group && kind !== "anchor" && !isPaletteCosmetic(kind);
+    setHover(onGroup ? group! : null);
+    // The rail hangs over the arena, so "everyone gets one" and "one lands
+    // here" are the same pixels. Over the rail it is the group that is meant.
+    if (onGroup) {
+      setPalettePreview(null);
+      return;
+    }
     const box = stageBox.current?.getBoundingClientRect();
     if (!box || clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) {
       setPalettePreview(null);
@@ -1606,34 +1602,208 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     window.addEventListener("pointercancel", cancel);
   }
 
+  /**
+   * Which reading is on the floor, and where an edit lands. It rides at the
+   * top of the rail, beside the Beats it talks about, and shows up only when
+   * there is a choice being made or a destination other than the plain step.
+   */
+  const previewStrip =
+    plan.variantModel === "step" &&
+    (activeStepPreviews.length > 0 || !!editingVariant) ? (
+      <div className="mb-2 rounded border border-ink-700 bg-ink-800/60 px-2 py-1.5 text-xs">
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="label shrink-0">Preview</span>
+          {activeStepPreviews.map(({ step: ownerStep, ownerStepId, variant }) => (
+            <label
+              key={ownerStepId}
+              className={`flex items-center gap-1 rounded border px-1.5 py-0.5 ${movementConflicts.some((conflict) => conflict.ownerStepIds.includes(ownerStepId)) ? "border-amber-400 bg-amber-950/50" : focusedBeat === ownerStepId ? "border-blue-400 bg-blue-950/40" : "border-ink-600 bg-ink-800"}`}
+            >
+              <span className="text-ink-400">{ownerStep.name || "Step"}:</span>
+              <select
+                data-preview-step={ownerStepId}
+                className="max-w-[120px] bg-transparent text-blue-100 outline-none"
+                value={variant.id}
+                onFocus={() => setFocusedBeat(ownerStepId)}
+                onChange={(event) => {
+                  setFocusedBeat(ownerStepId);
+                  setShown((current) => ({ ...current, [ownerStepId]: event.target.value }));
+                }}
+              >
+                {stepVariants(ownerStep).map((choice) => (
+                  <option key={choice.id} value={choice.id} className="bg-ink-900">
+                    {stepVariantLabel(ownerStep, choice.id)}
+                  </option>
+                ))}
+              </select>
+              {movementConflicts.some((conflict) => conflict.ownerStepIds.includes(ownerStepId)) && (
+                <span className="text-amber-300" title="This preview has an explicit same-actor movement conflict">&#9888;</span>
+              )}
+            </label>
+          ))}
+        </div>
+        <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px]">
+          <span className="min-w-0 truncate text-ink-300" data-edit-destination>
+            {editable
+              ? editingVariant && editingVariantOwner
+                ? `Editing: ${editingVariantOwner.step.name || "Step"} \u203a ${stepVariantLabel(editingVariantOwner.step, editingVariant)}${openMech ? ` \u203a ${mechLabel(plan, openMech)}` : ""}`
+                : openMech
+                  ? `Editing: ${mechLabel(plan, openMech)} shared Parts`
+                  : `Editing: ${step.name || "Step"} shared scene`
+              : "Viewer preview"}
+          </span>
+          {editable && editingVariant && editingVariantOwner && (
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              <button
+                className="btn h-6 py-0 text-[10px]"
+                data-delete-step-variant={editingVariant}
+                title={`Delete this Variant box and the Beats inside it, leaving ${stepVariantLabel(
+                  editingVariantOwner.step,
+                  stepVariants(editingVariantOwner.step).find((variant) => variant.id !== editingVariant)?.id ?? editingVariant
+                )} as Shared (Del)`}
+                onClick={() => deleteStepVariantBox(editingVariant)}
+              >
+                Delete Variant
+              </button>
+              <button
+                className="btn h-6 py-0 text-[10px]"
+                title="Go back to editing Shared (Esc)"
+                onClick={() => setEditingBeatVariant(null)}
+              >
+                Edit Shared
+              </button>
+            </span>
+          )}
+        </div>
+      </div>
+    ) : null;
+
   return (
     <div className="relative flex h-full flex-col">
-      <header className="panel flex flex-wrap items-center gap-3 border-x-0 border-t-0 px-3 py-2">
-        <button className="btn" onClick={() => navigate("/")}>
+      <header className="panel flex h-12 flex-nowrap items-center gap-3 overflow-hidden border-x-0 border-t-0 px-3 py-0">
+        <button className="btn shrink-0" onClick={() => navigate("/")}>
           ← Plans
         </button>
-        <input
-          className="field max-w-[280px]"
-          value={plan.name}
-          disabled={!editable}
-          onChange={(e) => setPlan({ ...plan, name: e.target.value })}
-          onBlur={(e) => run({ op: "set_meta", name: e.target.value })}
-        />
-        <input
-          className="field max-w-[180px]"
-          placeholder="encounter"
-          list="encounter-fights"
-          title={
-            "The fight this plan is for — plans sharing it share their waymarks. " +
-            (encounterFight
-              ? `Statuses come from ${encounterFight.name}.`
-              : "No fight in the debuff library answers to this name yet.")
-          }
-          value={plan.encounter}
-          disabled={!editable}
-          onChange={(e) => setPlan({ ...plan, encounter: e.target.value })}
-          onBlur={(e) => run({ op: "set_meta", encounter: e.target.value })}
-        />
+        {/* The plan's identity reads as a line of text; a click turns the word
+            you aimed at into the field that renames it. */}
+        <div className="flex min-w-0 shrink flex-col justify-center gap-0.5 leading-tight">
+          <div className="flex min-w-0 items-baseline gap-2">
+            {editable && headerEditing === "name" ? (
+              <input
+                className="field h-6 max-w-[280px] py-0 text-sm"
+                aria-label="Plan name"
+                autoFocus
+                value={plan.name}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => setPlan({ ...plan, name: e.target.value })}
+                onBlur={(e) => {
+                  setHeaderEditing(null);
+                  if (headerCancelled.current) {
+                    headerCancelled.current = false;
+                    return;
+                  }
+                  void run({ op: "set_meta", name: e.target.value });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  else if (e.key === "Escape") {
+                    headerCancelled.current = true;
+                    setPlan({ ...plan, name: headerBefore.current });
+                    setHeaderEditing(null);
+                  }
+                }}
+              />
+            ) : editable ? (
+              <button
+                type="button"
+                data-plan-name={plan.name}
+                aria-label="Plan name"
+                title="Rename"
+                className="min-w-0 truncate rounded px-1 text-left text-sm font-semibold text-ink-100 hover:bg-ink-700 hover:underline"
+                onClick={() => {
+                  headerBefore.current = plan.name;
+                  headerCancelled.current = false;
+                  setHeaderEditing("name");
+                }}
+              >
+                {plan.name || "Untitled plan"}
+              </button>
+            ) : (
+              <span
+                data-plan-name={plan.name}
+                className="min-w-0 truncate px-1 text-sm font-semibold text-ink-100"
+              >
+                {plan.name}
+              </span>
+            )}
+            {editable && headerEditing === "encounter" ? (
+              <input
+                className="field h-6 max-w-[180px] py-0 text-xs"
+                placeholder="encounter"
+                aria-label="Encounter"
+                list="encounter-fights"
+                autoFocus
+                title={
+                  "The fight this plan is for — plans sharing it share their waymarks. " +
+                  (encounterFight
+                    ? `Statuses come from ${encounterFight.name}.`
+                    : "No fight in the debuff library answers to this name yet.")
+                }
+                value={plan.encounter}
+                onFocus={(e) => e.currentTarget.select()}
+                onChange={(e) => setPlan({ ...plan, encounter: e.target.value })}
+                onBlur={(e) => {
+                  setHeaderEditing(null);
+                  if (headerCancelled.current) {
+                    headerCancelled.current = false;
+                    return;
+                  }
+                  void run({ op: "set_meta", encounter: e.target.value });
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") e.currentTarget.blur();
+                  else if (e.key === "Escape") {
+                    headerCancelled.current = true;
+                    setPlan({ ...plan, encounter: headerBefore.current });
+                    setHeaderEditing(null);
+                  }
+                }}
+              />
+            ) : editable ? (
+              <button
+                type="button"
+                data-encounter-name={plan.encounter}
+                aria-label="Encounter"
+                title={
+                  "The fight this plan is for — plans sharing it share their waymarks. " +
+                  (encounterFight
+                    ? `Statuses come from ${encounterFight.name}.`
+                    : "No fight in the debuff library answers to this name yet.") +
+                  " Rename"
+                }
+                className={`min-w-0 shrink-0 truncate rounded px-1 text-left text-xs hover:bg-ink-700 hover:underline ${plan.encounter ? "text-ink-400" : "text-ink-600"}`}
+                onClick={() => {
+                  headerBefore.current = plan.encounter;
+                  headerCancelled.current = false;
+                  setHeaderEditing("encounter");
+                }}
+              >
+                {plan.encounter || "name the fight"}
+              </button>
+            ) : (
+              plan.encounter && (
+                <span
+                  data-encounter-name={plan.encounter}
+                  className="min-w-0 shrink-0 truncate px-1 text-xs text-ink-400"
+                >
+                  {plan.encounter}
+                </span>
+              )
+            )}
+          </div>
+          <span className="truncate px-1 text-[10px] text-ink-400">
+            rev {plan.rev} · {connected ? "live" : "offline"} · {role}
+          </span>
+        </div>
         {/* The library's fights, so naming the encounter is also the act of
             choosing whose statuses the debuff Beats deal. */}
         <datalist id="encounter-fights">
@@ -1641,37 +1811,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             <option key={entry.key} value={entry.name} />
           ))}
         </datalist>
-        <span className="text-xs text-ink-400">
-          rev {plan.rev} · {connected ? "live" : "offline"} · {role}
-        </span>
-        {editable && (
-          <div className="flex shrink-0 items-center gap-1" aria-label="Edit history controls">
-            <button
-              className="btn"
-              disabled={historyBusy || !history?.canUndo}
-              title="Undo (Ctrl+Z)"
-              onClick={() => void travelHistory("undo")}
-            >
-              ↶
-            </button>
-            <button
-              className="btn"
-              disabled={historyBusy || !history?.canRedo}
-              title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
-              onClick={() => void travelHistory("redo")}
-            >
-              ↷
-            </button>
-            <button
-              className={`btn ${historyOpen ? "border-blue-400 text-blue-200" : ""}`}
-              title="Revision history and work sessions"
-              onClick={() => setHistoryOpen((open) => !open)}
-            >
-              History
-            </button>
-          </div>
-        )}
-        <div className="ml-auto flex shrink-0 items-center gap-2">
+        <div className="mx-auto flex min-w-0 items-center gap-2 overflow-hidden">
           <div
             className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-md border border-ink-600 bg-ink-900/70 p-0.5 shadow-inner"
             role="group"
@@ -1786,16 +1926,36 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                   </button>
                 ))}
               </div>
-              <span className="label">Drag moves</span>
-              <select
-                className="field w-auto"
-                value={scope}
-                onChange={(e) => setScope(e.target.value as "step" | "all")}
-              >
-                <option value="step">this step only</option>
-                <option value="all">every step</option>
-              </select>
             </>
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-2">
+          {editable && (
+            <div className="flex shrink-0 items-center gap-1" aria-label="Edit history controls">
+              <button
+                className="btn"
+                disabled={historyBusy || !history?.canUndo}
+                title="Undo (Ctrl+Z)"
+                onClick={() => void travelHistory("undo")}
+              >
+                ↶
+              </button>
+              <button
+                className="btn"
+                disabled={historyBusy || !history?.canRedo}
+                title="Redo (Ctrl+Y or Ctrl+Shift+Z)"
+                onClick={() => void travelHistory("redo")}
+              >
+                ↷
+              </button>
+              <button
+                className={`btn ${historyOpen ? "border-blue-400 text-blue-200" : ""}`}
+                title="Revision history and work sessions"
+                onClick={() => setHistoryOpen((open) => !open)}
+              >
+                History
+              </button>
+            </div>
           )}
           <ShareButton
             planId={planId}
@@ -1828,74 +1988,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         </div>
       </header>
 
-      {plan.variantModel === "step" && (
-        <div className="panel flex flex-wrap items-center gap-2 border-x-0 border-t-0 px-3 py-1.5 text-xs">
-          <span className="label">Preview</span>
-          {activeStepPreviews.length ? (
-            activeStepPreviews.map(({ step: ownerStep, ownerStepId, variant }) => (
-              <label
-                key={ownerStepId}
-                className={`flex items-center gap-1 rounded border px-2 py-1 ${movementConflicts.some((conflict) => conflict.ownerStepIds.includes(ownerStepId)) ? "border-amber-400 bg-amber-950/50" : focusedBeat === ownerStepId ? "border-blue-400 bg-blue-950/40" : "border-ink-600 bg-ink-800"}`}
-              >
-                <span>{ownerStep.name || "Step"}:</span>
-                <select
-                  data-preview-step={ownerStepId}
-                  className="bg-transparent text-blue-100 outline-none"
-                  value={variant.id}
-                  onFocus={() => setFocusedBeat(ownerStepId)}
-                  onChange={(event) => {
-                    setFocusedBeat(ownerStepId);
-                    setShown((current) => ({ ...current, [ownerStepId]: event.target.value }));
-                  }}
-                >
-                  {stepVariants(ownerStep).map((choice) => (
-                    <option key={choice.id} value={choice.id} className="bg-ink-900">
-                      {stepVariantLabel(ownerStep, choice.id)}
-                    </option>
-                  ))}
-                </select>
-                {movementConflicts.some((conflict) => conflict.ownerStepIds.includes(ownerStepId)) && (
-                  <span className="text-amber-300" title="This preview has an explicit same-actor movement conflict">⚠</span>
-                )}
-              </label>
-            ))
-          ) : (
-            <span className="text-ink-400">No Variant split active in this Step</span>
-          )}
-          <span className="ml-auto text-ink-300" data-edit-destination>
-            {editable
-              ? editingVariant && editingVariantOwner
-                ? `Editing: ${editingVariantOwner.step.name || "Step"} › ${stepVariantLabel(editingVariantOwner.step, editingVariant)}${openMech ? ` › ${mechLabel(plan, openMech)}` : ""}`
-                : openMech
-                  ? `Editing: ${mechLabel(plan, openMech)} shared Parts`
-                  : `Editing: ${step.name || "Step"} shared scene`
-              : "Viewer preview"}
-          </span>
-          {editable && editingVariant && editingVariantOwner && (
-            <>
-              <button
-                className="btn h-6 py-0 text-[10px]"
-                data-delete-step-variant={editingVariant}
-                title={`Delete this Variant box and the Beats inside it, leaving ${stepVariantLabel(
-                  editingVariantOwner.step,
-                  stepVariants(editingVariantOwner.step).find((variant) => variant.id !== editingVariant)?.id ?? editingVariant
-                )} as Shared (Del)`}
-                onClick={() => deleteStepVariantBox(editingVariant)}
-              >
-                Delete Variant
-              </button>
-              <button
-                className="btn h-6 py-0 text-[10px]"
-                title="Go back to editing Shared (Esc)"
-                onClick={() => setEditingBeatVariant(null)}
-              >
-                Edit Shared
-              </button>
-            </>
-          )}
-        </div>
-      )}
-
       {plan.variantModel === "step" && movementConflicts.length > 0 && (
         <div className="bg-amber-950 px-3 py-1.5 text-center text-xs text-amber-200" role="alert" data-movement-conflict>
           Movement conflict: {movementConflicts.map((conflict) => authoredScene.find((entity) => entity.id === conflict.actorId)?.name || conflict.actorId).join(", ")} is moved by more than one active Variant split. Shared Step positions are shown until the conflict is resolved.
@@ -1905,6 +1997,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       <div className="flex min-h-0 flex-1">
         <StepRail
           plan={plan}
+          preview={previewStrip}
           index={stepIndex}
           editable={editable}
           me={user?.id ?? null}
@@ -2083,18 +2176,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                         ...sizePatch,
                         ...(rotationChanged ? { rotation: next.rotation } : {}),
                       },
-                      stepId:
-                        plan.variantModel === "beat" && editingVariant
-                          ? step.id
-                          : scope === "step"
-                            ? step.id
-                            : undefined,
-                      variant:
-                        plan.variantModel === "beat"
-                          ? editingVariant
-                          : scope === "step"
-                            ? playing
-                            : undefined,
+                      stepId: step.id,
+                      variant: plan.variantModel === "beat" ? editingVariant : playing,
                     },
                     false
                   );
@@ -2135,21 +2218,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                       op: "update_entity" as const,
                       id,
                       patch: { x, y },
-                      stepId:
-                        plan.variantModel === "beat" && editingVariant
-                          ? step.id
-                          : scope === "step"
-                            ? step.id
-                            : undefined,
+                      stepId: step.id,
                       // In a mechanic that goes two ways, a move belongs to the
                       // reading you are playing. Nothing has to be said about it:
                       // you moved somebody while looking at this reading.
-                      variant:
-                        plan.variantModel === "beat"
-                          ? editingVariant
-                          : scope === "step"
-                            ? playing
-                            : undefined,
+                      variant: plan.variantModel === "beat" ? editingVariant : playing,
                     })),
                     false
                   );
@@ -2166,108 +2239,54 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 }
                 onEdit={(notes) => run({ op: "update_step", stepId: step.id, patch: { notes } })}
               />
+              {/* "Everyone here gets one of these" — seven places to let go of
+                  what you are carrying. It pops out over the arena's margin
+                  only while something is in hand, so the groups never sit on
+                  screen competing with the plan for space. */}
+              {editable &&
+                layer === "step" &&
+                carrying &&
+                carrying !== "anchor" &&
+                !isPaletteCosmetic(carrying) && (
+                  <div className="drop-rail absolute right-2 top-1/2 z-20 flex -translate-y-1/2 flex-col gap-1.5">
+                    {GROUPS.map((g) => {
+                      const people = membersOf(g).length;
+                      return (
+                        <div
+                          key={g}
+                          data-drop-group={g}
+                          title={`Drop a mechanic here to give one to each of the ${g}`}
+                          onDragOver={(ev) => {
+                            ev.preventDefault();
+                            ev.dataTransfer.dropEffect = "copy";
+                            setHover(g);
+                          }}
+                          onDragLeave={() => setHover((h) => (h === g ? null : h))}
+                          onDrop={(ev) => {
+                            const kind = kindOf(ev);
+                            if (!kind || kind === "anchor") return;
+                            ev.preventDefault();
+                            ev.stopPropagation();
+                            void drop(kind, { x: 0, y: 0 }, { at: "group", group: g });
+                            setCarrying(null);
+                            setHover(null);
+                          }}
+                          className={`rounded-lg border-2 border-dashed bg-ink-800/90 px-3 py-2 text-sm font-semibold text-ink-100 shadow-lg ${
+                            hover === g ? "border-blue-400 bg-blue-500/25" : "border-blue-500/60"
+                          }`}
+                        >
+                          <div>{GROUP_LABEL[g]}</div>
+                          <div className="text-[11px] font-normal text-ink-400">
+                            {people} {people === 1 ? "player" : "players"}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
             </div>
           )}
         </CanvasArea>
-
-        {/* "Everyone gets one of these" as a place you drop things, off the
-            arena so it never covers the plan and can be big enough to hit. */}
-        {editable && (
-          <div
-            className={`flex w-[200px] shrink-0 flex-col gap-2 overflow-y-auto p-2 ${
-              // Kept in place on the waymark layer rather than unmounted: the
-              // arena must not change size under you when you switch layers.
-              layer === "markers" ? "pointer-events-none opacity-40" : ""
-            }`}
-          >
-            {GROUPS.map((g) => {
-              const people = membersOf(g).length;
-              const sets = bondsOf(g);
-              return (
-                <div
-                  key={g}
-                  data-drop-group={g}
-                  draggable={editable && layer === "step" && people > 0}
-                  onDragStart={(ev) => {
-                    ev.dataTransfer.setData("text/plain", "group:" + g);
-                    ev.dataTransfer.effectAllowed = "move";
-                    setCarryGroup(g);
-                  }}
-                  onDragEnd={() => setCarryGroup(null)}
-                  // Clicking the chip is how you get hold of the group without
-                  // moving it: the same people the drag would carry, selected.
-                  onClick={() => {
-                    const ids = membersOf(g).map((e) => e.id);
-                    if (ids.length) setSelection(ids);
-                  }}
-                  title={
-                    people > 0
-                      ? `Click to select the ${GROUP_LABEL[g]}. Drag this onto the floor to stack them tightly there. Drop a mechanic here to give one to each of them`
-                      : `Drop a mechanic here to give one to each of the ${g}`
-                  }
-                  onDragOver={(ev) => {
-                    if (!carrying || carrying === "anchor") return;
-                    ev.preventDefault();
-                    ev.dataTransfer.dropEffect = "copy";
-                    setHover(g);
-                  }}
-                  onDragLeave={() => setHover((h) => (h === g ? null : h))}
-                  onDrop={(ev) => {
-                    const kind = kindOf(ev);
-                    if (!kind || kind === "anchor") return;
-                    ev.preventDefault();
-                    void drop(kind, { x: 0, y: 0 }, { at: "group", group: g });
-                    setCarrying(null);
-                    setHover(null);
-                  }}
-                  className={`rounded-lg border-2 border-dashed p-3 transition ${
-                    editable && layer === "step" && people > 0 ? "cursor-grab active:cursor-grabbing" : ""
-                  } ${
-                    carryGroup === g
-                      ? "border-blue-400 bg-blue-500/20"
-                      : hover === g
-                      ? "border-blue-400 bg-blue-500/25"
-                      : carrying && carrying !== "anchor"
-                        ? "border-blue-500/60 bg-ink-800/80"
-                        : "border-ink-600 bg-ink-800/50"
-                  }`}
-                >
-                  <div className="text-center text-base font-semibold text-ink-100">
-                    {GROUP_LABEL[g]}
-                  </div>
-                  <div className="mb-1 text-center text-[11px] text-ink-400">
-                    {people} {people === 1 ? "player" : "players"}
-                  </div>
-                  {/* The set is the object: its shapes are frozen on the canvas,
-                      so this row is how you find it and how you take it away. */}
-                  {sets.map((b) => (
-                    <div
-                      key={b.id}
-                      onMouseEnter={() => setHighlight(b.id)}
-                      onMouseLeave={() => setHighlight((h) => (h === b.id ? null : h))}
-                      className="mt-1 flex items-center gap-1 rounded bg-ink-900/70 px-2 py-1 text-xs"
-                    >
-                      <span className="truncate">
-                        {b.label} ×{b.ids.length}
-                      </span>
-                      <button
-                        className="ml-auto text-ink-400 hover:text-red-300"
-                        title={`Remove this ${b.label.toLowerCase()} from the ${g}`}
-                        onClick={(ev) => {
-                          ev.stopPropagation();
-                          setHighlight(null);
-                          void run({ op: "delete_entities", ids: b.ids });
-                        }}
-                      >
-                        ✕
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              );
-            })}
-          </div>
-        )}
 
         {/* A shared link opens read-only, often signed out: showing a wall of
             greyed-out editing controls just reads as a broken app. */}
@@ -2282,35 +2301,68 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         >
           {!selectedEntity || layer === "markers" ? (
           <>
-          <h2 className="label mb-2">Add</h2>
-          <p className="mb-2 text-xs text-ink-400">
-            Drag onto the floor to place one, onto a group to give everybody one, or onto a boss,
-            add, or bait anchor to have it thrown at whoever stands nearest. Drop a tether on any object,
-            then pick any other object. Scroll over anything on the arena to size it — shift for fine steps.
-          </p>
-          <div className="mb-4 grid grid-cols-2 gap-1">
-            {PALETTE.map((k) => (
-              <div
-                key={k}
-                draggable={false}
-                title={PALETTE_HINT[k]}
-                onPointerDown={(ev) => beginPaletteDrag(k, ev)}
-                className={`flex touch-none cursor-grab select-none flex-col items-center gap-1 rounded border px-2 py-2 text-xs active:cursor-grabbing ${
-                  carrying === k ? "border-blue-400 bg-ink-700" : "border-ink-600 bg-ink-800"
-                } ${layer === "markers" ? "cursor-not-allowed opacity-40" : ""}`}
-              >
-                <PaletteGlyph kind={k} />
-                {PALETTE_LABEL[k]}
-              </div>
+          <div className="mb-1 flex items-center gap-1.5">
+            <h2 className="label">Add</h2>
+            <button
+              type="button"
+              className="flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-full border border-ink-600 text-[9px] leading-none text-ink-400"
+              title={PALETTE_HELP}
+              aria-label="How to use the palette"
+            >
+              ?
+            </button>
+            {/* The groups, kept out of the way until you ask for them: who is
+                in each one, what sets they carry, and a handle to move them. */}
+            <GroupsPopover
+              rows={GROUPS.map((g) => ({
+                id: g,
+                label: GROUP_LABEL[g],
+                people: membersOf(g).length,
+                sets: bondsOf(g),
+              }))}
+              movable={layer === "step"}
+              onSelect={(g) => {
+                const ids = membersOf(g).map((e) => e.id);
+                if (ids.length) setSelection(ids);
+              }}
+              onCarry={setCarryGroup}
+              onHighlight={setHighlight}
+              onDeleteSet={(ids) => void run({ op: "delete_entities", ids })}
+            />
+          </div>
+          <p className="sr-only">{PALETTE_HELP}</p>
+          <div className="mb-3">
+            {paletteGroups().map((group) => (
+              <Fragment key={group.caption}>
+                <div className="mb-1 mt-2 text-[9px] uppercase tracking-wide text-ink-400/80 first:mt-0">
+                  {group.caption}
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  {group.kinds.map((k) => (
+                    <div
+                      key={k}
+                      draggable={false}
+                      title={PALETTE_HINT[k]}
+                      onPointerDown={(ev) => beginPaletteDrag(k, ev)}
+                      className={`flex touch-none cursor-grab select-none flex-col items-center gap-1 rounded border px-1 py-1.5 text-[11px] leading-tight active:cursor-grabbing ${
+                        carrying === k ? "border-blue-400 bg-ink-700" : "border-ink-600 bg-ink-800"
+                      } ${layer === "markers" ? "cursor-not-allowed opacity-40" : ""}`}
+                    >
+                      <PaletteGlyph kind={k} size={22} />
+                      {PALETTE_LABEL[k]}
+                    </div>
+                  ))}
+                </div>
+              </Fragment>
             ))}
           </div>
 
-          <h2 className="label mb-2">Layout</h2>
-          <div className="mb-4 flex flex-wrap gap-1">
+          <h2 className="label mb-2">Arena</h2>
+          <div className="mb-3 flex flex-wrap items-center gap-1">
             {[8, 4, 2].map((spokes) => (
               <button
                 key={spokes}
-                className="btn"
+                className="btn px-1.5 py-0.5 text-[11px]"
                 disabled={!editable}
                 title={`Radial grid, ${spokes} ways`}
                 onClick={() =>
@@ -2324,7 +2376,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               </button>
             ))}
             <button
-              className="btn"
+              className="btn px-1.5 py-0.5 text-[11px]"
               disabled={!editable}
               title="Grid off"
               onClick={() =>
@@ -2334,7 +2386,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               no grid
             </button>
             <button
-              className="btn"
+              className="btn px-1.5 py-0.5 text-[11px]"
               disabled={!editable}
               title="A north, 2 NE, B east, 3 SE, C south, 4 SW, D west, 1 NW"
               onClick={() => run({ op: "add_waymarks" })}
@@ -2342,40 +2394,31 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               standard markers
             </button>
             <button
-              className="btn"
+              className="btn px-1.5 py-0.5 text-[11px]"
               disabled={!editable}
               title="Out at waymark spread: MT north, R2 NE, H2 east, M2 SE, OT south, M1 SW, H1 west, R1 NW"
               onClick={() =>
                 run({
                   op: "arrange_party",
-                  stepId: scope === "step" ? step.id : undefined,
-                  variant:
-                    plan.variantModel === "beat"
-                      ? editingVariant
-                      : scope === "step"
-                        ? playing
-                        : undefined,
+                  stepId: step.id,
+                  variant: plan.variantModel === "beat" ? editingVariant : playing,
                 })
               }
             >
               PF positions
             </button>
             <button
-              className="btn"
+              className="btn px-1.5 py-0.5 text-[11px]"
               disabled={!editable}
               title="Restore missing party members and align the party to PF clock positions"
               onClick={() => run({ op: "add_party" })}
             >
               add party
             </button>
-          </div>
-
-          <h2 className="label mb-2">Encounter markers</h2>
-          {/* Waymarks belong to the fight, not to one plan: decide them once and
-              every plan for the encounter picks up the same set. */}
-          <div className="mb-4 flex flex-wrap items-center gap-1">
+            {/* Waymarks belong to the fight, not to one plan: decide them once
+                and every plan for the encounter picks up the same set. */}
             <button
-              className={`btn ${layer === "markers" ? "border-amber-400 text-amber-200" : ""}`}
+              className={`btn px-1.5 py-0.5 text-[11px] ${layer === "markers" ? "border-amber-400 text-amber-200" : ""}`}
               disabled={!editable}
               title="Waymarks do not move once the pull starts, so they are frozen until you come here"
               onClick={() => toLayer(layer === "markers" ? "step" : "markers")}
@@ -2383,7 +2426,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               {layer === "markers" ? "done with waymarks" : "move waymarks"}
             </button>
             <button
-              className="btn"
+              className="btn px-1.5 py-0.5 text-[11px]"
               disabled={!editable || !plan.encounter}
               title={
                 plan.encounter
@@ -2398,7 +2441,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               save for fight
             </button>
             <button
-              className="btn"
+              className="btn px-1.5 py-0.5 text-[11px]"
               disabled={!editable || !plan.encounter}
               title="Put the saved waymarks and arena back"
               onClick={async () => {
@@ -2419,7 +2462,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             plan={plan}
             entity={null}
             stepId={step.id}
-            scope={scope}
             variant={editingVariant ?? playing}
             shown={shown}
             editable={editable}
@@ -2432,7 +2474,6 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             plan={plan}
             entity={selectedEntity}
             stepId={step.id}
-            scope={scope}
             variant={editingVariant ?? playing}
             shown={shown}
             editable={editable}
@@ -2644,19 +2685,48 @@ const OPTIMISTIC_OPS = new Set<string>([
   "move_mechanic",
 ]);
 
+/**
+ * The rail's row geometry. A step row is a fixed height on a fixed pitch, so a
+ * Beat card spanning rows `lo..hi` is `(hi - lo + 1) * PITCH - GAP` tall and the
+ * seam between two rows falls in the middle of the gap between them — which is
+ * the only reason the Snap marker can be placed in pixels at all.
+ */
+const RAIL_ROW = 28;
+/**
+ * Where the Snap marker is allowed to sit: from the cast row down to the row
+ * before the resolve. It cannot sit on the resolve row — freezing at the last
+ * step says nothing — and a Beat under three rows has no choice to make.
+ */
+const clampFreeze = (row: number, lo: number, hi: number) =>
+  Math.min(Math.max(row, lo), Math.max(lo, hi - 1));
+const RAIL_GAP = 4;
+const RAIL_PITCH = RAIL_ROW + RAIL_GAP;
+
 interface Drag {
   /** Identifies this pointer gesture so an older acknowledgement cannot clear a newer one. */
   gesture: number;
   id: string;
   /** Whether this Beat was already open when the pointer went down. */
   wasOpen?: boolean;
-  mode: "top" | "bottom";
+  /**
+   * Which of the card's four grips is in the hand: its cast edge, its resolve
+   * edge, its Snap marker, or the body — which carries the whole Beat, span and
+   * marker together, because a Beat that happens later happens later whole.
+   */
+  mode: "top" | "bottom" | "body" | "freeze";
   grabbed: number;
   /** Row indices within the section the box is drawn in, not step numbers. */
   lo: number;
   hi: number;
   /** Where it started, so every move is measured from the same place. */
   from: [number, number];
+  /**
+   * The Snap marker's row while the pointer has it, and the row it started on.
+   * Both are row indices like `lo`/`hi`; unset on anything with no marker — a
+   * Beat under three rows, a Variant chip, a Variant container.
+   */
+  freeze?: number;
+  freezeFrom?: number;
   /**
    * Carried onto the row of readings: the one it would belong to if you let go,
    * `to` unset meaning both of them. Set only while the pointer is on a pill,
@@ -2721,6 +2791,7 @@ function reordered<T extends { id: string }>(list: T[], id: string, at: number):
  */
 function StepRail({
   plan,
+  preview,
   index,
   editable,
   me,
@@ -2738,6 +2809,8 @@ function StepRail({
   onHighlight,
 }: {
   plan: Plan;
+  /** The Variant preview and edit destination, rendered above the outline. */
+  preview: ReactNode;
   index: number;
   editable: boolean;
   /** Who is looking, so a reading can say whether it is yours. */
@@ -2763,12 +2836,19 @@ function StepRail({
   const [drag, setDrag] = useState<Drag | null>(null);
   const [variantDrag, setVariantDrag] = useState<Drag | null>(null);
   /**
-   * A row or a heading on its way somewhere: what is being dragged and which
-   * slot it is currently over. Where a step or a section sits *is* what it
-   * says, so dragging it is how you say it — there is nothing else to edit.
+   * A heading on its way somewhere: which one, and which slot it is over. Where
+   * a section sits *is* the order of the fight, so dragging it is how you say
+   * it. Steps have no such handle — a step's place is its mechanic's business.
    */
-  const [rowDrag, setRowDrag] = useState<Slide | null>(null);
   const [sectionDrag, setSectionDrag] = useState<Slide | null>(null);
+  /**
+   * The row and the Beat card under the pointer. Both are drawn state, not
+   * gestures: the row grows its actions, and the card lights its three grips
+   * and lays its Snap seam across the whole rail, so the step the marker lands
+   * on can be read off the names beside it.
+   */
+  const [hoverRow, setHoverRow] = useState<string | null>(null);
+  const [hoverBeat, setHoverBeat] = useState<string | null>(null);
   const nextGesture = useRef(0);
   /** A drag that moved ends in a click too; this is how that click is ignored. */
   const dragged = useRef(false);
@@ -2792,6 +2872,16 @@ function StepRail({
       }
     });
     return best;
+  };
+
+  /**
+   * The Snap marker's row: where the plan puts it, held inside the span it
+   * belongs to. Empty means the cast row, and a row that fell outside the span
+   * — a Beat dragged shorter since — reads as the nearest one that is legal.
+   */
+  const freezeRowOf = (mech: Mech, visible: Step[], lo: number, hi: number) => {
+    const at = mech.freeze ? visible.findIndex((step) => step.id === mech.freeze) : -1;
+    return clampFreeze(at < 0 ? lo : at, lo, hi);
   };
 
   /**
@@ -2999,15 +3089,9 @@ function StepRail({
     return { placed, boxes, lanes: from, laneWidths, groups };
   }
 
-  /**
-   * The open section's rows as the pointer currently has them, and the mech
-   * boxes laid out against *that* order: a cast's span is read off the step
-   * order, so it has to re-lay itself out while you carry a row past it.
-   */
-  const visibleRows = rowDrag ? reordered(siblings, rowDrag.id, rowDrag.at) : siblings;
   // Only the open section draws rows, so only it can want lanes.
   const laid = openMechanic
-    ? layout(visibleRows, openMechanic)
+    ? layout(siblings, openMechanic)
     : { placed: [], boxes: [], lanes: 0, laneWidths: [] as number[], groups: [] as { variant?: string; from: number; lanes: number }[] };
   /** The sections in the order the pointer has them, same bargain. */
   const sections = sectionDrag
@@ -3094,24 +3178,6 @@ function StepRail({
     return undefined;
   };
 
-  /** Let go of a row: the slot it was dropped on, or a plain click if it never moved. */
-  function endRowDrag() {
-    const settled = rowDrag;
-    if (settled?.settling) return;
-    if (!settled?.moved) return setRowDrag(null);
-    setRowDrag({ ...settled, settling: true });
-    dragged.current = true;
-    setTimeout(() => (dragged.current = false), 0);
-    const landing = siblings[Math.max(0, Math.min(siblings.length - 1, settled.at))];
-    const to = plan.steps.indexOf(landing);
-    const done = () =>
-      setRowDrag((held) =>
-        held?.settling && held.gesture === settled.gesture ? null : held
-      );
-    void run({ op: "move_step", stepId: settled.id, index: to }).then(done, done);
-    setIndex(to);
-  }
-
   /** The same for a heading: the whole section goes where you put it. */
   function endSectionDrag() {
     const settled = sectionDrag;
@@ -3141,21 +3207,6 @@ function StepRail({
    * thing being carried is the thing being reordered, and the browser drops the
    * capture the moment React moves that node to its new slot in the list.
    */
-  useEffect(() => {
-    if (!rowDrag) return;
-    const move = (ev: PointerEvent) => {
-      const to = rowAt(ev.clientY, visibleRows);
-      setRowDrag((d) => (d && !d.settling && d.at !== to ? { ...d, at: to, moved: true } : d));
-    };
-    const up = () => endRowDrag();
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", up);
-    return () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", up);
-    };
-  });
-
   useEffect(() => {
     if (!sectionDrag) return;
     const move = (ev: PointerEvent) => {
@@ -3239,11 +3290,24 @@ function StepRail({
     const settle: Op[] = [];
     if (settled.gate && (mech.variant ?? undefined) !== settled.gate.to)
       settle.push({ op: "gate_mech", mechId: mech.id, variant: settled.gate.to });
-    if (lo !== wasLo || hi !== wasHi)
+    // The marker rides along: a Beat carried down a row freezes a row later,
+    // and one whose cast edge was pushed past it takes it with it. The row it
+    // ends on is only sent when it is not the cast row — "" is how the schema
+    // spells "freezes as it casts".
+    const wantFreeze =
+      settled.freeze === undefined || hi - lo + 1 < 3 || settled.freeze <= lo
+        ? ""
+        : (visible[settled.freeze]?.id ?? "");
+    const freezeMoved = settled.freeze !== undefined && wantFreeze !== (mech.freeze ?? "");
+    if (lo !== wasLo || hi !== wasHi || freezeMoved)
       settle.push({
         op: "update_mech",
         mechId: mech.id,
-        patch: { snap: visible[lo].id, boom: visible[hi].id },
+        patch: {
+          snap: visible[lo].id,
+          boom: visible[hi].id,
+          ...(freezeMoved ? { freeze: wantFreeze } : {}),
+        },
       });
     // Where the Beat was let go is whose it is: on a Variant half it becomes
     // that Variant's, clear of every box it goes back to shared.
@@ -3309,11 +3373,15 @@ function StepRail({
     go(mechanicSteps(plan, mechanic.id)[0]);
   }
 
-  /** Compact actions that live beside the step they act on. */
+  /**
+   * Compact actions that live beside the step they act on — on the step you are
+   * on, and on whichever one the pointer is over, so acting on a step never
+   * costs a click to select it first.
+   */
   function stepActions(s: Step) {
-    if (!editable || s.id !== current?.id) return null;
+    if (!editable || (s.id !== current?.id && s.id !== hoverRow)) return null;
     const stepAt = plan.steps.indexOf(s);
-    const action = "grid h-6 w-6 shrink-0 place-items-center rounded text-xs text-ink-300 hover:bg-ink-600 hover:text-white disabled:opacity-30";
+    const action = "grid h-6 w-6 shrink-0 place-items-center rounded text-ink-200 hover:bg-ink-600 hover:text-white disabled:opacity-30";
     return (
       <div className="flex shrink-0 items-center gap-0.5" aria-label="Step actions">
         {stepVariants(s).length === 0 && (
@@ -3323,7 +3391,7 @@ function StepRail({
             title="Create two Step Variant boxes that can contain Beats"
             onClick={() => void run({ op: "add_step_variant", stepId: s.id })}
           >
-            ◇
+            <RailIcon d="M8 2l5 6-5 6-5-6z" />
           </button>
         )}
         <button
@@ -3335,7 +3403,7 @@ function StepRail({
             setIndex(stepAt + 1);
           }}
         >
-          D
+          <RailIcon d="M5 5h9v9h-9z M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5" />
         </button>
         <button
           className={action}
@@ -3346,7 +3414,7 @@ function StepRail({
             setIndex(stepAt + 1);
           }}
         >
-          +
+          <RailIcon d="M8 3v10M3 8h10" />
         </button>
         <button
           className={`${action} hover:text-red-300`}
@@ -3358,7 +3426,7 @@ function StepRail({
             setIndex(Math.max(0, stepAt - 1));
           }}
         >
-          ×
+          <RailIcon d="M4 4l8 8M12 4l-8 8" />
         </button>
       </div>
     );
@@ -3372,10 +3440,41 @@ function StepRail({
     const split = l.groups.length > 1;
     const head = split ? 1 : 0;
     const end = visible.length + head + 1;
+    // Hovering a Beat lays its Snap seam right across the rail, so the step the
+    // marker lands on can be read off the names beside it rather than counted.
+    const guided = l.placed.find((p) => p.mech.id === (drag?.id ?? hoverBeat));
+    const guide =
+      guided && guided.hi - guided.lo + 1 >= 3
+        ? ((drag?.id === guided.mech.id ? drag.freeze : undefined) ??
+          freezeRowOf(guided.mech, visible, guided.lo, guided.hi))
+        : null;
     return (
+      <>
+      {/* The three moments are named once, above the grid, instead of every
+          card spending a line saying the last of them. */}
+      <div className="flex items-center gap-2.5 px-1 pb-1.5 pt-0.5 text-[9px] uppercase leading-3 tracking-wide text-ink-400">
+        <span className="inline-flex items-center gap-1">
+          <span aria-hidden className="h-[2px] w-2.5 bg-ink-200" />
+          cast
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <SnapDiamond size={8} fill="#b8c0cc" stroke="#dfe5ee" />
+          snap
+        </span>
+        <span className="inline-flex items-center gap-1">
+          <span aria-hidden className="h-[3px] w-2.5 bg-amber-400/80" />
+          resolve
+        </span>
+      </div>
       <div
         className="grid gap-x-1 gap-y-1"
-        style={{ gridTemplateColumns: `minmax(0, 1fr) ${l.laneWidths.map((width) => `${width}px`).join(" ")}` }}
+        style={{
+          gridTemplateColumns: `minmax(0, 1fr) ${l.laneWidths.map((width) => `${width}px`).join(" ")}`,
+          // Rows are a fixed height rather than a share of the panel: the Snap
+          // seam is drawn at a pixel offset inside a card, so a row that
+          // stretched would slide the marker off the step it names.
+          gridAutoRows: `${RAIL_ROW}px`,
+        }}
       >
         {split &&
           l.groups.map((g) => {
@@ -3435,35 +3534,48 @@ function StepRail({
           ) : (
             <div
               key={s.id}
+              data-row={s.id}
+              data-current={s.id === current?.id ? "true" : undefined}
               ref={(el) => {
                 rowRefs.current.set(s.id, el);
               }}
-              style={{ gridColumn: 1, gridRow: i + 1 + head }}
-              className={`flex min-w-0 items-center gap-0.5 rounded ${
-                s.id === current?.id ? "bg-ink-600 text-white" : "hover:bg-ink-700"
-              } ${rowDrag?.id === s.id ? "ring-1 ring-blue-300" : ""}`}
+              style={{
+                gridColumn: 1,
+                gridRow: i + 1 + head,
+                // Tailwind's hover:bg-ink-700 vanishes on an open section, which
+                // is the only place rows are ever drawn.
+                background: s.id === current?.id ? undefined : s.id === hoverRow ? "rgba(46,53,67,0.55)" : undefined,
+              }}
+              onMouseEnter={() => setHoverRow(s.id)}
+              onMouseLeave={() => setHoverRow((held) => (held === s.id ? null : held))}
+              className={`flex min-w-0 items-center gap-0.5 rounded pl-1 pr-0.5 ${
+                s.id === current?.id ? "bg-ink-600 text-white" : ""
+              }`}
             >
               <button
                 data-step={s.id}
                 aria-current={s.id === current?.id ? "step" : undefined}
-                className={`min-w-0 flex-1 touch-none truncate px-2 py-1 text-left text-sm ${
-                  editable ? "cursor-grab active:cursor-grabbing" : ""
-                }`}
-                // The row is where the step is in the fight, so carrying it is the
-                // whole edit. It cannot leave the section: these are its rows.
-                onPointerDown={() =>
-                  editable &&
-                  setRowDrag({ gesture: ++nextGesture.current, id: s.id, at: i, moved: false })
-                }
-                onClick={() => !dragged.current && go(s)}
+                className="flex min-w-0 flex-1 items-center text-left"
+                onClick={() => go(s)}
                 onDoubleClick={() => editable && setRenaming(s.id)}
                 title={
                   editable
-                    ? "Drag to move it in the sequence. W and S walk the steps. Double-click or F2 to rename"
+                    ? "W and S walk the steps. Double-click or F2 to rename"
                     : "W and S walk the steps"
                 }
               >
-                {i + 1}. {s.name || "untitled"}
+                {/* Right-aligned, so two-digit numbers do not push the names out
+                    of line with each other. */}
+                <span
+                  className={`w-[18px] shrink-0 text-right text-xs ${
+                    s.id === current?.id ? "text-white/70" : "text-ink-400"
+                  }`}
+                >
+                  {i + 1}.
+                </span>{" "}
+                <span className="min-w-0 flex-1 truncate px-1 text-sm leading-5">
+                  {s.name || "untitled"}
+                </span>
               </button>
               {stepActions(s)}
             </div>
@@ -3482,6 +3594,15 @@ function StepRail({
           ]).size;
           const box = { gridColumn: lane + 2, gridRow: `${lo + 1 + head} / ${hi + 2 + head}` };
           const color = mechColor(plan, mech);
+          const held = drag?.id === mech.id ? drag : undefined;
+          // Two rows have nothing to say: the first of them is the snap and
+          // there is nowhere else it could be. Three is where the choice starts.
+          const marked = hi - lo + 1 >= 3;
+          const freezeRow = held?.freeze ?? freezeRowOf(mech, visible, lo, hi);
+          // The seam sits in the gutter under its row, so it reads as a cut
+          // between two steps rather than a line through one.
+          const cut = (freezeRow - lo + 1) * RAIL_PITCH - RAIL_GAP / 2;
+          const gripped = hoverBeat === mech.id || !!held;
           const beatPreview =
             plan.variantModel === "beat" && mech.variants.length
               ? (mech.variants.find(
@@ -3533,18 +3654,25 @@ function StepRail({
             >
             <button
               data-mech={mech.id}
-              style={{ borderTopColor: color, background: tint(color, active ? 0.4 : 0.18) }}
-              title={`${label} — snapshots in step ${lo + 1}, goes off in step ${hi + 1}${
+              title={`${label} — casts in step ${lo + 1}, resolves in step ${hi + 1}${
                 gate ? `, only in ${variantLabel(mechanic, gate)}` : ""
               }. ${
                 editable
-                  ? "Drag its top half to move the snapshot, its bottom half to move the explosion, or carry it sideways into a reading's area to say it only happens that way. Click to fill it."
+                  ? "Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat — or carry it sideways into a reading's area to say it only happens that way. Click to fill it."
                   : ""
               }`}
-              onMouseEnter={() => onHighlight(mech.id)}
-              onMouseLeave={() => onHighlight(null)}
-              // The box is the control: its top edge is the snapshot and its
-              // bottom edge is where it goes off, so dragging them is saying so.
+              onMouseEnter={() => {
+                onHighlight(mech.id);
+                setHoverBeat(mech.id);
+              }}
+              onMouseLeave={() => {
+                onHighlight(null);
+                setHoverBeat((on) => (on === mech.id ? null : on));
+              }}
+              // The box is the control: a thin strip at each end moves that end,
+              // and everything between them carries the whole Beat. Halves would
+              // make the commonest edit — "all of this happens a step later" —
+              // cost two drags that have to agree with each other.
               onPointerDown={(e) => {
                 if (!editable) return;
                 if (plan.variantModel === "beat") onFocusBeat(mech.id);
@@ -3556,17 +3684,19 @@ function StepRail({
                   gesture: ++nextGesture.current,
                   id: mech.id,
                   wasOpen,
-                  // The half you grabbed is the end you are holding.
-                  mode: e.clientY - r.top < r.height / 2 ? "top" : "bottom",
+                  mode:
+                    e.clientY - r.top < 6 ? "top" : r.bottom - e.clientY < 7 ? "bottom" : "body",
                   grabbed: rowAt(e.clientY, visible),
                   lo,
                   hi,
                   from: [lo, hi],
+                  freeze: marked ? freezeRow : undefined,
+                  freezeFrom: marked ? freezeRow : undefined,
                   moved: false,
                 });
               }}
               onPointerMove={(e) => {
-                if (drag?.id !== mech.id || drag.settling) return;
+                if (drag?.id !== mech.id || drag.settling || drag.mode === "freeze") return;
                 // The pointer says both things at once: the area it is over is
                 // which reading the cast is for, the row it is on is when it
                 // happens. Carried up onto a reading pill counts as the area.
@@ -3582,29 +3712,61 @@ function StepRail({
                 const row = rowAt(e.clientY, visible);
                 const [wasLo, wasHi] = drag.from;
                 // The end you are holding cannot cross the other one: a cast
-                // goes off no sooner than it snapshots. Held over the pills the
-                // span stays put — up there no row is meant.
+                // resolves no sooner than it casts. Held over the pills the span
+                // stays put — up there no row is meant. The body keeps its
+                // length and stays inside the section, both ends at once.
                 const next: [number, number] = onPill
                   ? [drag.lo, drag.hi]
                   : drag.mode === "top"
                     ? [Math.min(row, wasHi), wasHi]
-                    : [wasLo, Math.max(row, wasLo)];
+                    : drag.mode === "bottom"
+                      ? [wasLo, Math.max(row, wasLo)]
+                      : (() => {
+                          const span = wasHi - wasLo;
+                          const top = Math.max(
+                            0,
+                            Math.min(visible.length - 1 - span, wasLo + row - drag.grabbed)
+                          );
+                          return [top, top + span] as [number, number];
+                        })();
+                // The marker goes wherever the Beat went: pushed along by a cast
+                // edge that ran past it, carried bodily with the whole Beat, and
+                // never left sitting on the resolve row.
+                const freeze =
+                  drag.freezeFrom === undefined
+                    ? undefined
+                    : clampFreeze(
+                        drag.mode === "body" ? drag.freezeFrom + next[0] - wasLo : drag.freezeFrom,
+                        next[0],
+                        next[1]
+                      );
                 // "No gate yet" and "gated to both" are different states, and
                 // both read as undefined: compare the gate itself, not its id.
                 const same =
                   next[0] === drag.lo &&
                   next[1] === drag.hi &&
+                  freeze === drag.freeze &&
                   !!gate === !!drag.gate &&
                   gate?.to === drag.gate?.to &&
                   into?.variantId === drag.into?.variantId &&
                   mergeInto === drag.mergeInto;
                 if (same) return;
-                setDrag({ ...drag, gate, into, mergeInto, lo: next[0], hi: next[1], moved: true });
+                setDrag({
+                  ...drag,
+                  gate,
+                  into,
+                  mergeInto,
+                  freeze,
+                  lo: next[0],
+                  hi: next[1],
+                  moved: true,
+                });
               }}
               onPointerUp={(e) => endDrag(mech, lo, hi, visible, e)}
               onPointerCancel={() => setDrag(null)}
               onDoubleClick={() => editable && setRenaming(mech.id)}
-              className={`flex h-full w-full touch-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight ${
+              style={{ borderTopColor: color, background: tint(color, active ? 0.4 : 0.18) }}
+              className={`relative flex h-full w-full touch-none flex-col items-center overflow-hidden rounded border-t-2 border-b-[3px] border-b-amber-400/80 px-1 py-1 text-[10px] leading-[12px] ${
                 editable ? "cursor-grab active:cursor-grabbing" : ""
               } ${active ? "text-white" : "text-ink-200"} ${
                 drag?.id === mech.id ? "ring-1 ring-white/70" : ""
@@ -3619,23 +3781,119 @@ function StepRail({
                 drag?.id === mech.id && drag.into ? "opacity-0" : ""
               }`}
             >
-              {/* Which reading a cast is for is the area it sits in, so the box
-                  itself does not repeat it. */}
-              <span className="w-full truncate text-center">{label}</span>
-              {shapes > 0 && (
-                <span className={mech.variants.length ? "text-[9px] text-ink-400" : "text-ink-400"}>
-                  ×{shapes}
-                </span>
+              {/* Past the seam the fill drains out and only the sides keep the
+                  Beat's colour: those steps are drawn on the snapshot. */}
+              {marked && freezeRow < hi && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 bottom-0"
+                  style={{
+                    top: cut,
+                    background: "rgba(20,23,28,0.35)",
+                    boxShadow: `inset 1px 0 0 ${tint(color, 0.55)}, inset -1px 0 0 ${tint(color, 0.55)}`,
+                  }}
+                />
               )}
-              {/* The bottom edge is where it goes off, and says so. */}
-              <span className="mt-auto -mb-1 w-full border-b-4 border-amber-400/80 pb-0.5 text-center text-[9px] uppercase tracking-wide text-amber-300/90">
-                boom
+              {/* Which reading a cast is for is the area it sits in, so the box
+                  itself does not repeat it. A name too long for the lane wraps
+                  rather than losing its second word. */}
+              <span
+                className="relative w-full text-center"
+                style={{
+                  display: "-webkit-box",
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: "vertical",
+                  overflow: "hidden",
+                }}
+              >
+                {label}
+                {/* A one-row card has room for one line, so the count rides
+                    along on the name. */}
+                {lo === hi && shapes > 0 && <span className="text-[9px] text-ink-400"> ×{shapes}</span>}
               </span>
+              {lo !== hi && shapes > 0 && (
+                <span className="relative text-[9px] leading-[11px] text-ink-400">×{shapes}</span>
+              )}
+              {/* The two edges light up under the pointer, so which strip moves
+                  which end is something you can see before you press. */}
+              {gripped && editable && (
+                <>
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-0 top-0 h-[6px]"
+                    style={{ background: `linear-gradient(${tint(color, 0.9)}, transparent)` }}
+                  />
+                  <span
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-0 bottom-0 h-[7px]"
+                    style={{ background: "linear-gradient(transparent, rgba(251,191,36,0.45))" }}
+                  />
+                </>
+              )}
+              {marked && (
+                <span
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0"
+                  style={{
+                    top: cut - 0.5,
+                    height: 0,
+                    borderTop: `1px dashed ${gripped ? "rgba(255,255,255,0.75)" : "rgba(255,255,255,0.45)"}`,
+                  }}
+                />
+              )}
             </button>
+            {marked && editable && (
+              // The handle straddles the card's left edge, so it is grabbable
+              // without stealing a strip of a 66px lane. It hangs off the
+              // wrapper rather than the card because the card clips its
+              // overflow; the +2 is the card's own top border, which the
+              // wrapper does not have.
+              <span
+                data-freeze={mech.id}
+                aria-label={`${label} Snap marker`}
+                className="absolute z-20 touch-none cursor-ns-resize"
+                style={{ left: -5, top: cut - 3, width: 10, height: 10 }}
+                title={`Snap: baits and anchors follow their target through step ${
+                  freezeRow + 1
+                }, then freeze where they are. Drag to move it.`}
+                onPointerDown={(event) => {
+                  event.stopPropagation();
+                  event.currentTarget.setPointerCapture(event.pointerId);
+                  setDrag({
+                    gesture: ++nextGesture.current,
+                    id: mech.id,
+                    mode: "freeze",
+                    grabbed: freezeRow,
+                    lo,
+                    hi,
+                    from: [lo, hi],
+                    freeze: freezeRow,
+                    freezeFrom: freezeRow,
+                    moved: false,
+                  });
+                }}
+                onPointerMove={(event) => {
+                  if (drag?.id !== mech.id || drag.mode !== "freeze" || drag.settling) return;
+                  const row = clampFreeze(rowAt(event.clientY, visible), drag.lo, drag.hi);
+                  if (row !== drag.freeze) setDrag({ ...drag, freeze: row, moved: true });
+                }}
+                onPointerUp={(event) => {
+                  event.stopPropagation();
+                  endDrag(mech, lo, hi, visible);
+                }}
+                onPointerCancel={() => setDrag(null)}
+              >
+                <SnapDiamond
+                  size={10}
+                  fill={held?.mode === "freeze" ? "#ffffff" : gripped ? "#dfe5ee" : color}
+                  stroke={held?.mode === "freeze" ? "#ffffff" : "#e6ebf2"}
+                />
+              </span>
+            )}
             {mech.variants.length > 0 && (
               <div
                 data-timeline-variants={mech.id}
-                className="absolute inset-x-1 top-[29px] bottom-[17px] z-10 flex min-h-0 flex-col gap-0.5"
+                className="absolute inset-x-1 top-[28px] bottom-[6px] z-10 flex min-h-0 flex-col gap-0.5"
                 aria-label={`${label} Variants`}
               >
                 {mech.variants.map((variant) => {
@@ -3692,6 +3950,20 @@ function StepRail({
             </div>
           );
         })}
+        {guide !== null && (
+          <div
+            aria-hidden
+            className="pointer-events-none"
+            style={{
+              gridColumn: "1 / -1",
+              gridRow: guide + 1 + head,
+              alignSelf: "end",
+              height: 0,
+              marginBottom: -2.5,
+              borderTop: "1px dashed rgba(255,255,255,0.18)",
+            }}
+          />
+        )}
         {l.boxes.map(({ owner, variants, lo, hi, lane, subs, slots }) => {
           const selectedId =
             shown[owner.id] ?? defaultStepVariantSelections(plan)[owner.id] ?? variants[0]?.id;
@@ -3755,7 +4027,11 @@ function StepRail({
                       aria-label={stepVariantLabel(owner, variant.id)}
                       // The Variant's whole caption is this strip of its colour;
                       // it is still the handle for the split's start Step.
-                      className={`h-1 shrink-0 touch-none ${editable ? "cursor-grab active:cursor-grabbing" : ""} ${
+                      // Wide enough to carry the Variant's own name, so a half
+                      // is readable without hovering it for the tooltip.
+                      className={`flex h-3 shrink-0 touch-none items-center overflow-hidden px-1 text-[8px] font-bold leading-3 tracking-[0.04em] text-ink-900 ${
+                        editable ? "cursor-grab active:cursor-grabbing" : ""
+                      } ${
                         editing && !previewing ? "outline outline-1 -outline-offset-1 outline-amber-300/80" : ""
                       }`}
                       style={{ background: color }}
@@ -3794,7 +4070,9 @@ function StepRail({
                         onFocusBeat(owner.id);
                         onEditBeatVariant(variant.id);
                       }}
-                    />
+                    >
+                      <span className="truncate">{stepVariantLabel(owner, variant.id)}</span>
+                    </button>
                     <div
                       className="grid min-h-0 flex-1 gap-0.5 overflow-hidden p-0.5 text-[8px] leading-none text-ink-200"
                       // The rows in here are the Steps themselves, so a chip
@@ -3824,7 +4102,7 @@ function StepRail({
                           <span
                             key={beat.id}
                             data-variant-beat={beat.id}
-                            className={`flex min-h-0 touch-none select-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight ${
+                            className={`flex min-h-0 touch-none select-none flex-col items-center overflow-hidden rounded border-t-2 border-b-[3px] border-b-amber-400/80 px-1 py-1 text-[10px] leading-[12px] ${
                               editable ? "cursor-grab active:cursor-grabbing" : ""
                             } ${drag?.id === beat.id ? "ring-1 ring-white/70" : ""} ${
                               // Mid-pull the lane preview is the Beat; the chip
@@ -3882,10 +4160,17 @@ function StepRail({
                             onPointerCancel={() => setDrag(null)}
                             onClick={(event) => event.stopPropagation()}
                           >
-                            <span className="w-full truncate text-center">{mechLabel(plan, beat)}</span>
-                            {/* The amber edge is the caption: in here "when it
-                                goes off" needs no word for it. */}
-                            <span aria-hidden className="mt-auto -mb-1 w-full border-b-4 border-amber-400/80" />
+                            <span
+                              className="w-full text-center"
+                              style={{
+                                display: "-webkit-box",
+                                WebkitLineClamp: 2,
+                                WebkitBoxOrient: "vertical",
+                                overflow: "hidden",
+                              }}
+                            >
+                              {mechLabel(plan, beat)}
+                            </span>
                           </span>
                         );
                       })}
@@ -3912,7 +4197,7 @@ function StepRail({
                           return (
                             <span
                               aria-hidden
-                              className="pointer-events-none flex min-h-0 select-none flex-col items-center overflow-hidden rounded border-t-2 px-1 py-1 text-[11px] leading-tight opacity-80 ring-1 ring-white/70"
+                              className="pointer-events-none flex min-h-0 select-none flex-col items-center overflow-hidden rounded border-t-2 border-b-[3px] border-b-amber-400/80 px-1 py-1 text-[10px] leading-[12px] opacity-80 ring-1 ring-white/70"
                               style={{
                                 borderTopColor: mechColor(plan, held),
                                 background: tint(mechColor(plan, held), 0.18),
@@ -3920,7 +4205,6 @@ function StepRail({
                               }}
                             >
                               <span className="w-full truncate text-center">{mechLabel(plan, held)}</span>
-                              <span aria-hidden className="mt-auto -mb-1 w-full border-b-4 border-amber-400/80" />
                             </span>
                           );
                         })()}
@@ -3969,6 +4253,7 @@ function StepRail({
           );
         })}
       </div>
+      </>
     );
   }
 
@@ -4013,6 +4298,7 @@ function StepRail({
       className="panel shrink-0 overflow-y-auto border-y-0 border-l-0 p-2"
       style={{ width: 236 + laid.laneWidths.reduce((total, width) => total + width + 4, 0) }}
     >
+      {preview}
       <div className="label">Encounter</div>
       <div className="mb-2 flex items-baseline gap-2">
         <span className="min-w-0 truncate text-sm text-ink-200">{plan.name}</span>
@@ -4096,7 +4382,7 @@ function StepRail({
             )}
             {open && (
               <>
-                {grid(mechanic, visibleRows, laid)}
+                {grid(mechanic, siblings, laid)}
                 {editable && controls()}
               </>
             )}
@@ -4119,6 +4405,34 @@ function StepRail({
         </button>
       )}
     </nav>
+  );
+}
+
+/** A step action, drawn rather than spelled with a character. */
+function RailIcon({ d }: { d: string }) {
+  return (
+    <svg
+      width="12"
+      height="12"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d={d} />
+    </svg>
+  );
+}
+
+/** The Snap marker's handle: a diamond sitting astride the card's left edge. */
+function SnapDiamond({ size, fill, stroke }: { size: number; fill: string; stroke: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 10 10" aria-hidden="true" className="block">
+      <path d="M5 0.7L9.3 5 5 9.3 0.7 5z" fill={fill} stroke={stroke} strokeWidth="1.2" />
+    </svg>
   );
 }
 
@@ -4223,13 +4537,17 @@ function MechBox({
   return (
     <div className="mt-2">
       <button
+        // The section behind them is ink-700, which is the plain button colour:
+        // a shade up is what keeps them looking pressable in here.
+        style={{ background: "var(--color-ink-600)" }}
         className="btn w-full"
-        title="A new Beat snapshotting in the Step you are on. Say where it resolves, then drop its Parts in."
+        title="A new Beat casting in the Step you are on. Say where it resolves, then drop its Parts in."
         onClick={() => void addBeatHere()}
       >
         New Beat {stepVariantDestination ? `in ${stepVariantLabel(stepVariantDestination.step, stepVariantDestination.variant.id)}` : "here"}
       </button>
       <button
+        style={{ background: "var(--color-ink-600)" }}
         className="btn mt-1 w-full"
         title="A Beat that deals the fight's debuffs onto role pools. While it is active, the party's tokens wear the deal."
         onClick={() => void addBeatHere(true)}
@@ -4572,6 +4890,142 @@ function Rename({
   );
 }
 
+/**
+ * The seven groups, on demand.
+ *
+ * A group is two things at once: a handful of people you can take hold of, and
+ * the sets somebody already gave them. Neither is worth a permanent column of
+ * screen — the drop rail over the arena covers "give one of these to each of
+ * them" — so this is where you go to select a light party, restack it, or take
+ * a set back off it.
+ */
+function GroupsPopover({
+  rows,
+  movable,
+  onSelect,
+  onCarry,
+  onHighlight,
+  onDeleteSet,
+}: {
+  rows: { id: GroupId; label: string; people: number; sets: { id: string; label: string; ids: string[] }[] }[];
+  /** Whether a group can be carried onto the floor from here. */
+  movable: boolean;
+  onSelect(group: GroupId): void;
+  onCarry(group: GroupId | null): void;
+  onHighlight(id: string | null): void;
+  onDeleteSet(ids: string[]): void;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+
+    function onPointerDown(event: PointerEvent) {
+      if (!ref.current?.contains(event.target as Node)) setOpen(false);
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} className="relative ml-auto flex">
+      <button
+        type="button"
+        className="btn px-1.5 py-0.5 text-[11px]"
+        aria-expanded={open}
+        aria-label="Groups"
+        title="Select, move or unbind a group"
+        onClick={() => setOpen((value) => !value)}
+      >
+        Groups ▾
+      </button>
+      {open && (
+        <div className="panel absolute right-0 z-10 mt-1 w-[280px] rounded p-3" role="dialog" aria-label="Groups">
+          <button
+            className="btn absolute right-2 top-2 px-2"
+            aria-label="Close groups"
+            title="Close"
+            onClick={() => setOpen(false)}
+          >
+            ✕
+          </button>
+          <div className="mr-8 grid gap-1">
+            {rows.map((row) => (
+              <div key={row.id}>
+                <div
+                  data-group-row={row.id}
+                  draggable={movable && row.people > 0}
+                  onDragStart={(ev) => {
+                    ev.dataTransfer.setData("text/plain", "group:" + row.id);
+                    ev.dataTransfer.effectAllowed = "move";
+                    onCarry(row.id);
+                  }}
+                  onDragEnd={() => onCarry(null)}
+                  onClick={() => {
+                    onSelect(row.id);
+                    setOpen(false);
+                  }}
+                  title={
+                    row.people > 0
+                      ? `Click to select the ${row.label}. Drag this onto the floor to stack them tightly there`
+                      : `Nobody is in the ${row.id}`
+                  }
+                  className={`flex items-baseline gap-2 rounded px-2 py-1 hover:bg-ink-800 ${
+                    movable && row.people > 0 ? "cursor-grab active:cursor-grabbing" : ""
+                  }`}
+                >
+                  <div className="text-sm font-semibold text-ink-100">{row.label}</div>
+                  <div className="text-[11px] text-ink-400">
+                    {row.people} {row.people === 1 ? "player" : "players"}
+                  </div>
+                </div>
+                {/* The set is the object: its shapes are frozen on the canvas,
+                    so this row is how you find it and how you take it away. */}
+                {row.sets.map((b) => (
+                  <div
+                    key={b.id}
+                    onMouseEnter={() => onHighlight(b.id)}
+                    onMouseLeave={() => onHighlight(null)}
+                    className="ml-2 mt-1 flex items-center gap-1 rounded bg-ink-900/70 px-2 py-1 text-xs"
+                  >
+                    <span className="truncate">
+                      {b.label} ×{b.ids.length}
+                    </span>
+                    <button
+                      className="ml-auto text-ink-400 hover:text-red-300"
+                      title={`Remove this ${b.label.toLowerCase()} from the ${row.id}`}
+                      onClick={(ev) => {
+                        ev.stopPropagation();
+                        onHighlight(null);
+                        onDeleteSet(b.ids);
+                      }}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ShareButton({
   planId,
   canShare,
@@ -4847,10 +5301,16 @@ function NotesCard({
   );
 }
 
-function PaletteGlyph({ kind }: { kind: PaletteKind }) {
+/** What the Add palette does, carried by the "?" button next to its heading. */
+const PALETTE_HELP =
+  "Drag onto the floor to place one, onto a group to give everybody one, or onto a boss, " +
+  "add, or bait anchor to have it thrown at whoever stands nearest. Drop a tether on any object, " +
+  "then pick any other object. Scroll over anything on the arena to size it — shift for fine steps.";
+
+function PaletteGlyph({ kind, size = 30 }: { kind: PaletteKind; size?: number }) {
   const stroke = "#7aa2f7";
   return (
-    <svg data-palette-glyph width="30" height="30" viewBox="0 0 30 30" aria-hidden="true">
+    <svg data-palette-glyph width={size} height={size} viewBox="0 0 30 30" aria-hidden="true">
       {(kind === "boss" || kind === "add") && (
         <image
           href={assetUrl(kind === "boss" ? "actor/boss" : "actor/enemy")}

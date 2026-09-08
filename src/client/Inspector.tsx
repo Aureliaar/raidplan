@@ -3,6 +3,7 @@ import type { Op } from "../shared/apply";
 import {
   MARKER_IDS,
   TETHER_STYLES,
+  anchorFanRanks,
   anchorTarget,
   anchoredPose,
   authoredEntitiesForStep,
@@ -73,7 +74,6 @@ function BaitTarget({
   entity,
   anchor,
   stepId,
-  scope,
   variant,
   shown,
   editable,
@@ -83,7 +83,6 @@ function BaitTarget({
   entity: Entity;
   anchor: NonNullable<Entity["anchor"]>;
   stepId: string;
-  scope: "step" | "all";
   /** The reading of this step's mechanic being played, when it goes two ways. */
   variant?: string;
   /** Which reading of every mechanic is on screen, for solving baits. */
@@ -96,7 +95,13 @@ function BaitTarget({
     run({ op: "update_entity", id: entity.id, patch: { anchor: { ...anchor, ...props } } });
 
   const resolved = entitiesForStep(plan, stepId, undefined, shown);
-  const now = anchorTarget({ ...entity, anchor } as Entity, new Map(resolved.map((e) => [e.id, e])));
+  const scene = new Map(resolved.map((e) => [e.id, e]));
+  const bait = { ...entity, anchor } as Entity;
+  const now = anchorTarget(bait, scene);
+  // A counted bait lands on a run of people, and the readout names all of them.
+  const landing = anchorFanRanks(anchor)
+    .map((rank) => anchorTarget(bait, scene, rank))
+    .filter((target): target is Entity => !!target);
   const candidates = (plan.variantModel === "beat"
     ? composeBeatVariantEntities(plan, stepId, shown).entities
     : authoredEntitiesForStep(plan, stepId, variant)).filter(
@@ -127,17 +132,36 @@ function BaitTarget({
           ))}
           <option value="fixed">a named entity</option>
         </select>
+        {anchor.pick && anchor.rank > 1 && (
+          // A bait normally starts at the closest and counts outwards. One that
+          // skips the first ranks — an older plan, or a rule set over MCP —
+          // keeps a way to say where its run begins.
+          <label className="flex items-center gap-1 text-ink-400" title="Which target its run starts at: 2 = it skips the closest">
+            from #
+            <input
+              className="field w-12"
+              type="number"
+              min={1}
+              max={8}
+              disabled={!editable}
+              value={anchor.rank}
+              onChange={(e) => setAnchor({ rank: Math.max(1, Math.min(8, Number(e.target.value))) })}
+            />
+          </label>
+        )}
         {anchor.pick ? (
-          <input
-            className="field w-16"
-            type="number"
-            min={1}
-            max={8}
-            title="1 = the closest, 2 = the second closest"
-            disabled={!editable}
-            value={anchor.rank}
-            onChange={(e) => setAnchor({ rank: Math.max(1, Math.min(8, Number(e.target.value))) })}
-          />
+          <label className="flex items-center gap-1 text-ink-400" title="How many of them it lands on: 1 = the closest, 3 = the three closest">
+            ×
+            <input
+              className="field w-12"
+              type="number"
+              min={1}
+              max={8}
+              disabled={!editable}
+              value={anchor.count}
+              onChange={(e) => setAnchor({ count: Math.max(1, Math.min(8, Number(e.target.value))) })}
+            />
+          </label>
         ) : (
           <select
             className="field flex-1"
@@ -182,7 +206,13 @@ function BaitTarget({
       )}
 
       <p className="mt-1 text-ink-400">
-        right now: <b className="text-ink-200">{now ? (now.name ?? now.id) : "nobody in this step"}</b>. Drag
+        right now:{" "}
+        <b className="text-ink-200">
+          {landing.length
+            ? landing.map((target) => target.name ?? target.id).join(", ")
+            : "nobody in this step"}
+        </b>
+        . Drag
         it to sit off to one side — x/y is an offset from wherever the bait lands, so it keeps following.{" "}
         {editable && (nudged.x !== 0 || nudged.y !== 0) && (
           <button
@@ -192,29 +222,31 @@ function BaitTarget({
                 op: "update_entity",
                 id: entity.id,
                 patch: { x: 0, y: 0 },
-                stepId: scope === "step" ? stepId : undefined,
-                variant: scope === "step" ? variant : undefined,
+                stepId,
+                variant,
               })
             }
           >
             recentre
           </button>
-        )}{" "}
-        {editable && (
-          <button
-            className="underline"
-            onClick={() =>
-              run({
-                op: "update_entity",
-                id: entity.id,
-                patch: { anchor: null, ...freeze(plan, stepId, entity, shown) },
-              })
-            }
-          >
-            unbind
-          </button>
         )}
       </p>
+
+      {editable && (
+        <button
+          className="btn mt-2 w-full text-xs"
+          title="Drop the bait rule: the shape stops following anyone and stays where it is now."
+          onClick={() =>
+            run({
+              op: "update_entity",
+              id: entity.id,
+              patch: { anchor: null, ...freeze(plan, stepId, entity, shown) },
+            })
+          }
+        >
+          Unbind from {now ? (now.name ?? now.id) : "its target"} — leave it here
+        </button>
+      )}
     </div>
   );
 }
@@ -228,7 +260,6 @@ function BaitPanel({
   plan,
   target,
   stepId,
-  scope,
   variant,
   shown,
   editable,
@@ -237,7 +268,6 @@ function BaitPanel({
   plan: Plan;
   target: Entity;
   stepId: string;
-  scope: "step" | "all";
   /** The reading of this step's mechanic being played, when it goes two ways. */
   variant?: string;
   /** Which reading of every mechanic is on screen, for solving baits. */
@@ -292,7 +322,7 @@ function BaitPanel({
               op: "add_entity",
               spec: baitSpec(kind, target.id, from || undefined, {
                 name: `${kind} ${target.name ?? ""}`.trim(),
-                steps: scope === "step" ? [stepId] : "all",
+                steps: [stepId],
               }) as never,
             })
           }
@@ -420,13 +450,12 @@ function HexColorInput({
 
 /**
  * Property editor for the selected entity. Writes go through the same op API as
- * everything else; with scope "step" they land as per-step overrides.
+ * everything else; they land as per-step overrides.
  */
 export function Inspector({
   plan,
   entity,
   stepId,
-  scope,
   variant,
   shown: playing,
   editable,
@@ -436,7 +465,6 @@ export function Inspector({
   plan: Plan;
   entity: Entity | null;
   stepId: string;
-  scope: "step" | "all";
   /** The reading of this step's mechanic being played, when it goes two ways. */
   variant?: string;
   /** Which reading of every mechanic is on screen, for solving baits. */
@@ -478,8 +506,8 @@ export function Inspector({
       op: "update_entity",
       id: entity.id,
       patch: props,
-      stepId: scope === "step" ? stepId : undefined,
-      variant: scope === "step" ? variant : undefined,
+      stepId,
+      variant,
     });
 
   const num = (key: string, label: string, step = 1) => (
@@ -497,7 +525,7 @@ export function Inspector({
     <div>
       <div className="mb-2 flex items-center justify-between">
         <h2 className="label">
-          {entity.type} {overridden && <span className="text-accent">· step override</span>}
+          {entity.type} {overridden && <span className="text-accent">· set here</span>}
         </h2>
         <button className="btn text-xs" aria-label="Close inspector" onClick={onDeselect}>
           ✕
@@ -515,23 +543,11 @@ export function Inspector({
         <Hits plan={plan} stepId={stepId} zoneId={entity.id} shown={playing} />
       )}
 
-      {variantOnly && scope === "all" && (
-        <p className="mb-2 text-xs text-ink-400">
-          This exists only in this reading and step, so its edits stay here.
-        </p>
-      )}
-      {entity.type !== "marker" && !variantOnly && detached && scope === "all" && (
-        <p className="mb-2 text-xs text-ink-400">
-          This reading is detached. Every-step edits update the shared source, not this frozen scene.
-        </p>
-      )}
-
       {!entity.anchor && entity.type !== "tether" && (
         <BaitPanel
           plan={plan}
           target={shownEntity}
           stepId={stepId}
-          scope={scope}
           variant={variant}
           shown={playing}
           editable={editable}
@@ -545,7 +561,6 @@ export function Inspector({
           entity={entity}
           anchor={shownEntity.anchor}
           stepId={stepId}
-          scope={scope}
           variant={variant}
           shown={playing}
           editable={editable}
@@ -833,12 +848,12 @@ export function Inspector({
                   op: "clear_override",
                   id: entity.id,
                   stepId,
-                  variant: scope === "step" ? variant : undefined,
+                  variant,
                 })
               }
-              title="Revert this entity to its base pose in this step"
+              title="Say nothing in this step: it keeps whatever the step before it said"
             >
-              Clear override
+              Unset here
             </button>
             <button
               className="btn"

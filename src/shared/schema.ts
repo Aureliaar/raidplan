@@ -122,8 +122,15 @@ export const AnchorSchema = z.object({
   to: z.string().default(""),
   /** Resolve the target by proximity instead of naming it. */
   pick: z.enum(BAIT_RULES).optional(),
-  /** 1 = the closest, 2 = the second closest… so N baits cover N players. */
+  /** Where the run starts: 1 = the closest, 2 = the second closest… */
   rank: z.number().int().min(1).max(8).default(1),
+  /**
+   * How many of the ranked candidates this one bait covers. Four proteans off
+   * the boss are one mechanic with a count of four, not four mechanics that
+   * each remember which slot of the targeting they were: you select the bait
+   * once, and the copies on the floor follow the ranks after `rank`.
+   */
+  count: z.number().int().min(1).max(8).default(1),
   /** Which entities are eligible. Players, by default. */
   of: z.enum(["player", "enemy", "any"]).default("player"),
   /** Optional origin. With it the shape aims from `from` through the target. */
@@ -229,12 +236,14 @@ export const EnemyEntitySchema = z.object({
   /** Override the art picked from `size` — an asset key or image URL. */
   icon: z.string().optional(),
   size: z.number().positive().default(120),
-  /** Draw the aggro/hitbox ring. */
-  ring: z.boolean().default(true),
   showFacing: z.boolean().default(true),
   /**
    * An anchor is not a creature: it is a bare point a mechanic is baited from,
    * drawn as a target reticle. Drop a bait on one and the bait fires off it.
+   *
+   * Which is why it is the one enemy that is not part of the cast but a Part
+   * like any shape (see `isActor`): it belongs to the Beat it fires, is on the
+   * floor for exactly that Beat's steps, and goes when the Beat goes.
    */
   role: z.enum(["enemy", "anchor"]).default("enemy"),
 });
@@ -365,7 +374,6 @@ export const BeatVariantCompatibilityActorStateSchema = z.object({
   size: z.number().optional(),
   job: z.string().optional(),
   showFacing: z.boolean().optional(),
-  ring: z.boolean().optional(),
   color: z.string().optional(),
   icon: z.string().optional(),
 });
@@ -551,6 +559,14 @@ export const MechSchema = z.object({
   snap: z.string().default(""),
   /** The step it resolves in. Same as `snap` for anything instant. */
   boom: z.string().default(""),
+  /**
+   * The Snap marker: the last step in which its baits and anchors still follow
+   * their attachment rule. From the step after it through `boom` they are drawn
+   * where they stood here — a snapshot. Empty means `snap` itself, so a Beat
+   * freezes right after it casts. Only a Beat of three or more steps has a
+   * choice: it must sit between `snap` and the step before `boom`, inclusive.
+   */
+  freeze: z.string().default(""),
   /**
    * The colour everything in it is drawn in. Two casts on the floor at once
    * are only readable if you can tell at a glance which shapes belong together,
@@ -789,7 +805,96 @@ export function hydratePlan(plan: Plan): Plan {
     mechanics: retired.mechanics ?? [],
     variantRoutes: retired.variantRoutes ?? [],
   };
-  return groupLooseSteps(filled);
+  return normalizeFreezes(settleOverrides(groupLooseSteps(adoptAnchors(filled))));
+}
+
+/**
+ * Fold away per-step state that no step ever owned.
+ *
+ * Plans were authored through a step lens that quietly filed every property
+ * edit under the step it happened in, so a Part's geometry and a person's size
+ * were restated once per step — the same number written ten times, while the
+ * entity's own field kept whatever it was created with. This puts each of them
+ * back on the thing it describes: a Part takes the state it was drawn with when
+ * its Beat snapshots, an actor keeps the last size or name a step gave it, and
+ * what stays per-step is movement and the token someone is drawn as. Repeated
+ * declarations go too, now that a step with nothing to say means "unchanged"
+ * rather than "back to base".
+ */
+function settleOverrides(plan: Plan): Plan {
+  const order = plan.steps.map((step) => step.id);
+  const entities = plan.entities.map((entity) => {
+    const overrides = entity.overrides ?? {};
+    const declared = order.filter((stepId) => overrides[stepId]);
+    if (!declared.length) return entity;
+    if (!isActor(entity)) {
+      // A Part is one thing for the whole life of its Beat, so it takes the
+      // state it had when the Beat snapshots. Every later step's copy goes,
+      // including the few units an accidental drag moved it by.
+      const beat = entity.mech ? plan.mechs.find((candidate) => candidate.id === entity.mech) : undefined;
+      const span = beat ? mechSpan(plan, beat) : order;
+      const snapshot = declared.find((stepId) => span.includes(stepId)) ?? declared[0];
+      return { ...entity, ...overrides[snapshot], overrides: {} } as Entity;
+    }
+    // Everything a step said about an actor that was never the step's to say is
+    // a property of the person, and the last step to say it wins. Size is the
+    // exception: the party is drawn at one size, because a token is a person
+    // and one person bigger than another says something no plan means, so a
+    // step that sized somebody is dropped rather than believed.
+    const owned: PropBag = {};
+    for (const stepId of declared)
+      for (const [field, value] of Object.entries(overrides[stepId]))
+        if (!stepOwned(entity, field) && !(entity.type === "player" && field === "size"))
+          owned[field] = value;
+    const settled = { ...entity, ...owned } as Entity;
+    const base = settled as unknown as PropBag;
+    const kept: Record<string, PropBag> = {};
+    let standing: PropBag = {};
+    let mechanic: string | undefined;
+    for (const step of plan.steps) {
+      if (step.mechanic !== mechanic) {
+        mechanic = step.mechanic;
+        standing = {};
+      }
+      const said = overrides[step.id];
+      if (!said) continue;
+      const news: PropBag = {};
+      for (const field of STEP_FIELDS) {
+        if (!(field in said)) continue;
+        const held = field in standing ? standing[field] : base[field];
+        if (said[field] === held) continue;
+        news[field] = said[field];
+        standing[field] = said[field];
+      }
+      if (Object.keys(news).length) kept[step.id] = news;
+    }
+    return { ...settled, overrides: kept } as Entity;
+  });
+  return { ...plan, entities };
+}
+
+/**
+ * An anchor is the place a mechanic fires from, so it belongs to that
+ * mechanic's Beat. Plans authored while anchors were actors have them sitting
+ * outside every Beat, on the floor all fight and surviving the Beat they
+ * served; a bait that unanimously names one Beat says which one its source
+ * should have been in all along.
+ */
+function adoptAnchors(plan: Plan): Plan {
+  const beats = new Set(plan.mechs.map((beat) => beat.id));
+  const entities = plan.entities.map((entity) => {
+    if (entity.type !== "enemy" || entity.role !== "anchor" || entity.mech) return entity;
+    const owners = new Set(
+      plan.entities
+        .filter((e) => e.anchor && (e.anchor.from === entity.id || e.anchor.near === entity.id))
+        .map((e) => e.mech),
+    );
+    const [only] = [...owners];
+    // Nothing baited off it, or baits split across Beats: leave it alone rather
+    // than guess which mechanic owns a point two of them fire from.
+    return owners.size === 1 && only && beats.has(only) ? ({ ...entity, mech: only } as Entity) : entity;
+  });
+  return { ...plan, entities };
 }
 
 /**
@@ -916,7 +1021,7 @@ export function materializeVariantStep(plan: Plan, stepId: string, variantId: st
       const mech = entity.mech ? plan.mechs.find((candidate) => candidate.id === entity.mech) : undefined;
       return !mech?.variant || mech.variant === variantId;
     })
-    .map((entity) => EntitySchema.parse({ ...resolveEntity(entity, stepId, variantId), overrides: {} }));
+    .map((entity) => EntitySchema.parse({ ...resolveEntity(plan, entity, stepId, variantId), overrides: {} }));
   const steps = plan.steps.map((candidate) =>
     candidate.id === stepId
       ? {
@@ -929,21 +1034,68 @@ export function materializeVariantStep(plan: Plan, stepId: string, variantId: st
 }
 
 /**
- * Resolve an entity's properties for a given step: base props, then that step's
- * overrides, then the ones belonging to the variant being played. So a move
- * made in one reading of a mechanic lands there and nowhere else, while a step
- * nobody has varied looks the same both ways.
+ * What a Step is allowed to say about a thing.
+ *
+ * A Beat is the timing rule: it snapshots on the step it starts in, resolves on
+ * the step it ends in, and nothing inside it happens at a finer grain than
+ * that. So a Part has one pose, one geometry and one colour for its whole life,
+ * and the only per-step state left over is an actor's — where they stand, which
+ * way they face, and which token they are drawn as while a role callout or a
+ * debuff is on them. Everything else belongs to the entity itself.
+ */
+export const STEP_FIELDS = ["x", "y", "rotation", "job", "icon"] as const;
+
+/** Whether a step may hold this property, or the entity owns it outright. */
+export function stepOwned(entity: Entity, key: string): boolean {
+  return isActor(entity) && (STEP_FIELDS as readonly string[]).includes(key);
+}
+
+/**
+ * What a step says about an entity, inherited field by field from the steps
+ * before it.
+ *
+ * A step saying nothing about where somebody stands means they have not moved,
+ * so the answer is whatever the last step that did say is still saying. The
+ * walk stops at the mechanic boundary: practically nothing but the waymarks
+ * carries across one, and a mechanic whose first step leaves someone undeclared
+ * opens with them at their base pose.
+ */
+function declaredForStep(
+  plan: Plan,
+  entity: Entity,
+  stepId: string,
+  variantId?: string,
+): PropBag {
+  if (!isActor(entity)) return {};
+  const at = plan.steps.findIndex((step) => step.id === stepId);
+  if (at < 0) return {};
+  const mechanic = plan.steps[at].mechanic;
+  const out: PropBag = {};
+  for (let i = at; i >= 0 && plan.steps[i].mechanic === mechanic; i--) {
+    const said = {
+      ...entity.overrides?.[plan.steps[i].id],
+      ...(variantId ? entity.overrides?.[poseKey(plan.steps[i].id, variantId)] : {}),
+    };
+    for (const field of STEP_FIELDS)
+      if (!(field in out) && field in said) out[field] = said[field];
+  }
+  return out;
+}
+
+/**
+ * Resolve an entity's properties for a given step: what it is, with whatever
+ * the step in front of you says about it laid on top — its own declarations
+ * first, then the ones it inherits from earlier steps of the same mechanic.
  */
 export function resolveEntity<T extends Entity>(
+  plan: Plan,
   entity: T,
   stepId: string | undefined,
   variantId?: string,
 ): T {
   if (!stepId) return entity;
-  const shared = entity.overrides?.[stepId];
-  const mine = variantId ? entity.overrides?.[poseKey(stepId, variantId)] : undefined;
-  if (!shared && !mine) return entity;
-  return { ...entity, ...(shared as Partial<T>), ...(mine as Partial<T>) };
+  const declared = declaredForStep(plan, entity, stepId, variantId);
+  return Object.keys(declared).length ? ({ ...entity, ...declared } as T) : entity;
 }
 
 /**
@@ -964,7 +1116,7 @@ export function resolveEntityForStep<T extends Entity>(
     );
     if (materialized) return materialized as T;
   }
-  return resolveEntity(entity, stepId, variantId);
+  return resolveEntity(plan, entity, stepId, variantId);
 }
 
 /**
@@ -987,7 +1139,7 @@ export function authoredEntitiesForStep(
       const mech = entity.mech ? plan.mechs.find((candidate) => candidate.id === entity.mech) : undefined;
       return !mech?.variant || mech.variant === variantId;
     })
-    .map((entity) => resolveEntity(entity, stepId, variantId));
+    .map((entity) => resolveEntity(plan, entity, stepId, variantId));
 }
 
 /**
@@ -1062,7 +1214,7 @@ export function materializeBeatVariantContent(
 
   const parts = plan.entities
     .filter((entity) => entity.mech === owner.beat.id && isBeatPart(entity) && entityInStep(entity, stepId, plan))
-    .map((entity) => EntitySchema.parse({ ...resolveEntity(entity, stepId), overrides: {} }));
+    .map((entity) => EntitySchema.parse({ ...resolveEntity(plan, entity, stepId), overrides: {} }));
   const content: BeatVariantContent = {
     active: true,
     ...(owner.beat.color ? { color: owner.beat.color } : {}),
@@ -1234,6 +1386,63 @@ export function mechSpan(plan: Plan, mech: Mech): string[] {
   return plan.steps.slice(lo, hi + 1).map((s) => s.id);
 }
 
+/**
+ * A Beat's Snap marker as the document should hold it.
+ *
+ * `freeze` is authored by dragging a marker up and down a Beat's box, and the
+ * steps under it move: they are deleted, reordered, or the Beat's own ends are
+ * dragged past it. So the stored value is never trusted — it is clamped back
+ * into [snap, boom) here, and `normalizeFreezes` writes the clamp home.
+ *
+ * "" is the canonical way to say "freezes at the snapshot", so a Beat of one or
+ * two steps — which has no step between casting and resolving — has no marker
+ * at all, and neither does one whose marker resolves to its own snap step.
+ */
+export function normalizedFreeze(plan: Plan, mech: Mech): string {
+  const span = mechSpan(plan, mech);
+  if (span.length <= 2 || !mech.freeze) return "";
+  const order = plan.steps;
+  const at = order.findIndex((step) => step.id === mech.freeze);
+  const snap = order.findIndex((step) => step.id === span[0]);
+  const boom = order.findIndex((step) => step.id === span[span.length - 1]);
+  // Gone, or dragged above the snapshot: back to the snapshot, which is "".
+  if (at < 0 || at <= snap) return "";
+  // Dragged onto or past the explosion: a Beat that follows all the way to its
+  // boom is a Beat with no marker, so it stops at the last step before it.
+  if (at >= boom) return span[span.length - 2];
+  return mech.freeze;
+}
+
+/** The step a Beat's bindings are aimed at once it has frozen. */
+export function freezeStep(plan: Plan, mech: Mech): string {
+  return normalizedFreeze(plan, mech) || mech.snap || mech.boom;
+}
+
+/**
+ * Which step's poses a Beat's baits and anchors solve against while `stepId` is
+ * being drawn: the step itself while the Beat is still following its targets,
+ * and its Snap marker from the step after that one on.
+ */
+export function bindingStep(plan: Plan, mech: Mech, stepId: string | undefined): string {
+  const freeze = freezeStep(plan, mech);
+  const order = plan.steps;
+  const here = order.findIndex((step) => step.id === stepId);
+  const at = order.findIndex((step) => step.id === freeze);
+  return here >= 0 && at >= 0 && here <= at ? order[here].id : freeze;
+}
+
+/** Clamp every Beat's Snap marker back into its span. */
+export function normalizeFreezes(plan: Plan): Plan {
+  let changed = false;
+  const mechs = plan.mechs.map((mech) => {
+    const freeze = normalizedFreeze(plan, mech);
+    if (freeze === (mech.freeze ?? "")) return mech;
+    changed = true;
+    return { ...mech, freeze };
+  });
+  return changed ? { ...plan, mechs } : plan;
+}
+
 /** What a mech is called: its own name, or the first thing dropped into it. */
 export function mechLabel(plan: Plan, mech: Mech): string {
   if (mech.name) return mech.name;
@@ -1315,6 +1524,8 @@ const LENGTHWISE = new Set(["rect", "line", "knockback", "arrow"]);
 export function anchorTarget(
   entity: Entity,
   byId: Map<string, Entity>,
+  /** Which of the ranked candidates to solve for; defaults to the bait's own. */
+  rank = entity.anchor?.rank ?? 1,
 ): Entity | undefined {
   const a = entity.anchor;
   if (!a) return undefined;
@@ -1345,7 +1556,27 @@ export function anchorTarget(
         ? -1
         : 1;
   });
-  return candidates[a.rank - 1];
+  return candidates[rank - 1];
+}
+
+/**
+ * A bait with a count is one entity drawn several times: the shapes after the
+ * first are copies, and wear a derived id so no op can ever address them. The
+ * separator is not in the id alphabet, so an authored id never looks like one.
+ */
+const FAN = "~";
+export const fanCopyId = (id: string, index: number) => `${id}${FAN}${index}`;
+export const isFanCopy = (id: string) => id.includes(FAN);
+/** The bait a drawn shape belongs to: itself, unless it is a copy. */
+export const fanOwnerId = (id: string) => {
+  const cut = id.indexOf(FAN);
+  return cut < 0 ? id : id.slice(0, cut);
+};
+
+/** The ranks one bait covers: just its own, unless it was given a count. */
+export function anchorFanRanks(a: EntityAnchor): number[] {
+  const count = a.pick ? Math.max(1, Math.min(8, a.count ?? 1)) : 1;
+  return Array.from({ length: count }, (_, i) => a.rank + i);
 }
 
 /**
@@ -1356,10 +1587,12 @@ export function anchoredPose(
   entity: Entity,
   byId: Map<string, Entity>,
   arena: Arena,
+  /** Which ranked target this copy of a counted bait lands on. */
+  rank?: number,
 ): PropBag | null {
   const a = entity.anchor;
   if (!a) return null;
-  const target = anchorTarget(entity, byId);
+  const target = anchorTarget(entity, byId, rank);
   if (!target) return null;
 
   const origin = a.from ? byId.get(a.from) : undefined;
@@ -1552,16 +1785,28 @@ export function entitiesForStep(
     }
     // A binding belongs to the step it was declared in: it marks where its
     // target stood then, not wherever that target has walked off to since. For
-    // a mech that step is its snapshot, wherever the shape was first dropped.
-    const declaredIn = mech ? mech.snap || e.declaredIn : e.declaredIn;
-    const pose = anchoredPose(
-      e,
-      declaredIn ? posesFor(declaredIn) : byId,
-      plan.arena,
-    );
-    // No target in this step means the bait has nobody to land on: skip it,
-    // rather than drawing it at whatever pose it happened to be authored with.
-    if (pose) out.push({ ...e, ...pose } as Entity);
+    // a Beat that step is its Snap marker — it follows its targets step by step
+    // up to and including `freeze`, and from there to its explosion it holds
+    // the pose it resolved to in that step. This is the only place a bait or an
+    // anchor is aimed, so the canvas, the hit test, `read_plan` and every other
+    // reader see one answer rather than three implementations of the rule.
+    const declaredIn = mech ? bindingStep(plan, mech, stepId) || e.declaredIn : e.declaredIn;
+    const scene = declaredIn ? posesFor(declaredIn) : byId;
+    // A count draws the same bait over the next ranks along: one selectable
+    // thing, several shapes. The copies are derived here and nowhere else, so
+    // the document still holds exactly one entity for the mechanic.
+    const ranks = anchorFanRanks(e.anchor);
+    for (const [index, rank] of ranks.entries()) {
+      const pose = anchoredPose(e, scene, plan.arena, rank);
+      // No target in this step means the bait has nobody to land on: skip it,
+      // rather than drawing it at whatever pose it happened to be authored with.
+      if (!pose) continue;
+      out.push({
+        ...e,
+        ...(index ? { id: fanCopyId(e.id, index + 1) } : {}),
+        ...pose,
+      } as Entity);
+    }
   }
   return out;
 }
