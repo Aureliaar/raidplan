@@ -54,7 +54,8 @@ const remeasure = async () => {
 const screen = (x, y) => ({ x: box.x + box.width / 2 + x * scale, y: box.y + box.height / 2 + y * scale });
 const inCanvas = (x, y) => ({ x: box.width / 2 + x * scale, y: box.height / 2 + y * scale });
 const gotoStep = async (n) => {
-  await page.getByRole("button", { name: new RegExp("^" + n + "\\. ") }).click();
+  // The gutter, not the middle: a row spans the lanes, and a Beat card sits on top of it.
+  await page.getByRole("button", { name: `Step ${n}`, exact: true }).click({ position: { x: 12, y: 14 } });
   await page.waitForTimeout(350);
 };
 /** Where the canvas actually draws something, in arena units. */
@@ -63,12 +64,19 @@ const drawnAt = (id) =>
     const node = window.Konva.stages[0].findOne("#" + entityId);
     return node ? { x: node.x(), y: node.y() } : null;
   }, id);
+/** The rail's row menu: right-click the row you are on and take an item. */
+const onCurrentRow = async (item) => {
+  const r = await page.locator('[data-current="true"]').boundingBox();
+  await page.mouse.click(r.x + 12, r.y + r.height / 2, { button: "right" });
+  await page.locator("[data-context-menu]").first().waitFor({ state: "visible", timeout: 3000 });
+  await page.locator(`[data-menu-item="${item}"]`).click();
+};
 
 // Spread the party so every token is its own target.
 await page.getByRole("button", { name: "PF positions" }).click();
 await page.waitForTimeout(600);
 for (const _ of [1, 2]) {
-  await page.locator('[data-current="true"]').getByRole("button", { name: "Add step after this one" }).click();
+  await onCurrentRow("Add step after");
   await page.waitForTimeout(500);
 }
 await remeasure();

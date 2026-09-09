@@ -136,7 +136,7 @@ else console.log("past its Beat the anchor is off the floor, like everything els
 // mechanic, so they arrive in the new step together.
 const beatBox = page.locator(`[data-mech="${anchor.mech}"]`);
 const rect = await beatBox.boundingBox();
-const row = await page.getByRole("button", { name: /2\. After/ }).boundingBox();
+const row = await page.getByRole("button", { name: "Step 2", exact: true }).boundingBox();
 // The resolve edge is the bottom strip of the card; the body would carry the
 // whole Beat instead of stretching it.
 await page.mouse.move(rect.x + rect.width / 2, rect.y + rect.height - 3);

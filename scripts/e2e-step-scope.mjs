@@ -45,12 +45,20 @@ async function dropOnFloor(label, x, y) {
 }
 const selectedCount = () => page.evaluate(() => window.Konva.stages[0].find(".selection").length);
 const gotoStep = async (n) => {
-  await page.getByRole("button", { name: new RegExp("^" + n + "\\. ") }).click();
+  // The gutter, not the middle: a row spans the lanes, and a Beat card sits on top of it.
+  await page.getByRole("button", { name: `Step ${n}`, exact: true }).click({ position: { x: 12, y: 14 } });
   await page.waitForTimeout(300);
+};
+/** The rail's row menu: right-click the row you are on and take an item. */
+const onCurrentRow = async (item) => {
+  const r = await page.locator('[data-current="true"]').boundingBox();
+  await page.mouse.click(r.x + 12, r.y + r.height / 2, { button: "right" });
+  await page.locator("[data-context-menu]").first().waitFor({ state: "visible", timeout: 3000 });
+  await page.locator(`[data-menu-item="${item}"]`).click();
 };
 
 // Two steps, then back on step 1.
-await page.locator('[data-current="true"]').getByRole("button", { name: "Add step after this one" }).click();
+await onCurrentRow("Add step after");
 await page.waitForTimeout(500);
 let doc = await load();
 const [s1, s2] = doc.steps.map((s) => s.id);

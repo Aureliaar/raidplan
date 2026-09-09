@@ -79,9 +79,12 @@ const groupSets = async (text) => {
   return seen;
 };
 
-/** The step row the rail has selected, which is the step the canvas draws. */
+/**
+ * The step the rail has selected, which is the step the canvas draws. Rows
+ * carry only their number now, so the row is asked for its step's id.
+ */
 const selectedRow = () =>
-  page.locator('nav button[data-step][aria-current="step"]').first().innerText();
+  page.locator('nav button[data-step][aria-current="step"]').first().getAttribute("data-step");
 const stepsOf = (doc, mechanicId) => doc.steps.filter((s) => s.mechanic === mechanicId);
 
 await page.goto(base + "/p/" + planId);
@@ -125,8 +128,15 @@ if (doc.mechanics[1].name !== "Witch Hunt") fail("F2 on the heading gave " + doc
 else console.log('F2 on the heading renamed the mechanic: "Witch Hunt"');
 
 /* --- steps added in a section belong to it -------------------------------- */
+/** The rail's row menu: right-click the row you are on and take an item. */
+const onCurrentRow = async (item) => {
+  const r = await page.locator('[data-current="true"]').boundingBox();
+  await page.mouse.click(r.x + 12, r.y + r.height / 2, { button: "right" });
+  await page.locator("[data-context-menu]").first().waitFor({ state: "visible", timeout: 3000 });
+  await page.locator(`[data-menu-item="${item}"]`).click();
+};
 
-await page.locator('[data-current="true"]').getByRole("button", { name: "Add step after this one" }).click();
+await onCurrentRow("Add step after");
 await page.waitForTimeout(700);
 doc = await load();
 const mine = stepsOf(doc, mechanicId);
@@ -156,7 +166,7 @@ else console.log("and back down again, blocks and all");
 
 /* --- a cast inside the section, so the variant has something to copy ------- */
 
-await page.getByRole("button", { name: "1. Step 1" }).click();
+await page.getByRole("button", { name: "Step 1", exact: true }).click({ position: { x: 12, y: 14 } });
 await page.waitForTimeout(300);
 await page.getByRole("button", { name: "New Beat here" }).click();
 await page.waitForTimeout(600);
@@ -189,7 +199,7 @@ const box = page.getByTitle(/casts in step 1, resolves in step 1/);
 if (!(await box.count())) fail("no cast box beside the open section's rows");
 else {
   const b = await box.boundingBox();
-  const target = await page.getByRole("button", { name: "2. Step 2" }).boundingBox();
+  const target = await page.getByRole("button", { name: "Step 2", exact: true }).boundingBox();
   await page.mouse.move(b.x + b.width / 2, b.y + b.height * 0.75);
   await page.mouse.down();
   await page.mouse.move(b.x + b.width / 2, target.y + target.height / 2, { steps: 12 });
@@ -215,19 +225,19 @@ if (!(await page.getByRole("button", { name: "done editing Beat" }).count())) {
 if (!(await page.getByRole("button", { name: "done editing Beat" }).count()))
   fail("selecting the cast did not open it for filling");
 
-await page.getByRole("button", { name: "2. Step 2" }).click();
+await page.getByRole("button", { name: "Step 2", exact: true }).click({ position: { x: 12, y: 14 } });
 await page.waitForTimeout(200);
 if (!(await page.getByRole("button", { name: "done editing Beat" }).count()))
   fail("the cast was unselected on its explosion boundary step");
 
-await page.getByRole("button", { name: "1. Step 1" }).click();
+await page.getByRole("button", { name: "Step 1", exact: true }).click({ position: { x: 12, y: 14 } });
 await page.waitForTimeout(200);
 if (!(await page.getByRole("button", { name: "done editing Beat" }).count()))
   fail("the cast was unselected on its snapshot boundary step");
 
 await page.keyboard.press("w");
 await page.waitForTimeout(200);
-if (!(await selectedRow()).includes("Pull"))
+if ((await selectedRow()) !== doc.steps.find((s) => s.name === "Pull")?.id)
   fail("W did not navigate to the preceding step outside the cast's span");
 else if (await page.getByRole("button", { name: "done editing Beat" }).count())
   fail("the cast stayed selected after navigating outside its span");
@@ -286,9 +296,9 @@ await page.waitForSelector("canvas");
 await page.waitForTimeout(900);
 if (!(await page.getByTitle("Delete this mechanic and its steps").isVisible()))
   fail("the old plan's section is not open, so its steps are nowhere");
-else if (!(await page.getByRole("button", { name: "1. Snapshot" }).isVisible()))
+else if (!(await page.getByRole("button", { name: "Step 1", exact: true }).isVisible()))
   fail("the old plan's steps are not listed inside the section");
-else if (!(await page.getByRole("button", { name: "2. Resolve" }).isVisible()))
+else if (!(await page.getByRole("button", { name: "Step 2", exact: true }).isVisible()))
   fail("only the first of the old plan's steps is there");
 else if (!(await page.getByTitle(/casts in step 1, resolves in step 2/).count()))
   fail("the old plan's cast box is not beside the section's rows");

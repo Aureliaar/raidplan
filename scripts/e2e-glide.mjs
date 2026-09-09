@@ -99,7 +99,8 @@ else console.log("and it settles in " + arrived + "ms, once");
 
 /* --- a click still snaps --------------------------------------------------- */
 
-await page.locator("nav [data-step]").first().click();
+// The gutter, not the middle: a row spans the lanes, and cards sit on top of it.
+await page.locator("nav [data-step]").first().click({ position: { x: 12, y: 14 } });
 await page.waitForTimeout(60);
 const afterClick = await x();
 if (Math.abs(afterClick - at1) > 2)
@@ -141,7 +142,8 @@ const puddles = await ops([
 ]);
 const [going, coming] = puddles.values.map((v) => v.id);
 await page.waitForTimeout(800);
-await page.locator("nav [data-step]").first().click();
+// The gutter, not the middle: a row spans the lanes, and cards sit on top of it.
+await page.locator("nav [data-step]").first().click({ position: { x: 12, y: 14 } });
 await page.waitForTimeout(500);
 
 /** How solid two shapes are drawn, sampled every frame. */

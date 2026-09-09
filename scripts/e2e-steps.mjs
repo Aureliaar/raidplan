@@ -1,8 +1,10 @@
 /**
- * Naming and shuffling steps from the rail.
+ * Adding, shuffling and deleting steps from the rail.
  *
  * A step's poses are keyed by its id, so moving it in the sequence has to carry
  * every override with it — that is the part worth checking, not the ordering.
+ * Steps have no names in the rail any more: a row is its number, and the four
+ * things you can do to it live in its right-click menu.
  *
  *   node scripts/e2e-steps.mjs http://localhost:59577
  */
@@ -39,19 +41,32 @@ await page.goto(base + "/p/" + planId);
 await page.waitForSelector("canvas");
 await page.waitForTimeout(900);
 
-/** F2 turns the selected step's row into a field, right where it sits. */
-const rename = async (to) => {
-  await page.keyboard.press("F2");
-  const field = page.getByTitle("Rename step");
-  await field.waitFor();
-  await field.fill(to);
-  await field.press("Enter");
-  await page.waitForTimeout(500);
-};
 const names = (doc) => doc.steps.map((s) => s.name).join(" | ");
 
-/** The step actions of the row you are on — the hovered row has its own set. */
-const onRow = () => page.locator('[data-current="true"]');
+/** A row is its number, in a 24px gutter. */
+const row = (n) => page.getByRole("button", { name: `Step ${n}`, exact: true });
+/** The gutter, not the middle: a row spans the lanes, and cards sit on top of it. */
+const clickRow = (n) => row(n).click({ position: { x: 12, y: 14 } });
+
+/** Right-click a row and take one of the things a step can do. */
+const menu = page.locator("[data-context-menu]").first();
+async function onStep(n, item) {
+  const r = await row(n).boundingBox();
+  await page.mouse.click(r.x + 12, r.y + r.height / 2, { button: "right" });
+  await menu.waitFor({ state: "visible", timeout: 3000 });
+  await page.locator(`[data-menu-item="${item}"]`).click();
+  await page.waitForTimeout(700);
+}
+
+/** Names still exist in the plan; the rail is just not where they are typed. */
+const name = async (n, to) => {
+  const doc = await load();
+  await api("/api/plans/" + planId + "/ops", {
+    method: "POST",
+    body: JSON.stringify({ ops: [{ op: "update_step", stepId: doc.steps[n].id, patch: { name: to } }] }),
+  });
+  await page.waitForTimeout(400);
+};
 
 /**
  * Steps are not reorderable from the rail any more — the rows are a ruler for
@@ -67,21 +82,18 @@ async function moveRow(index_, to) {
   await page.waitForTimeout(600);
 }
 
-/* --- naming --------------------------------------------------------------- */
+/* --- building the sequence from the row menus ----------------------------- */
 
-await rename("Pull");
+await name(0, "Pull");
 let doc = await load();
-if (doc.steps[0].name !== "Pull") fail("renaming the first step gave " + names(doc));
-else console.log('the rail renamed step 1: "' + doc.steps[0].name + '"');
-if (!(await page.getByRole("button", { name: "1. Pull" }).isVisible()))
-  fail("the rail still lists the old name");
+if (!(await row(1).isVisible())) fail("the rail does not number its first row");
+if (await row(1).innerText() !== "1") fail("the row carries more than its number: " + JSON.stringify(await row(1).innerText()));
+else console.log("a step row is its number and nothing else");
 
-await onRow().getByRole("button", { name: "Duplicate step" }).click();
-await page.waitForTimeout(600);
-await rename("Adds");
-await onRow().getByRole("button", { name: "Add step after this one" }).click();
-await page.waitForTimeout(600);
-await rename("Enrage");
+await onStep(1, "Duplicate step");
+await name(1, "Adds");
+await onStep(2, "Add step after");
+await name(2, "Enrage");
 doc = await load();
 if (names(doc) !== "Pull | Adds | Enrage") fail("expected Pull | Adds | Enrage, got " + names(doc));
 else console.log("three named steps: " + names(doc));
@@ -123,8 +135,8 @@ if (names(doc) !== "Pull | Adds | Enrage") fail("moving it back down gave " + na
 else console.log("and back down: " + names(doc));
 
 // The rows themselves are not a handle: dragging one changes nothing at all.
-const lastRow = await page.getByRole("button", { name: "3. Enrage" }).boundingBox();
-const middleRow = await page.getByRole("button", { name: "2. Adds" }).boundingBox();
+const lastRow = await row(3).boundingBox();
+const middleRow = await row(2).boundingBox();
 await page.mouse.move(lastRow.x + lastRow.width / 2, lastRow.y + lastRow.height / 2);
 await page.mouse.down();
 await page.mouse.move(middleRow.x + middleRow.width / 2, middleRow.y + middleRow.height / 2, { steps: 12 });
@@ -136,10 +148,7 @@ else console.log("dragging a row does nothing: steps are ordered by their mechan
 
 /* --- deleting ------------------------------------------------------------- */
 
-await page.getByRole("button", { name: "3. Enrage" }).click();
-await page.waitForTimeout(400);
-await onRow().getByRole("button", { name: "Delete step" }).click();
-await page.waitForTimeout(600);
+await onStep(3, "Delete step");
 doc = await load();
 if (names(doc) !== "Pull | Adds") fail("deleting the last step gave " + names(doc));
 else console.log("delete removed the selected one: " + names(doc));
@@ -147,7 +156,7 @@ else console.log("delete removed the selected one: " + names(doc));
 /* --- a binding belongs to the step it was declared in ---------------------- */
 
 // Drop the mechanic in "Pull": it marks where the party stood in *that* step.
-await page.getByRole("button", { name: "1. Pull" }).click();
+await clickRow(1);
 await page.waitForTimeout(400);
 await page.locator("div", { hasText: /^Circle$/ }).last().dragTo(page.locator("div", { hasText: /^Party$/ }).last());
 await page.waitForTimeout(1000);
@@ -203,5 +212,5 @@ if (Math.hypot(mtIn2.x - seen.adds.x, mtIn2.y - seen.adds.y) < 50)
   fail("MT and the circle are in the same place in step 2, so nothing was proved");
 else console.log("MT is at " + JSON.stringify(mtIn2) + " in Adds, the circle stayed behind");
 
-console.log(process.exitCode ? "FAILED" : "OK - steps are named, moved and deleted from the rail");
+console.log(process.exitCode ? "FAILED" : "OK - steps are added, moved and deleted from the rail");
 await browser.close();

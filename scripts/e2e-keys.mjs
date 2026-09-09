@@ -231,7 +231,7 @@ await api("/api/plans/" + planId + "/ops", {
 });
 await page.waitForTimeout(900);
 
-/** The step the rail says you are on, by name. */
+/** The step the rail says you are on: a row is its 1-based number. */
 const on = () => page.locator("nav [data-step][aria-current]").innerText();
 /** The reading the rail says is playing. */
 const playing = () => page.locator("nav [data-variant][aria-pressed=true]").innerText();
@@ -245,17 +245,17 @@ await page.mouse.click(600, 500);
 await page.waitForTimeout(300);
 await press("s");
 await press("s");
-if (!(await on()).includes("Three")) fail("S twice landed on " + (await on()));
+if ((await on()).trim() !== "3") fail("S twice landed on " + (await on()));
 else console.log("S walks down the steps: " + (await on()).trim());
 
 await press("w");
-if (!(await on()).includes("Two")) fail("W went to " + (await on()));
+if ((await on()).trim() !== "2") fail("W went to " + (await on()));
 else console.log("W walks back up: " + (await on()).trim());
 
 await press("w");
 await press("w");
 await press("w");
-if (!(await on()).includes("1.")) fail("W past the first step went to " + (await on()));
+if ((await on()).trim() !== "1") fail("W past the first step went to " + (await on()));
 else console.log("and it stops at the first step rather than falling off the fight");
 
 const at = await on();

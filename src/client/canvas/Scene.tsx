@@ -102,6 +102,11 @@ function sortForDrawing(entities: Entity[]): Entity[] {
  */
 export type EditLayer = "step" | "markers";
 
+/** What a right-click on the canvas landed on, in viewport and arena coordinates. */
+export type SceneContextTarget =
+  | { kind: "entity"; id: string; point: { x: number; y: number } }
+  | { kind: "floor"; arenaPoint: { x: number; y: number }; point: { x: number; y: number } };
+
 export interface SceneProps {
   plan: Plan;
   /** Uncommitted palette shapes at the point where the current drop would land. */
@@ -142,6 +147,13 @@ export interface SceneProps {
   /** Intercept a click before normal selection/dragging, for two-click authoring tools. */
   onPick?(id: string): boolean;
   onSelect(ids: string[]): void;
+  /**
+   * A right-click on the floor or on something standing on it. The canvas is
+   * one <canvas> element, so it cannot hand the event to a React node the way
+   * the rest of the page does: it hit-tests exactly as a left-click would and
+   * reports what was under the pointer instead.
+   */
+  onContextMenu?(target: SceneContextTarget): void;
   onMove(moves: { id: string; x: number; y: number }[]): void;
   /** Wheel over something: resize it (or a tether's range) by that factor. */
   onResize?(ids: string[], factor: number, what: "size" | "opacity"): void;
@@ -392,6 +404,7 @@ export function Scene({
   sweep,
   onPick,
   onSelect,
+  onContextMenu,
   onMove,
   onResize,
   onTransform,
@@ -770,6 +783,10 @@ export function Scene({
   }
 
   function pickAt(evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+    // Only the left button picks. A right-press must leave the selection, the
+    // pick, the group drag and the marquee exactly as they were: the menu it
+    // opens describes what is already in hand.
+    if (evt.evt instanceof MouseEvent && evt.evt.button !== 0) return;
     const stagePoint = evt.target.getStage()?.getPointerPosition();
     const onFrozenMarker =
       layer !== "markers" &&
@@ -925,6 +942,40 @@ export function Scene({
   }
 
   /**
+   * A right-click resolves its target the way a pick does, and reports it. The
+   * one difference is what it does to the selection: something already in a
+   * multi-selection keeps the whole set — the menu is about all of them —
+   * while anything else becomes the selection first, so the menu and the
+   * inspector are talking about the same thing.
+   */
+  function contextAt(evt: Konva.KonvaEventObject<PointerEvent>) {
+    if (!onContextMenu) return;
+    evt.evt.preventDefault();
+    const stage = evt.target.getStage();
+    if (!stage) return;
+    stage.setPointersPositions(evt.evt);
+    const point = { x: evt.evt.clientX, y: evt.evt.clientY };
+    const chip = evt.target.findAncestor(".chip", true) as Konva.Group | undefined;
+    const chipFor = chip?.getAttr("entityId") as string | undefined;
+    const hit = chipFor ?? under(evt as never)?.id;
+    if (hit) {
+      if (!selectedIds.has(hit)) onSelect([hit]);
+      onContextMenu({ kind: "entity", id: hit, point });
+      return;
+    }
+    const at = stage.getPointerPosition();
+    if (!at) return;
+    onContextMenu({
+      kind: "floor",
+      arenaPoint: {
+        x: Math.round((at.x - size / 2) / scale),
+        y: Math.round((at.y - size / 2) / scale),
+      },
+      point,
+    });
+  }
+
+  /**
    * The wheel sizes whatever is under the pointer, without selecting it first —
    * one gesture, no mode. For a tether that means its required range, not its
    * visual stroke. A bonded shape updates its whole set, because the set is the
@@ -959,6 +1010,7 @@ export function Scene({
       height={size}
       onMouseDown={pickAt}
       onTouchStart={pickAt}
+      onContextMenu={contextAt}
       onWheel={wheelAt}
     >
       <Layer>
@@ -1343,6 +1395,8 @@ function SelectionPins({
   };
 
   function begin(kind: PinKind, evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+    // A right-press on a pin opens the menu; it never starts a resize or a turn.
+    if (evt.evt instanceof MouseEvent && evt.evt.button !== 0) return;
     evt.cancelBubble = true;
     const stage = group.current?.getStage();
     const node = stage?.findOne(`#${entity.id}`) as Konva.Group | undefined;

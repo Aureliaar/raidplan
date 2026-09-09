@@ -137,22 +137,22 @@ if ((await inStep(run_)) !== 0) fail("the mech is on the floor in Run before its
 // Say where it goes off by dragging the bottom edge of the box down to Boom.
 const boxOf = (n) => page.getByTitle(new RegExp("casts in step [0-9]+, resolves in step " + n));
 const rowMid = async (label) => {
-  const r = await page.getByRole("button", { name: label }).boundingBox();
+  const r = await page.getByRole("button", { name: `Step ${label}`, exact: true }).boundingBox();
   return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
 };
-async function dragBox(box, grab, toLabel) {
+async function dragBox(box, grab, toRow) {
   const b = await box.boundingBox();
   // The strip you take hold of is the end you are dragging: 6px at the top for
   // the cast, 7px at the bottom for the resolve. In between is the whole Beat.
   const at = grab === "top" ? b.y + 3 : b.y + b.height - 3;
-  const to = await rowMid(toLabel);
+  const to = await rowMid(toRow);
   await page.mouse.move(b.x + b.width / 2, at);
   await page.mouse.down();
   await page.mouse.move(b.x + b.width / 2, to.y, { steps: 12 });
   await page.mouse.up();
   await page.waitForTimeout(700);
 }
-await dragBox(boxOf(1), "bottom", "3. Boom");
+await dragBox(boxOf(1), "bottom", 3);
 const spread = [await inStep(pull), await inStep(run_), await inStep(boom)];
 if (spread.join() !== "8,8,8") fail("the mech is on the floor in " + spread.join("/") + " of Cast/Run/Boom");
 else console.log("snapshot in Cast, goes off in Boom: on the floor for all three steps");
@@ -193,7 +193,7 @@ else console.log("faint while it is in the air (" + faint + "), full when it goe
 
 /* --- move the snapshot and the whole mech re-aims -------------------------- */
 
-await dragBox(boxOf(3), "top", "2. Run");
+await dragBox(boxOf(3), "top", 2);
 const reaimed = (await drawn(boom)).find((e) => e.id === donut.id);
 if (Math.hypot(reaimed.x - who.x, reaimed.y - who.y) > 60)
   fail("moving the snapshot to Run did not re-aim the mech: " + JSON.stringify(reaimed));
@@ -208,9 +208,11 @@ const box = page.getByTitle(/casts in step 2, resolves in step 3/);
 if (!(await box.count())) fail("no mech box spanning steps 2 to 3 beside the step list");
 else {
   const b = await box.boundingBox();
-  const rowOf = async (n) => (await page.getByRole("button", { name: n }).boundingBox());
-  const [cast, run2, boom2] = [await rowOf("1. Cast"), await rowOf("2. Run"), await rowOf("3. Boom")];
-  if (b.x < cast.x + cast.width) fail("the mech box is not beside the step list");
+  const rowOf = async (n) =>
+    await page.getByRole("button", { name: `Step ${n}`, exact: true }).boundingBox();
+  const [cast, run2, boom2] = [await rowOf(1), await rowOf(2), await rowOf(3)];
+  // A row is the whole width of the rail now; the step column is a 24px gutter.
+  if (b.x < cast.x + 24) fail("the mech box is not beside the step gutter");
   else if (Math.abs(b.y - run2.y) > 6) fail("the box does not start at the step it snapshots in");
   else if (Math.abs(b.y + b.height - (boom2.y + boom2.height)) > 6)
     fail("the box does not end at the step it goes off in");
@@ -220,7 +222,7 @@ else {
 
 // The bottom strip is only the resolve: pulling it down is "it goes off later",
 // and the snapshot stays exactly where it was.
-await dragBox(boxOf(3), "bottom", "4. After");
+await dragBox(boxOf(3), "bottom", 4);
 doc = await load();
 const pulled = doc.mechs[0];
 if (pulled.snap !== run_) fail("dragging the middle down moved the snapshot too");
@@ -259,7 +261,7 @@ await ops({ op: "delete_mech", mechId: (await load()).mechs[1].id });
 // And the swatches in the mech panel change it, shapes and all.
 // Moving the snapshot off Cast closed filling there; stand inside the mech's
 // span and explicitly reopen it before using its controls.
-await page.getByRole("button", { name: "2. Run" }).click();
+await page.getByRole("button", { name: "Step 2", exact: true }).click({ position: { x: 12, y: 14 } });
 await page.locator(`[data-mech="${mechId}"]`).click();
 const swatch = page.getByTitle(/^Draw this Beat in #/).nth(3);
 const picked = (await swatch.getAttribute("title")).slice("Draw this Beat in ".length);
