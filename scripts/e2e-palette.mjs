@@ -1,562 +1,154 @@
 /**
  * The palette: things you drag, whose meaning depends on where you let go.
- * Bare floor makes a shape you own; an enemy source makes a mechanic thrown
- * at whoever stands nearest it; the group chips give everybody one.
- *
- *   node scripts/e2e-palette.mjs http://localhost:59577
+ * Bare floor makes a shape of your own, in a Beat of its own; a beam dropped
+ * on a bait anchor is thrown at whoever stands nearest it; a group chip gives
+ * everybody in the group one, thrown from a source even on a plan with no
+ * enemy; a tether dropped on one thing is finished by picking another; a Boss
+ * is an ordinary enemy mechanics can come out of; and a group's row carries
+ * the whole group.
  */
-import { chromium } from "playwright";
-import { viewScale } from "./view.mjs";
+import { chip, drawn, fail, finish, floor, session } from "./harness.mjs";
 
-const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
-const browser = await chromium.launch();
-const page = await (await browser.newContext({ viewport: { width: 1500, height: 950 } })).newPage();
-const fail = (m) => {
-  console.error("FAIL:", m);
-  process.exitCode = 1;
-};
-
-await page.goto(base + "/auth/dev?name=palette-e2e");
-const api = (path, init = {}) =>
-  page.evaluate(
-    async ([p, i]) => {
-      const r = await fetch(p, { ...i, headers: { "content-type": "application/json", ...(i.headers ?? {}) } });
-      const t = await r.text();
-      if (!r.ok) throw new Error(p + " -> " + r.status + " " + t.slice(0, 200));
-      return t ? JSON.parse(t) : null;
-    },
-    [path, init]
-  );
-
-const created = await api("/api/plans", {
-  method: "POST",
-  body: JSON.stringify({ name: "palette e2e", withParty: true }),
-});
-const planId = (created.plan ?? created).id;
-const load = () => api("/api/plans/" + planId).then((p) => p.plan ?? p);
-
-await page.goto(base + "/p/" + planId);
-await page.waitForSelector("canvas");
-await page.waitForTimeout(900);
-
-const canvas = page.locator("canvas").first();
-const chip = (label) => page.locator("div", { hasText: new RegExp("^" + label + "$") }).last();
-
-/** Arena units -> a position inside the canvas box, for dragTo. */
-async function at(x, y) {
-  const box = await canvas.boundingBox();
-  const scale = viewScale(box.width);
-  return { x: box.width / 2 + x * scale, y: box.height / 2 + y * scale };
-}
-
-/** Drag a palette item onto a point of the arena. */
-async function dropOnFloor(label, x, y) {
-  await chip(label).dragTo(canvas, { targetPosition: await at(x, y) });
-  await page.waitForTimeout(500);
-  // Free/source drops select what they create for immediate editing. Return
-  // to the palette before the next palette gesture in this end-to-end tour.
-  const box = await canvas.boundingBox();
-  await page.mouse.click(box.x + 8, box.y + 8);
-  await page.waitForTimeout(150);
-}
-
-/* --- an anchor lands where you dropped it --------------------------------- */
-
-await dropOnFloor("Bait anchor", 200, -150);
-let doc = await load();
-const anchor = doc.entities.find((e) => e.type === "enemy" && e.role === "anchor");
-if (!anchor) fail("dragging the bait anchor onto the floor placed nothing");
-else if (Math.hypot(anchor.x - 200, anchor.y + 150) > 25)
-  fail("the anchor landed at " + anchor.x + "," + anchor.y + " instead of 200,-150");
-else console.log("bait anchor placed where it was dropped: " + anchor.x + "," + anchor.y);
-/* --- a beam dropped ON the anchor is baited off it ------------------------- */
-
-// Somebody has to be nearest: put M1 next to the anchor and everyone else far.
+const s = await session("palette-e2e");
+const { page } = s;
+// A party and no enemy at all: every source on this floor is one we place.
+const plan = await s.createPlan({ name: "palette e2e", withParty: true });
+await s.openPlan(plan.id);
+const f = await floor(page);
+let doc = await plan.load();
+const step = doc.steps[0].id;
 const ids = Object.fromEntries(doc.entities.filter((e) => e.name).map((e) => [e.name, e.id]));
-await api("/api/plans/" + planId + "/ops", {
-  method: "POST",
-  body: JSON.stringify({
-    ops: [
-      { op: "update_entity", id: ids.M1, patch: { x: 300, y: -150 } },
-      { op: "update_entity", id: ids.M2, patch: { x: 320, y: 400 } },
-      { op: "update_entity", id: ids.MT, patch: { x: -400, y: 400 } },
-    ],
-  }),
-});
-await page.waitForTimeout(400);
+const nameOf = (id) => doc.entities.find((e) => e.id === id)?.name;
 
-await dropOnFloor("Beam", 200, -150);
-doc = await load();
-let beams = doc.entities.filter((e) => e.type === "zone" && e.shape === "rect" && e.anchor);
-if (beams.length !== 1) fail("dropping a beam on the anchor made " + beams.length + " baits");
-else if (beams[0].anchor.from !== anchor.id)
-  fail("the beam is not fired from the anchor: " + JSON.stringify(beams[0].anchor));
-else if (beams[0].anchor.pick !== "closest" || beams[0].anchor.rank !== 1)
+/* --- bare floor: a shape you own, in a Beat named after it ----------------- */
+
+await f.drop("Circle", -300, 300);
+doc = await plan.load();
+const free = doc.entities.find((e) => e.type === "zone" && e.shape === "circle");
+const own = free && doc.mechs.find((m) => m.id === free.mech);
+if (!free || free.anchor || Math.hypot(free.x + 300, free.y - 300) > 25)
+  fail("a circle dropped on bare floor did not land there, unbound: " + JSON.stringify(free));
+if (!own) fail("the dropped circle is in no Beat");
+if (own.snap !== step || own.boom !== step) fail("the circle's Beat does not span the step it was dropped in");
+if (own.name !== "Circle") fail(`the new Beat is named ${JSON.stringify(own.name)} instead of after the drop`);
+console.log("a circle on bare floor lands where it was dropped, in a Beat of its own called Circle");
+
+/* --- a beam on a bait anchor is thrown at whoever stands nearest ----------- */
+
+await f.drop("Bait anchor", 200, -150);
+doc = await plan.load();
+const anchor = doc.entities.find((e) => e.role === "anchor");
+if (!anchor || Math.hypot(anchor.x - 200, anchor.y + 150) > 25)
+  fail("dragging the bait anchor out did not place it at 200,-150: " + JSON.stringify(anchor));
+// Somebody has to be nearest: M1 beside the anchor, everyone else well away.
+await plan.ops([
+  { op: "update_entity", id: ids.M1, patch: { x: 300, y: -150 } },
+  { op: "update_entity", id: ids.M2, patch: { x: 320, y: 400 } },
+  { op: "update_entity", id: ids.MT, patch: { x: -400, y: 400 } },
+]);
+await page.waitForTimeout(400);
+await f.drop("Beam", 200, -150);
+doc = await plan.load();
+let beams = doc.entities.filter((e) => e.shape === "rect" && e.anchor?.from === anchor.id);
+if (beams.length !== 1) fail(`a beam dropped on the anchor made ${beams.length} baits off it`);
+if (beams[0].anchor.pick !== "closest" || beams[0].anchor.rank !== 1)
   fail("the beam is not aimed at the closest player: " + JSON.stringify(beams[0].anchor));
-else console.log("beam dropped on the anchor: " + beams[0].name + " " + JSON.stringify(beams[0].anchor));
+if (beams[0].mech !== anchor.mech) fail("the beam went into a Beat of its own instead of its anchor's");
 
-// A second one of the same kind on the same anchor widens the bait it already
-// has: one mechanic covering two people, not two mechanics with a slot each.
-await dropOnFloor("Beam", 200, -150);
-doc = await load();
-beams = doc.entities.filter((e) => e.type === "zone" && e.shape === "rect" && e.anchor);
+// A second beam on the same anchor widens it: one mechanic covering two people.
+await f.drop("Beam", 200, -150);
+doc = await plan.load();
+beams = doc.entities.filter((e) => e.shape === "rect" && e.anchor?.from === anchor.id);
 if (beams.length !== 1 || beams[0].anchor.count !== 2)
-  fail(
-    "a second beam on the anchor should widen the first: " +
-      beams.length +
-      " baits, count " +
-      beams.map((b) => b.anchor.count).join()
-  );
-else console.log("one beam covering the two closest: count " + beams[0].anchor.count);
+  fail(`a second beam on the anchor should widen the first: ${beams.length} baits, count ${beams[0]?.anchor.count}`);
 
-// One selectable, two shapes on the floor, aimed at different people.
-const solved = await page.evaluate(
-  ([id]) => {
-    const stage = window.Konva.stages[0];
-    const at = (nodeId) => {
-      const g = stage.findOne("#" + nodeId);
-      return g ? Math.round(g.rotation()) : null;
-    };
-    return [at(id), at(id + "~2")];
-  },
-  [beams[0].id]
-);
-if (solved.some((r) => r === null)) fail("the bait drew " + solved.filter((r) => r !== null).length + " of its 2 shapes");
-else if (solved[0] === solved[1]) fail("both shapes of the bait aim the same way: " + solved.join());
-else console.log("the one bait drew two shapes, aimed at " + solved.join("deg and ") + "deg");
-
-// Clicking the second shape selects the bait, not a thing of its own: the bait
-// editor comes up with the count on it.
-const where = await page.evaluate(
-  ([id]) => {
-    const g = window.Konva.stages[0].findOne("#" + id + "~2");
-    const box = g.getClientRect();
-    return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
-  },
-  [beams[0].id]
-);
-const stageBox = await canvas.boundingBox();
-await page.mouse.click(stageBox.x + where.x, stageBox.y + where.y);
+// Two shapes on the floor, one bait: clicking the second selects it, and its
+// editor says who it is hitting.
+const second = await page.evaluate((id) => {
+  const box = window.Konva.stages[0].findOne("#" + id)?.getClientRect();
+  return box && { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}, beams[0].id + "~2");
+if (!second) fail("the widened beam drew only one shape");
+await f.measure();
+await page.mouse.click(f.box.x + second.x, f.box.y + second.y);
 await page.waitForTimeout(400);
-if (!(await page.locator("text=bait target").count()))
-  fail("clicking the second shape of a counted bait did not select the bait");
-else console.log("clicking either shape selects the one bait");
-await page.mouse.click(stageBox.x + 8, stageBox.y + 8);
-await page.waitForTimeout(150);
+if (!(await page.locator("text=bait target").count())) fail("clicking the second shape did not select the bait");
+if (!(await page.locator("text=right now:").count())) fail("the bait editor does not say who it hits right now");
+console.log("a beam on the anchor aims at the closest player; a second one widens it to two, one bait");
+await f.deselect();
 
-/* --- a circle on the Supports chip gives each support one ----------------- */
+/* --- a group chip gives everybody in the group one -------------------------- */
 
-// The groups are a popover and a rail that pops out over the arena while
-// something is in hand, so there is no longer a card to no-op against:
-// opening the popover is the guard that the groups are there at all.
-await page.getByRole("button", { name: "Groups" }).click();
-await page.waitForTimeout(250);
-if (!(await page.locator("[data-group-row=supports]").count()))
-  fail("the Groups popover does not list the Supports");
-await page.keyboard.press("Escape");
-await page.waitForTimeout(250);
-const before = (await load()).entities.length;
-await page.locator("div", { hasText: /^Circle$/ }).last().dragTo(chip("Supports"));
+await chip(page, "Circle").dragTo(chip(page, "Supports"));
 await page.waitForTimeout(700);
-doc = await load();
-const circles = doc.entities.filter((e) => e.type === "zone" && e.shape === "circle" && e.anchor);
-const boundTo = circles.map((c) => doc.entities.find((e) => e.id === c.anchor.to)?.name).sort();
-if (circles.length !== 4) fail("Supports should have taken 4 circles, got " + circles.length);
-else if (boundTo.join() !== "H1,H2,MT,OT")
-  fail("the circles went to " + boundTo.join() + " instead of the four supports");
-else console.log("a circle on Supports bound one to each: " + boundTo.join());
-if (doc.entities.length !== before + 4) fail("Supports added " + (doc.entities.length - before) + " entities");
+doc = await plan.load();
+const bound = doc.entities.filter((e) => e.type === "zone" && e.shape === "circle" && e.anchor);
+const supports = bound.map((c) => nameOf(c.anchor.to)).sort().join();
+if (supports !== "H1,H2,MT,OT") fail(`a circle on Supports went to ${supports} instead of the four supports`);
 
-/* --- a stack on Healers goes to the two healers, numbered ----------------- */
-
-await page.locator("div", { hasText: /Stack ×8$/ }).last().dragTo(chip("Healers"));
-await page.waitForTimeout(700);
-doc = await load();
-const stacks = doc.entities.filter((e) => e.type === "zone" && e.shape === "stack");
-const stackOn = stacks.map((c) => doc.entities.find((e) => e.id === c.anchor.to)?.name).sort();
-if (stacks.length !== 2) fail("Healers should have taken 2 stacks, got " + stacks.length);
-else if (stackOn.join() !== "H1,H2") fail("the stacks went to " + stackOn.join());
-else if (!stacks.every((s) => s.soak === 8)) fail("a Stack ×8 should want 8 people: " + stacks.map((s) => s.soak));
-else console.log("a Stack ×8 on Healers put an 8-person stack on " + stackOn.join(" and "));
-
-// A line stack is aimed: it comes out of the boss like a beam does.
-await page.locator("div", { hasText: /^Line stack$/ }).last().dragTo(chip("Tanks"));
-await page.waitForTimeout(700);
-doc = await load();
-const lines = doc.entities.filter((e) => e.type === "zone" && e.shape === "linestack");
-const source = doc.entities.find((e) => e.id === lines[0]?.anchor?.from);
-if (lines.length !== 2) fail("Tanks should have taken 2 line stacks, got " + lines.length);
-else if (!source || !lines.every((l) => l.anchor.from === source.id))
-  fail("the line stacks are not aimed from anything");
-else console.log("a line stack on Tanks fires from " + source.name + " through each tank");
-
-/* --- and what a shape is coloured says what kind of thing it is ------------ */
-
-// Nobody has picked any colour: these are the defaults the canvas draws.
-const painted = await page.evaluate(
-  async ([id]) => {
-    const d = await (await fetch("/api/plans/" + id)).json().then((p) => p.plan ?? p);
-    const m = await import("/src/shared/schema.ts");
-    const drawn = m.entitiesForStep(d, d.steps[0].id);
-    const of = (pred) => [...new Set(drawn.filter(pred).map((e) => e.color))];
-    return {
-      families: m.ZONE_FAMILIES,
-      stacks: of((e) => e.shape === "stack"),
-      beams: of((e) => e.shape === "rect" && e.anchor),
-      circles: of((e) => e.shape === "circle" && e.anchor),
-    };
-  },
-  [planId]
-);
-// One drop is one shade; two separate drops of the same kind may differ, so
-// long as both are of the family.
-const family = (got, name) =>
-  got.length && got.every((c) => painted.families[name].includes(c))
-    ? true
-    : (fail(name + " should be one of " + painted.families[name].join(",") + ", got " + got.join(",")), false);
-if (family(painted.stacks, "stack")) console.log("a stack is yellow: " + painted.stacks[0]);
-// The beams come off the bait anchor, and where a thing comes from beats what
-// shape it is.
-if (family(painted.beams, "bait")) console.log("a beam off the bait anchor is green: " + painted.beams.join(", "));
-if (family(painted.circles, "cast")) console.log("a circle is red-orange: " + painted.circles[0]);
-
-/* --- a protean on Party comes from the boss ------------------------------- */
-
-await page.locator("div", { hasText: /^Protean$/ }).last().dragTo(chip("Party"));
+await chip(page, "Protean").dragTo(chip(page, "Party"));
 await page.waitForTimeout(900);
-doc = await load();
+doc = await plan.load();
 const cones = doc.entities.filter((e) => e.type === "zone" && e.shape === "cone" && e.anchor);
-if (cones.length !== 8) fail("Party should have taken 8 proteans, got " + cones.length);
-else if (new Set(cones.map((c) => c.anchor.to)).size !== 8)
-  fail("the proteans are not one per player");
-else if (!cones.every((c) => c.anchor.from))
-  fail("proteans are thrown from somewhere: " + JSON.stringify(cones[0].anchor));
-else console.log("a protean on Party gave all eight one, thrown from " + (doc.entities.find((e) => e.id === cones[0].anchor.from)?.name ?? "?"));
+if (cones.length !== 8 || new Set(cones.map((c) => c.anchor.to)).size !== 8)
+  fail(`a protean on Party made ${cones.length} cones, not one each`);
+if (!cones.every((c) => doc.entities.some((e) => e.id === c.anchor.from)))
+  fail("the proteans are thrown from nothing: " + JSON.stringify(cones[0].anchor));
+console.log(`a circle on Supports bound one each to ${supports}; a protean on Party gave all eight one`);
 
-/* --- what a group holds is one object, not eight ------------------------- */
+/* --- a tether dropped on one thing is finished by picking another ---------- */
 
-// A bonded shape is a face of the set, so the canvas must not let you drag it.
-const ghost = circles[0];
-const ghostAt = await page.evaluate(
-  (id) => {
-    const n = window.Konva.stages[0].findOne("#" + id);
-    return n ? { x: Math.round(n.x()), y: Math.round(n.y()) } : null;
-  },
-  ghost.id
-);
-const cbox = await canvas.boundingBox();
-const cscale = viewScale(cbox.width);
-const onScreen = (x, y) => ({ x: cbox.x + cbox.width / 2 + x * cscale, y: cbox.y + cbox.height / 2 + y * cscale });
-const grab = onScreen(ghostAt.x, ghostAt.y);
-await page.mouse.move(grab.x, grab.y);
-await page.mouse.down();
-await page.mouse.move(grab.x + 120, grab.y + 90, { steps: 15 });
-await page.mouse.up();
-await page.waitForTimeout(600);
-doc = await load();
-const stillThere = doc.entities.find((e) => e.id === ghost.id);
-if (stillThere.x !== ghost.x || stillThere.y !== ghost.y || stillThere.overrides?.[doc.steps[0].id])
-  fail("a bonded circle moved when dragged: " + stillThere.x + "," + stillThere.y);
-else console.log("a shape owned by a group cannot be dragged out of it");
-
-// And the group's own row is what takes the whole set away. The row lists
-// the sets of the open Beat, so open the set's Beat first, then the Groups
-// popover the rows now live in.
-await page.locator(`[data-mech="${ghost.mech}"]`).click();
-await page.waitForTimeout(300);
-// Opening a Beat selects it, and the aside is the inspector while something
-// is selected. Let it go: the Beat stays open, and the Add panel comes back
-// with the Groups button on it.
-await page.mouse.click(cbox.x + 8, cbox.y + 8);
-await page.waitForTimeout(250);
-await page.getByRole("button", { name: "Groups" }).click();
-await page.waitForTimeout(250);
-await page.getByTitle("Remove this circle from the supports").click();
-await page.waitForTimeout(700);
-await page.keyboard.press("Escape");
-await page.waitForTimeout(200);
-doc = await load();
-const left = doc.entities.filter((e) => e.bond && e.bond.group === "supports");
-if (left.length) fail("removing the set from the Supports row left " + left.length + " behind");
-else console.log("the Supports row removed all four at once");
-
-/* --- a tether dropped on one object is finished by picking any other ----- */
-
-await page.mouse.click(cbox.x + 8, cbox.y + 8);
-await page.waitForTimeout(150);
-
-const [m2Point, h1Point] = await page.evaluate(
-  (playerIds) => playerIds.map((id) => window.Konva.stages[0].findOne("#" + id).getAbsolutePosition()),
-  [ids.M2, ids.H1]
-);
-await page.locator("div", { hasText: /^Together tether$/ }).last().dragTo(canvas, { targetPosition: m2Point });
+const m2 = await f.nodeAt(ids.M2);
+const h1 = await f.nodeAt(ids.H1);
+await chip(page, "Together tether").dragTo(f.canvas, { targetPosition: { x: m2.x - f.box.x, y: m2.y - f.box.y } });
 await page.getByText(/Pick any other object for the other end/).waitFor();
-const tetherCanvasBox = await canvas.boundingBox();
-// Hold the mutation response long enough to prove the line does not depend on
-// the Worker round trip. It should be painted from the client-ID operation.
-await page.route("**/api/plans/*/ops", async (route) => {
-  await new Promise((resolve) => setTimeout(resolve, 1200));
-  await route.continue();
-}, { times: 1 });
-const tetherSaved = page.waitForResponse(
-  (response) => response.url().includes("/ops") && response.request().method() === "POST"
-);
-await page.mouse.click(tetherCanvasBox.x + h1Point.x, tetherCanvasBox.y + h1Point.y);
-await page.waitForFunction(
-  () => window.Konva.stages[0].find(".entity").some((node) => node.id().startsWith("tether_")),
-  undefined,
-  { timeout: 400 }
-).catch(() => fail("the tether waited for its delayed mutation response before appearing"));
-await tetherSaved;
-await page.waitForTimeout(200);
-doc = await load();
-const directTether = doc.entities.find(
-  (e) => e.type === "tether" && !e.bond && e.from === ids.M2 && e.to === ids.H1 && e.style === "close"
-);
-if (!directTether) fail("dropping a tether on M2 then clicking H1 did not create M2-H1");
-else console.log("a tether dropped on M2 binds to H1 on the next click");
-
-// Keep the later four-link set assertions independent of this one-off link.
-if (directTether) {
-  await api("/api/plans/" + planId + "/ops", {
-    method: "POST",
-    body: JSON.stringify({ ops: [{ op: "delete_entities", ids: [directTether.id] }] }),
-  });
-  await page.waitForTimeout(400);
-  await page.mouse.click(cbox.x + 8, cbox.y + 8);
-  await page.waitForTimeout(150);
-}
-
-// Non-player endpoints use the same gesture. The anchor overlaps the beams it
-// emits, so this also checks that the smaller, deliberate target wins.
-const [anchorPoint, m2Again] = await page.evaluate(
-  (entityIds) => entityIds.map((id) => window.Konva.stages[0].findOne("#" + id).getAbsolutePosition()),
-  [anchor.id, ids.M2]
-);
-await page.locator("div", { hasText: /^Go-far tether$/ }).last().dragTo(canvas, { targetPosition: anchorPoint });
-await page.getByText(/Pick any other object for the other end/).waitFor();
-await page.mouse.click(tetherCanvasBox.x + m2Again.x, tetherCanvasBox.y + m2Again.y);
+await page.mouse.click(h1.x, h1.y);
 await page.waitForTimeout(700);
-doc = await load();
-const objectTether = doc.entities.find(
-  (e) => e.type === "tether" && !e.bond && e.from === anchor.id && e.to === ids.M2 && e.style === "far"
-);
-if (!objectTether) fail("dropping a tether on an anchor then picking M2 did not create anchor-M2");
-else console.log("a tether can connect a non-player object to another entity");
-if (objectTether) {
-  await api("/api/plans/" + planId + "/ops", {
-    method: "POST",
-    body: JSON.stringify({ ops: [{ op: "delete_entities", ids: [objectTether.id] }] }),
-  });
-  await page.waitForTimeout(400);
-  await page.mouse.click(cbox.x + 8, cbox.y + 8);
-  await page.waitForTimeout(150);
-}
+doc = await plan.load();
+if (!doc.entities.some((e) => e.type === "tether" && e.from === ids.M2 && e.to === ids.H1))
+  fail("dropping a tether on M2 and clicking H1 did not tie M2 to H1");
+console.log("a tether dropped on M2 was tied to H1 by the next click");
+await f.deselect();
 
-/* --- player tethers pair supports to damagers and report their range ------ */
+/* --- a Boss is an ordinary enemy, and a mechanic dropped on it comes out of it */
 
-await page.locator("div", { hasText: /^Together tether$/ }).last().dragTo(chip("Supports"));
-await page.waitForTimeout(700);
-doc = await load();
-let tethers = doc.entities.filter((e) => e.type === "tether" && e.style === "close");
-const tetherPairs = tethers.map((t) => {
-  const from = doc.entities.find((e) => e.id === t.from)?.name;
-  const to = doc.entities.find((e) => e.id === t.to)?.name;
-  return `${from}-${to}`;
-}).sort();
-if (tethers.length !== 4) fail("Together tether should have made four links, got " + tethers.length);
-else if (tetherPairs.join() !== "H1-R1,H2-R2,MT-M1,OT-M2")
-  fail("Together tether made unexpected pairs: " + tetherPairs.join());
-else if (!tethers.every((t) => t.range === 200 && t.bond?.id === tethers[0].bond?.id))
-  fail("Together tethers did not share a 200-unit range and bond");
-else console.log("Together tether paired supports to damagers: " + tetherPairs.join(", "));
-
-// Put one pair inside and then outside its threshold. The persisted positions
-// arrive through the live socket and the line itself should change status.
-const mtTether = tethers.find((t) => doc.entities.find((e) => e.id === t.from)?.name === "MT");
-const mt = doc.entities.find((e) => e.name === "MT");
-const m1 = doc.entities.find((e) => e.name === "M1");
-await api("/api/plans/" + planId + "/ops", {
-  method: "POST",
-  body: JSON.stringify({ ops: [
-    { op: "update_entity", id: mt.id, patch: { x: 0, y: 0 }, stepId: doc.steps[0].id },
-    { op: "update_entity", id: m1.id, patch: { x: 100, y: 0 }, stepId: doc.steps[0].id },
-  ] }),
-});
-await page.waitForFunction(
-  (id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke() === "#54d68b",
-  mtTether.id,
-  { timeout: 3000 }
-).catch(() => {});
-let tetherStroke = await page.evaluate((id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke(), mtTether.id);
-if (tetherStroke !== "#54d68b") {
-  const live = await load();
-  const liveMt = live.entities.find((e) => e.id === mt.id);
-  const liveM1 = live.entities.find((e) => e.id === m1.id);
-  fail("satisfied Together tether was " + tetherStroke + " instead of green at " + JSON.stringify([liveMt, liveM1]));
-}
-else console.log("Together tether turns green inside its configured range");
-
-await api("/api/plans/" + planId + "/ops", {
-  method: "POST",
-  body: JSON.stringify({ ops: [{ op: "update_entity", id: m1.id, patch: { x: 300, y: 0 }, stepId: doc.steps[0].id }] }),
-});
-await page.waitForTimeout(600);
-tetherStroke = await page.evaluate((id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke(), mtTether.id);
-if (tetherStroke !== "#f05b67") fail("failed Together tether was " + tetherStroke + " instead of red");
-else console.log("Together tether turns red outside its configured range");
-
-// A deliberately chosen color is semantic and must not be replaced by the
-// automatic range status colors.
-await api("/api/plans/" + planId + "/ops", {
-  method: "POST",
-  body: JSON.stringify({ ops: [{ op: "update_entity", id: mtTether.id, patch: { color: "#c084fc" } }] }),
-});
-await page.waitForFunction(
-  (id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke() === "#c084fc",
-  mtTether.id,
-  { timeout: 3000 }
-).catch(() => {});
-tetherStroke = await page.evaluate((id) => window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.stroke(), mtTether.id);
-if (tetherStroke !== "#c084fc") fail("custom tether color was replaced by status color: " + tetherStroke);
-else console.log("a custom tether color overrides red/green range status");
-
-const chevrons = await page.evaluate(() => window.Konva.stages[0].find(".tether-chevron").length);
-if (chevrons < 4) fail("directional tether chevrons were not drawn");
-else console.log("directional tether chevrons are drawn on the links");
-const tetherWeights = await page.evaluate((id) => ({
-  line: window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-guide")?.strokeWidth(),
-  chevron: window.Konva.stages[0].findOne("#" + id)?.findOne(".tether-chevron")?.strokeWidth(),
-}), mtTether.id);
-if (!(tetherWeights.line < tetherWeights.chevron))
-  fail("the tether guide should be quieter than its chevrons: " + JSON.stringify(tetherWeights));
-else if (tetherWeights.chevron > mtTether.width / 2)
-  fail("the tether chevrons should stay slim: " + JSON.stringify(tetherWeights));
-else console.log("the thin tether guide leaves the chevrons visually dominant");
-
-const shortChevrons = await page.evaluate(
-  (id) => window.Konva.stages[0].findOne("#" + id)?.find(".tether-chevron").length ?? 0,
-  mtTether.id
-);
-await api("/api/plans/" + planId + "/ops", {
-  method: "POST",
-  body: JSON.stringify({ ops: [{ op: "update_entity", id: m1.id, patch: { x: 450, y: 0 }, stepId: doc.steps[0].id }] }),
-});
-await page.waitForTimeout(600);
-const longTether = await page.evaluate((id) => {
-  const tether = window.Konva.stages[0].findOne("#" + id);
-  return {
-    chevrons: tether?.find(".tether-chevron").length ?? 0,
-    guides: tether?.find(".tether-guide").map((line) => line.points()) ?? [],
-  };
-}, mtTether.id);
-if (longTether.chevrons <= shortChevrons)
-  fail("a longer tether did not gain chevrons: " + shortChevrons + " -> " + longTether.chevrons);
-else if (longTether.guides.length !== 2 || !(longTether.guides[0][2] < longTether.guides[1][0]))
-  fail("the guide was not cut away around the chevrons: " + JSON.stringify(longTether.guides));
-else console.log("long tethers gain chevrons and the guide clears their field");
-await api("/api/plans/" + planId + "/ops", {
-  method: "POST",
-  body: JSON.stringify({ ops: [{ op: "update_entity", id: m1.id, patch: { x: 300, y: 0 }, stepId: doc.steps[0].id }] }),
-});
-await page.waitForTimeout(600);
-
-// The wheel changes the mechanic's required range, not the line's visual
-// weight. Because these four links are bonded, one link updates all four.
-const tetherProbe = onScreen(50, 0);
-await page.mouse.move(tetherProbe.x, tetherProbe.y);
-await page.mouse.wheel(0, -120);
-await page.waitForTimeout(700);
-doc = await load();
-const wheelSet = doc.entities.filter((e) => e.type === "tether" && e.bond?.id === mtTether.bond?.id);
-if (wheelSet.length !== 4 || !wheelSet.every((t) => t.range === 216))
-  fail("scrolling a tether did not update the set's required range: " + wheelSet.map((t) => t.range).join());
-else if (!wheelSet.every((t) => t.width === 8))
-  fail("scrolling a tether changed its visual width: " + wheelSet.map((t) => t.width).join());
-else console.log("scrolling a tether changes required range, not visual width");
-
-// A bonded tether stays selectable (it cannot be dragged), and editing its
-// threshold updates the whole four-link set.
-const rangeSelect = page.locator("div.label", { hasText: /^required range$/ }).locator("xpath=..").locator("select");
-for (const x of [50, 75, 100, 125, 175, 200, 225, 250]) {
-  const point = onScreen(x, 0);
-  await page.mouse.click(point.x, point.y);
-  await page.waitForTimeout(100);
-  if (await rangeSelect.count()) break;
-}
-if (!(await rangeSelect.count())) fail("selecting a bonded tether did not expose its range dropdown");
-else {
-  await rangeSelect.selectOption("250");
-  await page.waitForTimeout(700);
-  doc = await load();
-  const closeSet = doc.entities.filter((e) => e.type === "tether" && e.bond?.id === mtTether.bond?.id);
-  if (closeSet.length !== 4 || !closeSet.every((t) => t.range === 250))
-    fail("range dropdown did not update the whole tether set");
-  else console.log("the range dropdown updates all four links in the tether set");
-
-  // An individual link can use arbitrary players. Who a tether joins is the
-  // tether, not the step you happened to type it in: a Part is one thing for
-  // the whole life of its Beat, so the pairing is structural either way.
-  const nameInput = page.locator("div.label", { hasText: /^name$/ }).locator("xpath=..").locator("input");
-  const selectedName = await nameInput.inputValue();
-  const selectedLink = doc.entities.find((e) => e.type === "tether" && e.name === selectedName);
-  const fromSelect = page.locator("div.label", { hasText: /^from player$/ }).locator("xpath=..").locator("select");
-  const toSelect = page.locator("div.label", { hasText: /^to player$/ }).locator("xpath=..").locator("select");
-  await fromSelect.selectOption(ids.M2);
-  await toSelect.selectOption(ids.H1);
-  await page.waitForTimeout(700);
-  doc = await load();
-  const retargeted = doc.entities.find((e) => e.id === selectedLink?.id);
-  if (!retargeted || retargeted.from !== ids.M2 || retargeted.to !== ids.H1)
-    fail("tether did not retarget to arbitrary players: " + JSON.stringify([retargeted?.from, retargeted?.to]));
-  else if (Object.keys(retargeted.overrides ?? {}).length)
-    fail("retargeting a tether filed the pairing under a step: " + JSON.stringify(retargeted.overrides));
-  else console.log("an individual tether retargets to arbitrary players, on the tether itself");
-}
-
-// The retargeted tether is still selected, and the inspector stands in for
-// the palette while anything is: click bare floor to get the chips back.
-await page.mouse.click(cbox.x + 8, cbox.y + 8);
-await page.waitForTimeout(200);
-await page.locator("div", { hasText: /^Go-far tether$/ }).last().dragTo(chip("Damagers"));
-await page.waitForTimeout(700);
-doc = await load();
-tethers = doc.entities.filter((e) => e.type === "tether" && e.style === "far");
-if (tethers.length !== 4 || !tethers.every((t) => t.range === 625))
-  fail("Go-far tether on Damagers did not make four ranged links");
-else console.log("Go-far tether works from the Damagers card with a 25-yalm default");
-
-/* --- bare floor makes a shape of your own --------------------------------- */
-
-await dropOnFloor("Circle", -300, 300);
-doc = await load();
-const free = doc.entities.find(
-  (e) => e.type === "zone" && e.shape === "circle" && !e.anchor && Math.hypot(e.x + 300, e.y - 300) < 25
-);
-if (!free) fail("a circle dropped on bare floor did not land there unbound");
-else console.log("a circle on bare floor is yours to move: " + free.x + "," + free.y);
-
-/* --- bosses and adds are enemy sources, not reticle anchors --------------- */
-
-await dropOnFloor("Boss", -300, -300);
-await dropOnFloor("Add", 300, 300);
-doc = await load();
+await f.drop("Boss", 300, 300);
+doc = await plan.load();
 const boss = doc.entities.find((e) => e.name === "boss 1");
-const add = doc.entities.find((e) => e.name === "add 1");
-if (!boss || boss.type !== "enemy" || boss.role === "anchor" || boss.icon !== "actor/boss")
-  fail("Boss did not create a large, ordinary enemy: " + JSON.stringify(boss));
-if (!add || add.type !== "enemy" || add.role === "anchor" || add.icon !== "actor/enemy")
-  fail("Add did not create a medium, ordinary enemy: " + JSON.stringify(add));
+if (!boss || boss.type !== "enemy" || boss.role === "anchor")
+  fail("the Boss chip did not make an ordinary enemy: " + JSON.stringify(boss));
+await f.drop("Beam", 300, 300);
+doc = await plan.load();
+if (!doc.entities.some((e) => e.shape === "rect" && e.anchor?.from === boss.id))
+  fail("a beam dropped on the boss is not thrown from it");
+console.log("the Boss chip makes an ordinary enemy, and a beam dropped on it comes out of it");
 
-await dropOnFloor("Beam", -300, -300);
-await dropOnFloor("Beam", 300, 300);
-doc = await load();
-const sourced = doc.entities.filter(
-  (e) => e.type === "zone" && e.shape === "rect" && (e.anchor?.from === boss?.id || e.anchor?.from === add?.id)
+/* --- a group's row carries the whole group ---------------------------------- */
+
+const where = async () =>
+  Object.fromEntries(
+    (await drawn(page, plan.id))
+      .filter((e) => e.type === "player")
+      .map((e) => [e.name, { x: Math.round(e.x), y: Math.round(e.y) }])
+  );
+const before = await where();
+await page.getByRole("button", { name: "Groups" }).click();
+await page.locator("[data-group-row=g1]").waitFor();
+await f.measure();
+await page
+  .locator("[data-group-row=g1]")
+  .dragTo(f.canvas, { targetPosition: { x: f.box.width * 0.28, y: f.box.height * 0.24 } });
+await page.waitForTimeout(1200);
+const after = await where();
+const G1 = ["MT", "H1", "M1", "R1"];
+const G2 = ["OT", "H2", "M2", "R2"];
+const spread = Math.max(
+  ...G1.flatMap((a) => G1.map((b) => Math.hypot(after[a].x - after[b].x, after[a].y - after[b].y)))
 );
-if (sourced.length !== 2)
-  fail("Boss and Add did not accept mechanics as sources: " + JSON.stringify(sourced.map((e) => e.anchor)));
-else console.log("Boss and Add are droppable mechanic sources without becoming bait anchors");
+if (!G1.some((n) => Math.hypot(after[n].x - before[n].x, after[n].y - before[n].y) > 50))
+  fail("dragging the G1 row moved nobody");
+if (spread > 41) fail("G1 did not stack tightly: " + JSON.stringify(G1.map((n) => after[n])));
+if (G2.some((n) => after[n].x !== before[n].x || after[n].y !== before[n].y)) fail("moving G1 moved G2 as well");
+console.log(`the G1 row carried all four of G1, stacked within ${Math.round(spread)} units; G2 stayed put`);
 
-console.log(process.exitCode ? "FAILED" : "OK - " + base + "/p/" + planId);
-await browser.close();
+await finish(s, "OK - " + plan.url);

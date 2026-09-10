@@ -40,6 +40,14 @@ overrides are for actors only:
 - `settleOverrides()` in `hydratePlan` folds documents written under the old
   every-property-per-step lens back onto the things they describe.
 
+## End-to-end suites
+
+The e2e set is `scripts/e2e-*.mjs` on `scripts/harness.mjs`, run with `npm run e2e`.
+Adding a reasonable section to an existing suite is fine. Adding a new suite needs a
+convincing, concise argument presented to the human, and only the human can approve it
+— no LLM may approve it. A suite broken by a design change is fixed or trimmed in the
+same change, never left red.
+
 ## New operations are born client-authoritative
 
 Going forward, design every new op so the client can fully predict its result

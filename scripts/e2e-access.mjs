@@ -1,44 +1,25 @@
 /**
- * Access regression test: a signed-in user who was never given a plan must not be
- * able to read it — over HTTP *or* over the sync socket.
+ * Who may see a plan. A signed-in user who was never given one must not be
+ * able to read it — over HTTP *or* over the sync socket; an edit link makes an
+ * editor; and a public plan can be duplicated into a copy the viewer owns.
  *
- * The socket case is the one worth testing: the Agents SDK sends the current state
- * as soon as a connection is accepted, so rejecting inside `onConnect` leaks the
- * document anyway. The check has to happen in the Worker, before routing.
- *
- *   npm run dev
- *   npm run e2e:access -- http://localhost:5173
+ * The socket case is the one worth testing: the Agents SDK sends the current
+ * state as soon as a connection is accepted, so rejecting inside `onConnect`
+ * leaks the document anyway. The check has to happen in the Worker, before
+ * routing.
  */
-import { chromium } from "playwright";
+import { base, check, finish, launch, session } from "./harness.mjs";
 
-const base = (process.argv[2] ?? "http://localhost:5173").replace(/\/$/, "");
-const browser = await chromium.launch();
-let failed = 0;
-const check = (ok, label, detail = "") => {
-  if (!ok) failed++;
-  console.log(`${ok ? "PASS" : "FAIL"} ${label.padEnd(28)} ${detail}`);
-};
+const browser = await launch();
+const owner = await session(`owner-${Date.now()}`, { browser });
+const plan = await owner.createPlan({ name: "access probe" });
 
-const signIn = async (name) => {
-  const page = await (await browser.newContext()).newPage();
-  await page.goto(`${base}/auth/dev?name=${name}`, { waitUntil: "domcontentloaded" });
-  return page;
-};
-
-const owner = await signIn(`owner-${Date.now()}`);
-const { id } = await (
-  await owner.request.post(`${base}/api/plans`, { data: { name: "access probe" } })
-).json();
-
-const stranger = await signIn(`stranger-${Date.now()}`);
-const http = await stranger.request.get(`${base}/api/plans/${id}`);
-check(http.status() === 404, "stranger blocked over HTTP", `got ${http.status()}`);
-
+/** What the sync socket hands this page: the document, silence, or a closed door. */
 const socket = (page) =>
   page.evaluate(
-    ([url, plan]) =>
+    ([url, id]) =>
       new Promise((res) => {
-        const ws = new WebSocket(`${url.replace(/^http/, "ws")}/agents/plan-agent/${plan}`);
+        const ws = new WebSocket(`${url.replace(/^http/, "ws")}/agents/plan-agent/${id}`);
         const t = setTimeout(() => res("silence"), 5000);
         ws.onmessage = (e) => {
           if (String(e.data).includes("entities")) {
@@ -51,35 +32,29 @@ const socket = (page) =>
           res("closed");
         };
       }),
-    [base, id]
+    [base, plan.id]
   );
 
-check((await socket(stranger)) !== "state", "stranger blocked over socket");
-check((await socket(owner)) === "state", "owner still syncs");
+const stranger = await session(`stranger-${Date.now()}`, { browser });
+const http = await stranger.api.get(`/api/plans/${plan.id}`, { allowError: true });
+check(http.status === 404, "stranger blocked over HTTP", `got ${http.status}`);
+check((await socket(stranger.page)) !== "state", "stranger blocked over socket");
+check((await socket(owner.page)) === "state", "owner still syncs");
 
-const editLinkResponse = await owner.request.post(`${base}/api/plans/${id}/edit-link`);
-const { url: editLink } = await editLinkResponse.json();
-const guest = await (await browser.newContext()).newPage();
-await guest.goto(editLink, { waitUntil: "domcontentloaded" });
-const guestPlan = await guest.request.get(`${base}/api/plans/${id}`);
-const guestBody = await guestPlan.json();
-check(guestPlan.ok() && guestBody.role === "editor", "edit link grants editing");
-check((await socket(guest)) === "state", "edit link grants sync");
+const { url: editLink } = await owner.api.post(`/api/plans/${plan.id}/edit-link`);
+const guest = await session(null, { browser });
+await guest.page.goto(editLink, { waitUntil: "domcontentloaded" });
+const asGuest = await guest.api.get(`/api/plans/${plan.id}`);
+check(asGuest.role === "editor", "edit link grants editing");
+check((await socket(guest.page)) === "state", "edit link grants sync");
 
-await owner.request.post(`${base}/api/plans/${id}/public`, { data: { isPublic: true } });
-const duplicateResponse = await stranger.request.post(`${base}/api/plans/${id}/duplicate`);
-const { id: duplicateId } = await duplicateResponse.json();
-const duplicateResponseBody = await (await stranger.request.get(`${base}/api/plans/${duplicateId}`)).json();
-check(duplicateResponse.ok() && duplicateResponseBody.role === "owner", "duplicate belongs to viewer");
-check(
-  JSON.stringify(duplicateResponseBody.plan.entities) === JSON.stringify(guestBody.plan.entities) &&
-    JSON.stringify(duplicateResponseBody.plan.steps) === JSON.stringify(guestBody.plan.steps) &&
-    JSON.stringify(duplicateResponseBody.plan.mechanics) === JSON.stringify(guestBody.plan.mechanics),
-  "duplicate keeps plan contents"
-);
+await owner.api.post(`/api/plans/${plan.id}/public`, { isPublic: true });
+const { id: copyId } = await stranger.api.post(`/api/plans/${plan.id}/duplicate`);
+const copy = await stranger.api.get(`/api/plans/${copyId}`);
+check(copy.role === "owner", "duplicate belongs to viewer");
+const same = (key) => JSON.stringify(copy.plan[key]) === JSON.stringify(asGuest.plan[key]);
+check(same("entities") && same("steps") && same("mechanics"), "duplicate keeps plan contents");
 
-await stranger.request.delete(`${base}/api/plans/${duplicateId}`);
-await owner.request.delete(`${base}/api/plans/${id}`);
-await browser.close();
-console.log(failed ? `${failed} check(s) failed` : "access checks pass");
-process.exit(failed ? 1 : 0);
+await stranger.api.delete(`/api/plans/${copyId}`);
+await owner.api.delete(`/api/plans/${plan.id}`);
+await finish(owner, "OK - access checks pass");

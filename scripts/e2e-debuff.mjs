@@ -1,93 +1,81 @@
 /**
- * The debuff deal: a log imported into the fight library reaches a plan for
- * that encounter on its own, "New debuff Beat here" opens the popup, a status
+ * The debuff deal, from a combat log to the tokens.
+ *
+ * A log imported into the fight library is offered to every plan. A plan with
+ * no encounter named picks the fight in the debuff popup, and the header's
+ * encounter — and the plan itself — take its name. In the popup a status
  * dragged from the fight's timeline lands in a role pool, and dropping on
  * Supports folds tanks and healers into one pool and flips the tokens to S/D.
- *
- *   node scripts/e2e-debuff.mjs http://localhost:59577
+ * A later plan that names the encounter finds the fight without being asked.
  */
 import { readFileSync } from "node:fs";
-import { chromium } from "playwright";
+import { fail, finish, session } from "./harness.mjs";
 
 const dump = JSON.parse(readFileSync(new URL("./fixtures/athena-debuffs.json", import.meta.url), "utf8"));
+const s = await session("debuff-e2e");
+const { page } = s;
 
-const base = (process.argv[2] ?? "http://localhost:59577").replace(/\/$/, "");
-const browser = await chromium.launch();
-const page = await (await browser.newContext({ viewport: { width: 1500, height: 950 } })).newPage();
-const fail = (m) => {
-  console.error("FAIL:", m);
-  process.exitCode = 1;
+const { entry } = await s.api.post("/api/debuffs", dump);
+if (entry.name !== dump.fight.name) fail("the import did not name the fight: " + JSON.stringify(entry));
+
+const plan = await s.createPlan({ name: "debuff e2e", withParty: true });
+await s.openPlan(plan.id);
+const modal = page.locator("div.fixed.inset-0");
+const heading = `${dump.fight.name} — statuses by first appearance`;
+
+/* --- an unnamed plan picks the fight, and takes its name ------------------- */
+
+// The header reads as text until clicked, so the name lives on the button that
+// opens the field — and on the field itself once it is open.
+const encounterName = async () => {
+  const input = page.locator('input[placeholder="encounter"]');
+  if (await input.count()) return input.inputValue();
+  return page.locator("[data-encounter-name]").getAttribute("data-encounter-name");
 };
-
-await page.goto(base + "/auth/dev?name=debuff-e2e");
-const api = (path, init = {}) =>
-  page.evaluate(
-    async ([p, i]) => {
-      const r = await fetch(p, { ...i, headers: { "content-type": "application/json", ...(i.headers ?? {}) } });
-      const t = await r.text();
-      if (!r.ok) throw new Error(p + " -> " + r.status + " " + t.slice(0, 200));
-      return t ? JSON.parse(t) : null;
-    },
-    [path, init]
-  );
-
-/* --- a log lands in the library, and the plan's encounter finds it --------- */
-
-const library = await api("/api/debuffs", { method: "POST", body: JSON.stringify(dump) });
-if (library.entry.name !== dump.fight.name) fail("the import did not name the fight: " + JSON.stringify(library.entry));
-
-const created = await api("/api/plans", {
-  method: "POST",
-  body: JSON.stringify({ name: "debuff e2e", encounter: "P12S — Athena", withParty: true }),
-});
-const planId = (created.plan ?? created).id;
-const load = () => api("/api/plans/" + planId).then((p) => p.plan ?? p);
-
-await page.goto(base + "/p/" + planId);
-await page.waitForSelector("canvas");
-await page.waitForTimeout(900);
-
-/* --- the popup opens on a fresh debuff mech ------------------------------- */
+if ((await encounterName()) !== "") fail("the plan started with an encounter named");
+const offered = await page.locator("#encounter-fights option").evaluateAll((els) => els.map((e) => e.value));
+if (!offered.includes(dump.fight.name)) fail("the encounter field does not offer the library's fight: " + JSON.stringify(offered));
 
 await page.getByRole("button", { name: "New debuff Beat here" }).click();
 await page.waitForTimeout(600);
-const modal = page.locator("div.fixed.inset-0");
-if (!(await modal.count())) fail("the debuff popup did not open");
-if (!(await modal.getByText("Athena — statuses by first appearance").count()))
-  fail("the popup did not pick the library fight up from the plan's encounter");
+const picker = modal.locator("select");
+if (!(await picker.count())) fail("an unnamed plan got no fight picker in the debuff popup");
+await picker.selectOption(entry.key);
+await page.waitForTimeout(900);
+if (!(await modal.getByText(heading).count())) fail("the popup did not switch to the chosen fight");
+if ((await encounterName()) !== dump.fight.name) fail("the header did not take the fight's name: " + (await encounterName()));
+if ((await plan.load()).encounter !== dump.fight.name) fail("the plan did not record the encounter");
+console.log(`picking ${dump.fight.name} in the popup named the plan's encounter after it`);
 
-/* --- a status dragged onto Tanks lands in their pool ---------------------- */
+/* --- a status dragged onto a role lands in its pool ------------------------ */
 
-const chip = modal.locator("div[draggable=true]", { hasText: "Umbralbright Soul" }).first();
-const tanks = modal.getByText("Tanks", { exact: true });
-await chip.dragTo(tanks);
+await modal.locator("div[draggable=true]", { hasText: "Umbralbright Soul" }).first().dragTo(modal.getByText("Tanks", { exact: true }));
 await page.waitForTimeout(600);
+let deal = (await plan.load()).mechs.find((m) => m.debuffs)?.debuffs;
+if (!deal) fail("no Beat holds a debuff deal after the drop");
+if ((deal.pools.tanks ?? []).map((d) => d.name).join() !== "Umbralbright Soul")
+  fail("Umbralbright Soul did not land in the tank pool: " + JSON.stringify(deal.pools));
 
-let doc = await load();
-let mech = doc.mechs.find((m) => m.debuffs);
-if (!mech) fail("no mech holds a debuff deal after the drop");
-else if ((mech.debuffs.pools.tanks ?? []).length !== 1 || mech.debuffs.pools.tanks[0].name !== "Umbralbright Soul")
-  fail("Umbralbright Soul did not land in the tank pool: " + JSON.stringify(mech.debuffs.pools));
-else console.log("Umbralbright Soul dealt to the tanks, mode " + mech.debuffs.mode);
-
-/* --- dropping on Supports folds the pools and flips to S/D art ------------ */
-
-const chip2 = modal.locator("div[draggable=true]", { hasText: "Magic Vulnerability Up" }).first();
-await chip2.dragTo(modal.getByText("Supports", { exact: true }));
+// Dropping on Supports folds the tank pool in and flips the tokens to S/D.
+await modal
+  .locator("div[draggable=true]", { hasText: "Magic Vulnerability Up" })
+  .first()
+  .dragTo(modal.getByText("Supports", { exact: true }));
 await page.waitForTimeout(600);
+deal = (await plan.load()).mechs.find((m) => m.debuffs)?.debuffs;
+if ((deal.pools.supports ?? []).length !== 2) fail("Supports did not absorb the tank pool plus the drop: " + JSON.stringify(deal.pools));
+if ((deal.pools.tanks ?? []).length) fail("the fold left the tank pool standing");
+if (deal.mode !== "sd") fail("the fold did not flip the tokens to S/D: " + deal.mode);
+if (!(await modal.getByText(/Supports take/).count())) fail("the popup's sentence does not name the supports");
+console.log("a status dropped on Tanks went to the tanks; one on Supports folded both pools and flipped to S/D");
 
-doc = await load();
-mech = doc.mechs.find((m) => m.debuffs);
-const pools = mech?.debuffs?.pools ?? {};
-if ((pools.supports ?? []).length !== 2)
-  fail("Supports did not absorb the tank pool plus the drop: " + JSON.stringify(pools));
-if ((pools.tanks ?? []).length !== 0) fail("the tank pool was not emptied by the fold");
-if (mech?.debuffs?.mode !== "sd") fail("the fold did not flip token art to S/D: " + mech?.debuffs?.mode);
-if (!process.exitCode) console.log("Supports fold: " + pools.supports.map((d) => d.name).join(", ") + " in sd mode");
+/* --- a later plan that names the encounter finds the fight by itself ------- */
 
-/* --- the deal reads back off the popup's sentence ------------------------- */
+const later = await s.createPlan({ name: "debuff e2e 2", encounter: "P12S — Athena", withParty: true });
+await s.openPlan(later.id);
+await page.getByRole("button", { name: "New debuff Beat here" }).click();
+await page.waitForTimeout(600);
+if (!(await modal.getByText(heading).count())) fail("a plan for P12S — Athena did not pick the fight up from its encounter");
+console.log("a plan for P12S — Athena opens the popup on the imported fight without being asked");
 
-if (!(await modal.getByText(/Supports take/).count())) fail("the reads-out-as sentence does not name the supports");
-
-console.log(process.exitCode ? "FAILED" : "OK - " + base + "/p/" + planId);
-await browser.close();
+await finish(s, "OK - " + plan.url);
