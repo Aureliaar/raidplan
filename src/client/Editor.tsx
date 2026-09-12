@@ -1697,6 +1697,16 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     return { mech: id, ops: [{ op: "add_mech", id, name, snap: step!.id, plain: true }] };
   }
 
+  /**
+   * The same bargain for an add made from the sidebar rather than the floor.
+   * A panel has no drop point but it still makes a Part, so it gets the Beat
+   * and the stamp from here instead of inventing a Beat-less shape.
+   */
+  function beatForPart(name: string, host?: Entity): { ops: Op[]; stamp: PropBag } {
+    const beat = beatForDrop(name, host);
+    return { ops: beat.ops, stamp: stamp(beat) };
+  }
+
   /** What every drop carries: the step that declared it, and the Beat it joins. */
   function stamp(beat?: { mech: string }): PropBag {
     return { declaredIn: step!.id, ...(beat ? { mech: beat.mech } : {}) };
@@ -3156,6 +3166,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             shown={shown}
             editable={editable}
             run={run}
+            beatForPart={beatForPart}
             onDeselect={() => setSelected(null)}
           />
           </>
@@ -3168,6 +3179,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             shown={shown}
             editable={editable}
             run={run}
+            beatForPart={beatForPart}
             onDeselect={() => {
               setSelected(null);
               setPanelTab("add");
