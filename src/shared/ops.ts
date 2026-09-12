@@ -517,14 +517,15 @@ export function clearOverride(plan: Plan, id: string, stepId: string, variantId?
 
 function withoutEntities(entities: Entity[], ids: string[]): Entity[] {
   const gone = new Set(ids);
+  // Tethers pointing at a deleted entity go with it.
+  for (const e of entities)
+    if (e.type === "tether" && (gone.has(e.from) || gone.has(e.to))) gone.add(e.id);
   return entities
     .filter((e) => !gone.has(e.id))
-    // Tethers pointing at a deleted entity go with it.
-    .filter((e) => !(e.type === "tether" && (gone.has(e.from) || gone.has(e.to))))
-    // So does a bait bound to it: without its target it has no pose at all.
+    // So does a bait bound to it, or riding such a tether: without its target
+    // it has no pose at all.
     .filter(
-      (e) =>
-        !(e.anchor && ((e.anchor.to && gone.has(e.anchor.to)) || (e.anchor.from && gone.has(e.anchor.from))))
+      (e) => !(e.anchor && [e.anchor.to, e.anchor.from, e.anchor.along].some((ref) => ref && gone.has(ref)))
     );
 }
 
@@ -1560,6 +1561,9 @@ export function duplicateBeatVariant(
             : {}),
           ...(part.anchor.near
             ? { near: partIds.get(part.anchor.near) ?? part.anchor.near }
+            : {}),
+          ...(part.anchor.along
+            ? { along: partIds.get(part.anchor.along) ?? part.anchor.along }
             : {}),
         }
       : part.anchor;
@@ -2796,7 +2800,9 @@ function describeEntity(plan: Plan, e: Entity, scene: Entity[] = plan.entities):
     return run + (a.from ? ` to ${who(a.from)}` : "");
   };
   const at = e.anchor
-    ? e.anchor.from
+    ? e.anchor.along
+      ? `along tether ${who(e.anchor.along)}${e.anchor.extend ? ", to the wall" : ""}`
+      : e.anchor.from
       ? `aimed from ${who(e.anchor.from)} at ${whom(e.anchor)}${e.anchor.extend ? ", to the wall" : ""}`
       : `on ${whom(e.anchor)}`
     : `at (${Math.round(e.x)}, ${Math.round(e.y)}) ${pointToCompass(e.x, e.y)}`;

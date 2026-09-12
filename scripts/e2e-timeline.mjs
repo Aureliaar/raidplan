@@ -82,6 +82,20 @@ if (!(await landsOnFrame(tab))) fail("a fresh tab opening the link did not land 
 await tab.close();
 console.log("the second box of step 3 is in the link: F5 and a fresh tab both land on it");
 
+/* --- \ walks the split that is being previewed ----------------------------- */
+
+const preview = page.locator("[data-preview-step]").first();
+const showing = await preview.inputValue();
+await page.locator("canvas").first().click({ position: { x: 8, y: 8 } });
+await page.keyboard.press("\\");
+await page.waitForTimeout(400);
+const walked = await preview.inputValue();
+if (walked === showing) fail("\ did not walk the preview off " + showing);
+await page.keyboard.press("\\");
+await page.waitForTimeout(400);
+if ((await preview.inputValue()) !== showing) fail("\ did not wrap back round to " + showing);
+console.log("\ walks the boxes of the split being previewed, and wraps");
+
 /* --- a box is deleted from the rail, and its sibling becomes Shared --------- */
 
 const destination = page.locator("[data-edit-destination]");

@@ -1,5 +1,6 @@
 import type { Dispatch, MouseEvent as ReactMouseEvent, ReactNode, SetStateAction } from "react";
 import { Fragment, useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAgent } from "agents/react";
 import { api } from "./api";
 import { navigate } from "./App";
@@ -53,6 +54,8 @@ import {
   mechanicLabel,
   mechanicSteps,
   resolveEntity,
+  tetherEnds,
+  tetherRide,
   variantColor,
   variantStepEdited,
   variantLabel,
@@ -141,6 +144,31 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const [selection, setSelection] = useState<string[]>([]);
   const selected = selection.at(-1) ?? null;
   const setSelected = (id: string | null) => setSelection(id ? [id] : []);
+  /**
+   * Which side panel is up. Selecting something still asks for Details, so a
+   * click and a drop both read as "and here it is" — but the tab is yours from
+   * then on: Add comes back while the selection stands, which is what lets you
+   * read a zone's numbers and then reach the palette without having to drop the
+   * selection first. The next thing you select asks again.
+   */
+  const [panelTab, setPanelTab] = useState<"add" | "details">("add");
+  /** A pick on the floor: it opens Details even when it lands on what was already selected. */
+  const pick = (ids: string[]) => {
+    setSelection(ids);
+    if (ids.length) setPanelTab("details");
+  };
+  /**
+   * The last thing selected by opening a Beat. Opening one is also how you
+   * fill it, so the panel stays where it was — the Parts come up selected and
+   * Details is one Tab away, rather than the palette being taken off you.
+   */
+  const beatPick = useRef<string | null>(null);
+  // Whatever put a new thing under the selection — a click, a drop, a paste,
+  // a right-click on its way to the menu — says what it is. Everything after
+  // that is the tab you last chose.
+  useEffect(() => {
+    if (selected && selected !== beatPick.current) setPanelTab("details");
+  }, [selected]);
   const [symmetryCount, setSymmetryCount] = useState<SymmetryCount>(1);
   const [symmetryKind, setSymmetryKind] = useState<SymmetryKind>("mirror");
   /**
@@ -686,6 +714,45 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   }, [canEdit]);
 
   /**
+   * Tab swaps the side panel, \ steps through the Variant boxes of the split
+   * you are previewing. Both are "show me the other one", and neither writes
+   * anything: what you are looking at is yours, not the plan's.
+   */
+  useEffect(() => {
+    if (!canEdit) return;
+    const onKey = (ev: KeyboardEvent) => {
+      const el = ev.target as HTMLElement | null;
+      if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
+      if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+      if (ev.key === "Tab") {
+        // With nothing selected there is no Details to switch to, so Tab stays
+        // out of the way and goes on walking the focus ring.
+        if (!selection.length || layer === "markers") return;
+        ev.preventDefault();
+        setPanelTab((tab) => (tab === "add" ? "details" : "add"));
+        return;
+      }
+      if (ev.key !== "\\" || !plan || !step) return;
+      // The split you last touched is the one that walks; with none focused it
+      // is the first one on screen, which is the only one when there is one.
+      const previews = activeStepVariants(plan, step.id, shown);
+      const target = previews.find((p) => p.ownerStepId === focusedBeat) ?? previews[0];
+      if (!target) return;
+      const boxes = stepVariants(target.step);
+      if (boxes.length < 2) return;
+      ev.preventDefault();
+      const at = boxes.findIndex((box) => box.id === target.variant.id);
+      setFocusedBeat(target.ownerStepId);
+      setShown((current) => ({
+        ...current,
+        [target.ownerStepId]: boxes[(at + 1) % boxes.length].id,
+      }));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [canEdit, selection.length, layer, plan, step, shown, focusedBeat]);
+
+  /**
    * Deleting one box of a split. A Step's boxes only ever come as a pair, so
    * dropping one is the same act as ending the branch: what the surviving box
    * authored becomes the Step's Shared reading, which is why the confirm names
@@ -1010,6 +1077,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   // explicitly below rather than through the old whole-scene `variant` arg.
   const playing = undefined;
   const selectedEntity = authoredScene.find((entity) => entity.id === selected) ?? null;
+  /**
+   * Details only ever has a floor object to talk about — waymarks are moved,
+   * not edited — so with nothing selected the tab is out and Add is what shows,
+   * without the chosen tab having to be reset behind your back.
+   */
+  const detailsReady = !!selectedEntity && layer !== "markers";
+  const sideTab = detailsReady && panelTab === "details" ? "details" : "add";
   const activeStepPreviews = activeStepVariants(plan, step.id, shown);
   const movementConflicts =
     plan.variantModel === "step"
@@ -1283,6 +1357,28 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       .sort((a, b) => a.area - b.area)[0]?.id;
   }
 
+  /** The tether a shape was let go on: the nearest whose line passes within reach. */
+  function tetherAt(pt: { x: number; y: number }): string | undefined {
+    const reach = 30;
+    const scene = entitiesForStep(plan!, step!.id, undefined, shown);
+    const byId = new Map(scene.map((e) => [e.id, e]));
+    let best: { id: string; d: number } | undefined;
+    for (const e of scene) {
+      if (e.type !== "tether") continue;
+      const ends = tetherEnds(e, byId);
+      if (!ends) continue;
+      const dx = ends.to.x - ends.from.x;
+      const dy = ends.to.y - ends.from.y;
+      const len2 = dx * dx + dy * dy;
+      const t = len2
+        ? Math.max(0, Math.min(1, ((pt.x - ends.from.x) * dx + (pt.y - ends.from.y) * dy) / len2))
+        : 0;
+      const d = Math.hypot(ends.from.x + t * dx - pt.x, ends.from.y + t * dy - pt.y);
+      if (d <= reach && (!best || d < best.d)) best = { id: e.id, d };
+    }
+    return best?.id;
+  }
+
   /** Zone shape each mechanic tile lands as — used to count what a source has. */
   const SHAPE_OF: Record<PaletteMechanicKind, string> = {
     circle: "circle",
@@ -1329,6 +1425,58 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       ]);
       const created = res.values[beat.ops.length] as { id: string } | null;
       if (created) setSelected(created.id);
+      return;
+    }
+    // One on each of the people you picked. They are not a group's set, so
+    // there is no bond: each one stands alone, the way a bait added from the
+    // inspector does, and is edited on its own.
+    if (target.at === "actors") {
+      const people = authoredScene.filter(
+        (e) => target.ids.includes(e.id) && (e.type === "player" || e.type === "enemy")
+      );
+      const named = (p: (typeof people)[number]) =>
+        p.name || (p.type === "player" ? jobLabel(p.job) : "the enemy");
+      if (isPaletteTether(kind)) {
+        // A tether is a relationship: two people selected are its two ends.
+        if (people.length !== 2) return setError("Select the two ends of the tether");
+        const beat = beatForDrop(PALETTE_LABEL[kind]);
+        const res = await run([
+          ...beat.ops,
+          {
+            op: "add_entity",
+            spec: {
+              type: "tether",
+              from: people[0].id,
+              to: people[1].id,
+              style: kind === "together" ? "close" : "far",
+              range: defaultTetherRange(kind),
+              width: 8,
+              name: `${PALETTE_LABEL[kind]}: ${named(people[0])} ↔ ${named(people[1])}`,
+              ...stamp(beat),
+            } as never,
+          },
+        ]);
+        const tied = res.values[beat.ops.length] as { id: string } | null;
+        setSelected(tied?.id ?? null);
+        return;
+      }
+      if (!people.length) return setError("Select who this should be on");
+      const host = paletteNeedsSource(kind) ? enemyForAimed() : undefined;
+      const beat = beatForDrop(PALETTE_LABEL[kind], host);
+      const source = paletteNeedsSource(kind) ? sourceInBeat(host, beat) : undefined;
+      const res = await run([
+        ...beat.ops,
+        ...(source?.ops ?? []),
+        ...people.map((p) => ({
+          op: "add_entity" as const,
+          spec: paletteBait(kind, p.id, source?.id, {
+            name: `${PALETTE_LABEL[kind]} on ${named(p)}`,
+            ...stamp(beat),
+          }) as never,
+        })),
+      ]);
+      const first = res.values[beat.ops.length + (source?.ops.length ?? 0)] as { id: string } | null;
+      setSelected(people.length === 1 ? (first?.id ?? null) : null);
       return;
     }
     if (target.at === "group") {
@@ -1396,6 +1544,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       setPendingTether({ kind, from: target.id });
       setSelected(target.id);
       setError("");
+      return;
+    }
+    if (target.at === "tether") {
+      await rideTethers(kind, [target.id]);
       return;
     }
     if (target.at === "source") {
@@ -1488,6 +1640,39 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     if (created && created.id !== id) setSelected(created.id);
   }
 
+  /**
+   * An aimed shape riding each of these tethers: fired from one end through the
+   * other (see `tetherRide`), and following the tether when it is re-paired.
+   * Each goes into its tether's own Beat, so the two share one timing and hold
+   * the same pose once the Beat freezes.
+   */
+  async function rideTethers(kind: PaletteMechanicKind, ids: string[]) {
+    const byId = new Map(entitiesForStep(plan!, step!.id, undefined, shown).map((e) => [e.id, e]));
+    const rides = ids.flatMap((id) => {
+      const ride = tetherRide(id, byId);
+      return ride ? [ride] : [];
+    });
+    if (!rides.length) return setError("Pick a tether with something on the floor at both ends");
+    const loose = rides.some((ride) => !ride.tether.mech) ? beatForDrop(PALETTE_LABEL[kind]) : undefined;
+    const label = (e: Entity) => e.name || (e.type === "player" ? jobLabel(e.job) : e.type);
+    const made = rides.map((ride) => {
+      const spec = paletteBait(kind, ride.to.id, ride.from.id, {
+        name: `${PALETTE_LABEL[kind]}: ${label(ride.from)} → ${label(ride.to)}`,
+        declaredIn: step!.id,
+        mech: ride.tether.mech ?? loose!.mech,
+      });
+      // The tether is the whole binding. Named ends of its own would go stale
+      // when it is re-paired, and take it down with a player who left.
+      const { extend } = spec.anchor as { extend?: boolean };
+      return { ...spec, id: `zone_${crypto.randomUUID()}`, anchor: { along: ride.tether.id, extend } };
+    });
+    await run([
+      ...(loose?.ops ?? []),
+      ...made.map((spec) => ({ op: "add_entity" as const, spec: spec as never })),
+    ]);
+    setSelected(made.length === 1 ? made[0].id : null);
+  }
+
   /** Palette tether thresholds are authored in yalms, whatever coordinates this plan stores. */
   function defaultTetherRange(kind: Extract<PaletteKind, "together" | "apart">): number {
     const calibration = arenaCalibration(plan!);
@@ -1544,6 +1729,21 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     );
   }
 
+  /**
+   * Opening a Beat points at everything in it: the card *is* the set, so its
+   * Parts on this step come up selected and can be restyled, carried or
+   * deleted in one go. Closing it leaves the selection where it is.
+   */
+  function openBeat(id: string | null) {
+    if (id !== mech) setEditingBeatVariant(null);
+    setMech(id);
+    if (!id) return;
+    setFocusedBeat(id);
+    const parts = authoredScene.filter((entity) => entity.mech === id);
+    beatPick.current = parts.at(-1)?.id ?? null;
+    setSelection(parts.map((part) => part.id));
+  }
+
   /* -------------------------------------------------- the right-click menu */
 
   /**
@@ -1597,6 +1797,16 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       ],
     };
   }
+
+  /** One aimed shape riding each of these tethers, in whichever kind is picked. */
+  const anchorToTethersItem = (tetherIds: string[], label: string): MenuItem => ({
+    label,
+    disabled: !tetherIds.length,
+    children: RIDERS.map((kind) => ({
+      label: PALETTE_LABEL[kind],
+      onSelect: () => void rideTethers(kind, tetherIds),
+    })),
+  });
 
   const reorderItems = (id: string): MenuItem[] => [
     { label: "Send to back", onSelect: () => void run({ op: "reorder_entity", id, where: "back" }) },
@@ -1659,34 +1869,39 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     }
     const anchor = entity.anchor;
     const players = authoredScene.filter((e) => e.type === "player");
+    const ride = anchor?.along
+      ? tetherRide(anchor.along, new Map(entitiesForStep(plan!, step!.id, undefined, shown).map((e) => [e.id, e])))
+      : undefined;
+    // Choosing a target for a shape that rides a tether cuts it loose: it keeps
+    // firing from the end it fired from, at whoever is chosen now.
+    const retarget = (next: Partial<NonNullable<Entity["anchor"]>>) =>
+      void run({
+        op: "update_entity",
+        id,
+        patch: {
+          anchor: { ...anchor, ...(anchor?.along ? { along: undefined, from: ride?.from.id } : {}), ...next },
+        },
+      });
     return [
       { heading: "Part" },
       moveToBeatItem([id]),
+      ...(entity.type === "tether" ? [anchorToTethersItem([id], "Anchor to tether")] : []),
       ...(anchor
         ? [
             {
               label: "Target",
               children: [
+                ...(anchor.along ? [{ label: "Along its tether", checked: true, disabled: true }] : []),
                 ...BAIT_RULES.map((rule) => ({
                   label: rule === "closest" ? "Closest" : "Farthest",
-                  checked: anchor.pick === rule,
-                  onSelect: () =>
-                    void run({
-                      op: "update_entity",
-                      id,
-                      patch: { anchor: { ...anchor, pick: rule } },
-                    }),
+                  checked: !anchor.along && anchor.pick === rule,
+                  onSelect: () => retarget({ pick: rule }),
                 })),
                 ...(players.length ? [{ separator: true } as MenuItem] : []),
                 ...players.map((p) => ({
                   label: (p.name || (p.type === "player" ? jobLabel(p.job) : p.type)) as string,
-                  checked: !anchor.pick && anchor.to === p.id,
-                  onSelect: () =>
-                    void run({
-                      op: "update_entity",
-                      id,
-                      patch: { anchor: { ...anchor, pick: undefined, to: p.id } },
-                    }),
+                  checked: !anchor.along && !anchor.pick && anchor.to === p.id,
+                  onSelect: () => retarget({ pick: undefined, to: p.id }),
                 })),
               ],
             } as MenuItem,
@@ -1707,9 +1922,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const parts = chosen.filter((e) => e.type !== "marker" && !isActor(e)).map((e) => e.id);
     // A player is one person in the party; duplicating the set skips them.
     const copyable = chosen.filter((e) => e.type !== "player").map((e) => e.id);
+    const drawn = entitiesForStep(plan!, step!.id, undefined, shown);
+    const tethers = ids.filter((id) => drawn.some((e) => e.id === id && e.type === "tether"));
     return [
       { heading: `${ids.length} selected` },
       moveToBeatItem(parts),
+      anchorToTethersItem(tethers, "Anchor to each tether"),
       {
         label: "Duplicate",
         disabled: !copyable.length,
@@ -1785,6 +2003,56 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     ];
   }
 
+  /**
+   * A palette chip's menu. Dragging is still how you say *where*, so this is
+   * for the two drops the hand is bad at: straight to the middle of the arena,
+   * and onto a whole group without hunting for its card on the drop rail.
+   * Both are the same call the drop makes, so a chip can never do more here
+   * than it can do by hand.
+   */
+  function paletteChipItems(kind: PaletteKind): MenuItem[] {
+    const frozen = layer !== "step";
+    // A tether is two ends: there is nothing to put in the middle of the floor.
+    const placeable = !isPaletteTether(kind);
+    // Cosmetics sit where they are put, and sources are the thing a bait comes
+    // out of rather than something bound to people.
+    const binds = !isPaletteCosmetic(kind) && !isPaletteSource(kind);
+    const people = authoredScene.filter(
+      (e) => selection.includes(e.id) && (e.type === "player" || e.type === "enemy")
+    );
+    // The row says who it means, so a greyed one reads as "nobody is picked"
+    // rather than leaving you to guess what "selected" covers.
+    const who =
+      people.length === 1
+        ? people[0].name ||
+          (people[0].type === "player" ? jobLabel(people[0].job) : "the enemy")
+        : people.length
+          ? `${people.length} selected`
+          : "selected";
+    return [
+      { heading: PALETTE_LABEL[kind] },
+      {
+        label: "Add at the centre",
+        disabled: frozen || !placeable,
+        onSelect: () => void drop(kind, { x: 0, y: 0 }, { at: "free" }),
+      },
+      ...(binds
+        ? [
+            {
+              label: `Add on ${who}`,
+              // A tether is the one thing that needs exactly two: it is the
+              // relationship between them, not a copy on each.
+              disabled:
+                frozen ||
+                (isPaletteTether(kind) ? people.length !== 2 : !people.length),
+              onSelect: () =>
+                void drop(kind, { x: 0, y: 0 }, { at: "actors", ids: people.map((p) => p.id) }),
+            } as MenuItem,
+          ]
+        : []),
+    ];
+  }
+
   /** Reads the payload of a drop; ignores drags that did not start in the palette. */
   function kindOf(ev: React.DragEvent): PaletteKind | null {
     const k = ev.dataTransfer.getData("text/plain") as PaletteKind;
@@ -1840,7 +2108,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       return;
     }
     const pt = arenaPointAt(clientX, clientY);
-    setPalettePreview(sourceAt(pt) && !isPaletteCosmetic(kind) ? null : { kind, x: pt.x, y: pt.y });
+    const binds = (sourceAt(pt) && !isPaletteCosmetic(kind)) || (ridesTethers(kind) && tetherAt(pt));
+    setPalettePreview(binds ? null : { kind, x: pt.x, y: pt.y });
   };
 
   paletteDropRef.current = (kind, clientX, clientY) => {
@@ -1855,10 +2124,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const pt = arenaPointAt(clientX, clientY);
     const tetherEnd = isPaletteTether(kind) ? tetherEndAt(pt) : undefined;
     const on = sourceAt(pt);
+    const rode = !on && ridesTethers(kind) ? tetherAt(pt) : undefined;
     void drop(
       kind,
       pt,
-      tetherEnd ? { at: "entity", id: tetherEnd } : on ? { at: "source", id: on } : { at: "free" }
+      tetherEnd
+        ? { at: "entity", id: tetherEnd }
+        : on
+          ? { at: "source", id: on }
+          : rode
+            ? { at: "tether", id: rode }
+            : { at: "free" }
     );
   };
 
@@ -1908,7 +2184,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     (activeStepPreviews.length > 0 || !!editingVariant) ? (
       <div className="mb-2 rounded border border-ink-700 bg-ink-800/60 px-2 py-1.5 text-xs">
         <div className="flex flex-wrap items-center gap-1.5">
-          <span className="label shrink-0">Preview</span>
+          <span className="label shrink-0" title="\ walks the split you last touched">
+            Preview
+          </span>
           {activeStepPreviews.map(({ step: ownerStep, ownerStepId, variant }) => (
             <label
               key={ownerStepId}
@@ -2326,11 +2604,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           onSelect={setStepIndex}
           run={run}
           setIndex={setStepIndex}
-          onOpenMech={(id) => {
-            if (id !== mech) setEditingBeatVariant(null);
-            setMech(id);
-            if (id) setFocusedBeat(id);
-          }}
+          onOpenMech={openBeat}
           onEditBeatVariant={setEditingBeatVariant}
           onFocusBeat={setFocusedBeat}
           onDebuffs={setDebuffFor}
@@ -2442,7 +2716,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                   else setError("Choose an object for the other end of the tether");
                   return true;
                 }}
-                onSelect={setSelection}
+                onSelect={pick}
                 onContextMenu={onCanvasContextMenu}
                 onResize={resize}
                 onTransform={async (id, next) => {
@@ -2631,11 +2905,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               shown={shown}
               openMech={mech}
               onSelect={setStepIndex}
-              onOpenMech={(id) => {
-                if (id !== mech) setEditingBeatVariant(null);
-                setMech(id);
-                if (id) setFocusedBeat(id);
-              }}
+              onOpenMech={openBeat}
               onFocusBeat={setFocusedBeat}
               onShow={setShown}
               onEditBeatVariant={setEditingBeatVariant}
@@ -2674,13 +2944,50 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           </aside>
         ) : (
         <aside
-          className="panel w-[320px] shrink-0 overflow-y-auto border-y-0 border-r-0 p-3"
-          data-panel={selectedEntity && layer !== "markers" ? "inspector" : "palette"}
+          className="panel flex w-[320px] shrink-0 flex-col border-y-0 border-r-0"
+          data-panel={sideTab === "details" ? "inspector" : "palette"}
         >
-          {!selectedEntity || layer === "markers" ? (
+          <div
+            role="tablist"
+            aria-label="Side panel"
+            className="flex shrink-0 border-b border-ink-600"
+          >
+            {([
+              { id: "add", label: "Add", title: "Place objects and set the arena up (Tab)" },
+              {
+                id: "details",
+                label: "Details",
+                title: detailsReady
+                  ? `Edit ${selectedEntity?.name || "the selection"} (Tab)`
+                  : layer === "markers"
+                    ? "Waymarks are being moved — finish with them first"
+                    : "Select something on the floor to edit it",
+              },
+            ] as const).map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                role="tab"
+                data-side-tab={t.id}
+                aria-selected={sideTab === t.id}
+                disabled={t.id === "details" && !detailsReady}
+                title={t.title}
+                className={`flex-1 border-b-2 px-2 py-1.5 text-xs ${
+                  sideTab === t.id
+                    ? "border-blue-400 text-ink-100"
+                    : "border-transparent text-ink-400 enabled:hover:text-ink-200 disabled:opacity-40"
+                }`}
+                onClick={() => setPanelTab(t.id)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-3">
+          {sideTab === "add" ? (
           <>
           <div className="mb-1 flex items-center gap-1.5">
-            <h2 className="label">Add</h2>
+            {/* The tab overhead says "Add"; this is just the how-to. */}
             <button
               type="button"
               className="flex h-[14px] w-[14px] shrink-0 items-center justify-center rounded-full border border-ink-600 text-[9px] leading-none text-ink-400"
@@ -2701,7 +3008,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               movable={layer === "step"}
               onSelect={(g) => {
                 const ids = membersOf(g).map((e) => e.id);
-                if (ids.length) setSelection(ids);
+                if (ids.length) pick(ids);
               }}
               onCarry={setCarryGroup}
               onHighlight={setHighlight}
@@ -2719,9 +3026,14 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                   {group.kinds.map((k) => (
                     <div
                       key={k}
+                      data-palette-chip={k}
                       draggable={false}
                       title={PALETTE_HINT[k]}
                       onPointerDown={(ev) => beginPaletteDrag(k, ev)}
+                      onContextMenu={(ev) => {
+                        ev.preventDefault();
+                        openContextMenu({ x: ev.clientX, y: ev.clientY }, paletteChipItems(k));
+                      }}
                       className={`flex touch-none cursor-grab select-none flex-col items-center gap-1 rounded border px-1 py-1.5 text-[11px] leading-tight active:cursor-grabbing ${
                         carrying === k ? "border-blue-400 bg-ink-700" : "border-ink-600 bg-ink-800"
                       } ${layer === "markers" ? "cursor-not-allowed opacity-40" : ""}`}
@@ -2856,9 +3168,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
             shown={shown}
             editable={editable}
             run={run}
-            onDeselect={() => setSelected(null)}
+            onDeselect={() => {
+              setSelected(null);
+              setPanelTab("add");
+            }}
           />
           )}
+          </div>
         </aside>
         )}
       </div>
@@ -4517,7 +4833,7 @@ function StepRail({
                   width: M.diamond,
                   height: M.diamond,
                 }}
-                title={`Snap: baits and anchors follow their target through step ${
+                title={`Snap: baits, anchors and tethers follow their target through step ${
                   freezeRow + 1
                 }, then freeze where they are. Drag to move it.`}
                 onPointerDown={(event) => {
@@ -5773,6 +6089,101 @@ function Rename({
  * them" — so this is where you go to select a light party, restack it, or take
  * a set back off it.
  */
+/**
+ * A 280px panel hung under a button, drawn at the document root.
+ *
+ * A popover left where it is written is at the mercy of whatever the button
+ * sits in: the editor header is 48px tall and hides its overflow, so the panel
+ * came out sliced, and the palette — later in the document, so later in the
+ * paint order — covered what was left. Going out to <body> and positioning
+ * against the button's rect is what keeps it whole and on top. z-40 clears the
+ * inspector (z-30) and stays under modals (z-50) and context menus (z-200).
+ *
+ * It owns dismissal too, since "outside" now means outside two separate
+ * subtrees: the button and the portalled panel.
+ */
+function AnchoredPanel({
+  anchorRef,
+  onClose,
+  label,
+  children,
+}: {
+  anchorRef: { current: HTMLElement | null };
+  onClose: () => void;
+  label: string;
+  children: ReactNode;
+}) {
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [at, setAt] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const panel = panelRef.current;
+    if (!anchor || !panel) return;
+
+    // Right edges line up, the way the panel used to sit under its button, and
+    // it flips above rather than run off the bottom of a short window.
+    const place = () => {
+      const a = anchor.getBoundingClientRect();
+      const p = panel.getBoundingClientRect();
+      const pad = 6;
+      const left = Math.max(pad, Math.min(a.right - p.width, window.innerWidth - p.width - pad));
+      const below = a.bottom + 4;
+      const top =
+        below + p.height > window.innerHeight - pad
+          ? Math.max(pad, a.top - p.height - 4)
+          : below;
+      setAt((prev) => (prev && prev.left === left && prev.top === top ? prev : { left, top }));
+    };
+
+    place();
+    // The panel grows a line when it has something to say; follow its height.
+    const observer = new ResizeObserver(place);
+    observer.observe(panel);
+    window.addEventListener("resize", place);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", place);
+    };
+  }, [anchorRef]);
+
+  useEffect(() => {
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+      if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
+      onClose();
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+    }
+
+    document.addEventListener("pointerdown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [anchorRef, onClose]);
+
+  return createPortal(
+    <div
+      ref={panelRef}
+      className="panel fixed z-40 w-[280px] rounded p-3 shadow-xl shadow-black/50"
+      role="dialog"
+      aria-label={label}
+      // Placed after the first measure, so it never flashes at the corner.
+      style={{ left: at?.left ?? 0, top: at?.top ?? 0, visibility: at ? "visible" : "hidden" }}
+    >
+      {children}
+    </div>,
+    document.body
+  );
+}
+
 function GroupsPopover({
   rows,
   movable,
@@ -5791,28 +6202,7 @@ function GroupsPopover({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-
-    function onPointerDown(event: PointerEvent) {
-      if (!ref.current?.contains(event.target as Node)) setOpen(false);
-    }
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-    }
-
-    document.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
 
   return (
     <div ref={ref} className="relative ml-auto flex">
@@ -5827,7 +6217,7 @@ function GroupsPopover({
         Groups ▾
       </button>
       {open && (
-        <div className="panel absolute right-0 z-10 mt-1 w-[280px] rounded p-3" role="dialog" aria-label="Groups">
+        <AnchoredPanel anchorRef={ref} onClose={close} label="Groups">
           <button
             className="btn absolute right-2 top-2 px-2"
             aria-label="Close groups"
@@ -5894,7 +6284,7 @@ function GroupsPopover({
               </div>
             ))}
           </div>
-        </div>
+        </AnchoredPanel>
       )}
     </div>
   );
@@ -5915,28 +6305,7 @@ function ShareButton({
   const [busy, setBusy] = useState(false);
   const [feedback, setFeedback] = useState("");
   const shareRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!open) return;
-
-    function onPointerDown(event: PointerEvent) {
-      if (!shareRef.current?.contains(event.target as Node)) setOpen(false);
-    }
-
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      setOpen(false);
-    }
-
-    document.addEventListener("pointerdown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  const close = useCallback(() => setOpen(false), []);
 
   if (!canShare) return null;
 
@@ -5991,11 +6360,7 @@ function ShareButton({
         {busy ? "Sharing…" : "Share"}
       </button>
       {open && (
-        <div
-          className="panel absolute right-0 z-10 mt-1 w-[280px] rounded p-3"
-          role="dialog"
-          aria-label="Sharing options"
-        >
+        <AnchoredPanel anchorRef={shareRef} onClose={close} label="Sharing options">
           <button
             className="btn absolute right-2 top-2 px-2"
             aria-label="Close sharing options"
@@ -6034,7 +6399,7 @@ function ShareButton({
           <p className="mt-2 text-xs text-ink-400">
             Anyone with an edit-enabled link can change this plan. No sign-in required.
           </p>
-        </div>
+        </AnchoredPanel>
       )}
     </div>
   );
@@ -6059,8 +6424,15 @@ const GROUP_LABEL: Record<GroupId, string> = {
 type DropTarget =
   | { at: "free" }
   | { at: "group"; group: GroupId }
+  | { at: "actors"; ids: string[] }
   | { at: "source"; id: string }
-  | { at: "entity"; id: string };
+  | { at: "entity"; id: string }
+  | { at: "tether"; id: string };
+
+/** The aimed palette shapes, the ones that can be fired along a tether. */
+const RIDERS: PaletteMechanicKind[] = ["beam", "protean", "linestack"];
+const ridesTethers = (kind: PaletteKind): kind is PaletteMechanicKind =>
+  (RIDERS as PaletteKind[]).includes(kind);
 
 /** A glyph, so the palette reads as shapes rather than as four words. */
 /**

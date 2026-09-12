@@ -9,6 +9,8 @@ import {
   authoredEntitiesForStep,
   composeBeatVariantEntities,
   entitiesForStep,
+  tetherEnds,
+  tetherRide,
   mechLabel,
   mechColor,
   BAIT_RULES,
@@ -110,6 +112,48 @@ function BaitTarget({
   const nudged = plan.variantModel === "beat"
     ? entity
     : resolveEntityForStep(plan, entity, stepId, variant);
+
+  if (anchor.along) {
+    const ride = tetherRide(anchor.along, scene);
+    const named = (e: Entity) => e.name ?? e.id;
+    return (
+      <div className="mb-3 rounded bg-ink-800 p-2 text-xs">
+        <div className="label mb-1">bait target</div>
+        <p className="text-ink-400">
+          along tether <b className="text-ink-200">{ride ? named(ride.tether) : anchor.along}</b>
+          {ride ? (
+            <>
+              {" "}
+              — from <b className="text-ink-200">{named(ride.from)}</b> through{" "}
+              <b className="text-ink-200">{named(ride.to)}</b>. Re-pair the tether and it follows.
+            </>
+          ) : (
+            ", which is not on the floor in this step."
+          )}
+        </p>
+        <div className="mt-1 flex items-center gap-2">
+          <label className="flex items-center gap-1 text-ink-400">
+            <input
+              type="checkbox"
+              disabled={!editable}
+              checked={anchor.extend}
+              onChange={(e) => setAnchor({ extend: e.target.checked })}
+            />
+            to wall
+          </label>
+          {editable && ride && (
+            <button
+              className="underline text-ink-400"
+              title="Keep aiming at whoever it hits now, without the tether"
+              onClick={() => setAnchor({ along: undefined, from: ride.from.id, to: ride.to.id })}
+            >
+              detach from tether
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mb-3 rounded bg-ink-800 p-2 text-xs">
@@ -775,9 +819,11 @@ export function Inspector({
               const tether = shownEntity as Extract<Entity, { type: "tether" }>;
               const resolved = entitiesForStep(plan, stepId, undefined, playing);
               const byId = new Map(resolved.map((e) => [e.id, e]));
-              const from = byId.get(tether.from);
-              const to = byId.get(tether.to);
-              if (!from || !to || tether.range === undefined || (tether.style !== "close" && tether.style !== "far")) return null;
+              // Measured where it is drawn: pinned, once its Beat has frozen.
+              const drawn = byId.get(tether.id);
+              const ends = tetherEnds(drawn?.type === "tether" ? drawn : tether, byId);
+              if (!ends || tether.range === undefined || (tether.style !== "close" && tether.style !== "far")) return null;
+              const { from, to } = ends;
               const distance = Math.hypot(to.x - from.x, to.y - from.y);
               const ok = tether.style === "close" ? distance <= tether.range : distance >= tether.range;
               const measured = arenaUnitsToYalms(plan.arena, distance, physicalCalibration.widthYalms);

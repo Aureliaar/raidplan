@@ -18,7 +18,7 @@ const flag = (name, fallback) => {
 };
 const [source, target] = args;
 const from = flag("from", "http://localhost:59577").replace(/\/$/, "");
-const to = flag("to", "https://raidplan.jacopo-sinigaglia.workers.dev").replace(/\/$/, "");
+const to = flag("to", "https://raidplan.aure.onl").replace(/\/$/, "");
 const token = process.env.RP_TOKEN;
 
 if (!source || !target) {

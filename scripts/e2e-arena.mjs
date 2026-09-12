@@ -95,9 +95,13 @@ console.log("grid, backdrop and opacity change before the server answers, and a 
 await page
   .locator('input[type="file"][accept*="image/png"]')
   .setInputFiles(fileURLToPath(new URL("../hitbox.png", import.meta.url)));
-await page.waitForFunction(() =>
-  document.querySelector('select:has(option[value="arena/p12_octagon"])')?.value.startsWith("/backgrounds/")
-);
+// The select turns blue the moment the upload answers, but the plan is only
+// carrying the new image once its op has landed: wait for the document, or the
+// fetch below asks for the old preset key and gets the app shell back.
+await page.waitForFunction(async (id) => {
+  const { plan } = await fetch(`/api/plans/${id}?fresh=${Date.now()}`, { cache: "no-store" }).then((r) => r.json());
+  return typeof plan.arena.image === "string" && plan.arena.image.startsWith("/backgrounds/");
+}, plan.id);
 const served = await page.evaluate(async (id) => {
   const { plan } = await fetch(`/api/plans/${id}?fresh=${Date.now()}`, { cache: "no-store" }).then((r) => r.json());
   const image = await fetch(plan.arena.image);

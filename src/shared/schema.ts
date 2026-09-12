@@ -136,6 +136,13 @@ export const AnchorSchema = z.object({
   /** Optional origin. With it the shape aims from `from` through the target. */
   from: z.string().optional(),
   /**
+   * Ride a tether instead: fire from one of its ends through the other, whoever
+   * it joins at the time (see `tetherRide`). Re-pair the tether and the shape
+   * follows; with the tether off the floor it has nothing to fire along.
+   * Overrides `to`, `pick` and `from`.
+   */
+  along: z.string().optional(),
+  /**
    * Rank candidates by their distance from this entity, without aiming at it.
    * A desolation baited off an orb lands *on* the nearest player to the orb —
    * `from` would put it on the orb instead, because `from` means "aimed".
@@ -278,6 +285,13 @@ export const TetherEntitySchema = z.object({
   width: z.number().positive().default(8),
   /** Distance at which a close/far tether changes from failing to satisfied. */
   range: z.number().positive().optional(),
+  /**
+   * Derived, never authored: where its two ends were pinned once its Beat froze.
+   * `entitiesForStep` sets it; read it through `tetherEnds`.
+   */
+  ends: z
+    .object({ from: z.object({ x: z.number(), y: z.number() }), to: z.object({ x: z.number(), y: z.number() }) })
+    .optional(),
 });
 
 export const TextEntitySchema = z.object({
@@ -560,9 +574,9 @@ export const MechSchema = z.object({
   /** The step it resolves in. Same as `snap` for anything instant. */
   boom: z.string().default(""),
   /**
-   * The Snap marker: the last step in which its baits and anchors still follow
-   * their attachment rule. From the step after it through `boom` they are drawn
-   * where they stood here — a snapshot. Empty means `snap` itself, so a Beat
+   * The Snap marker: the last step in which its baits, anchors and tethers still
+   * follow what they are attached to. From the step after it through `boom` they
+   * are drawn where they stood here — a snapshot. Empty means `snap` itself, so a Beat
    * freezes right after it casts. Only a Beat of three or more steps has a
    * choice: it must sit between `snap` and the step before `boom`, inclusive.
    */
@@ -1419,7 +1433,7 @@ export function freezeStep(plan: Plan, mech: Mech): string {
 }
 
 /**
- * Which step's poses a Beat's baits and anchors solve against while `stepId` is
+ * Which step's poses a Beat's baits, anchors and tethers solve against while `stepId` is
  * being drawn: the step itself while the Beat is still following its targets,
  * and its Snap marker from the step after that one on.
  */
@@ -1429,6 +1443,20 @@ export function bindingStep(plan: Plan, mech: Mech, stepId: string | undefined):
   const here = order.findIndex((step) => step.id === stepId);
   const at = order.findIndex((step) => step.id === freeze);
   return here >= 0 && at >= 0 && here <= at ? order[here].id : freeze;
+}
+
+/**
+ * Where a tether is drawn from and to: its pinned ends once its Beat has
+ * frozen, otherwise the two things it joins as they stand in `byId`.
+ */
+export function tetherEnds(
+  tether: TetherEntity,
+  byId: Map<string, Entity>
+): { from: { x: number; y: number }; to: { x: number; y: number } } | undefined {
+  if (tether.ends) return tether.ends;
+  const from = byId.get(tether.from);
+  const to = byId.get(tether.to);
+  return from && to ? { from, to } : undefined;
 }
 
 /** Clamp every Beat's Snap marker back into its span. */
@@ -1529,6 +1557,7 @@ export function anchorTarget(
 ): Entity | undefined {
   const a = entity.anchor;
   if (!a) return undefined;
+  if (a.along) return tetherRide(a.along, byId)?.to;
   if (!a.pick) return a.to ? byId.get(a.to) : undefined;
 
   const fromId = a.from ?? a.near;
@@ -1557,6 +1586,25 @@ export function anchorTarget(
         : 1;
   });
   return candidates[rank - 1];
+}
+
+/**
+ * The two ends a shape riding this tether fires between. Out of the enemy end
+ * when exactly one end is an enemy — that is what throws the beam, whichever
+ * end the tether happened to be drawn from — and otherwise from `from` to `to`.
+ */
+export function tetherRide(
+  tetherId: string,
+  byId: Map<string, Entity>,
+): { tether: TetherEntity; from: Entity; to: Entity } | undefined {
+  const tether = byId.get(tetherId);
+  if (tether?.type !== "tether") return undefined;
+  const a = byId.get(tether.from);
+  const b = byId.get(tether.to);
+  if (!a || !b) return undefined;
+  return b.type === "enemy" && a.type !== "enemy"
+    ? { tether, from: b, to: a }
+    : { tether, from: a, to: b };
 }
 
 /**
@@ -1595,8 +1643,12 @@ export function anchoredPose(
   const target = anchorTarget(entity, byId, rank);
   if (!target) return null;
 
-  const origin = a.from ? byId.get(a.from) : undefined;
-  if (!a.from || !origin) {
+  const origin = a.along
+    ? tetherRide(a.along, byId)?.from
+    : a.from
+      ? byId.get(a.from)
+      : undefined;
+  if (!origin) {
     // Plain follow: sit on the target, keeping x/y as a nudge off it.
     return {
       x: target.x + entity.x,
@@ -1751,6 +1803,15 @@ export function entitiesForStep(
     return m;
   };
 
+  /** Another step as drawn, bindings solved — where a frozen tether's ends are. */
+  const drawnIn = new Map<string, Map<string, Entity>>();
+  const drawnFor = (sid: string) => {
+    let m = drawnIn.get(sid);
+    if (!m)
+      drawnIn.set(sid, (m = new Map(entitiesForStep(plan, sid, undefined, shown).map((e) => [e.id, e]))));
+    return m;
+  };
+
   const resolved = here;
   const out: Entity[] = [];
   for (const raw of resolved) {
@@ -1779,6 +1840,19 @@ export function entitiesForStep(
                 : raw.opacity,
           } as Entity)
         : raw;
+    // A tether in a Beat follows the two things it joins up to the Snap marker,
+    // like a bait, and from then to the explosion stays where they stood there
+    // while they walk on. The freeze step is always earlier, so this ends.
+    if (e.type === "tether" && mech && stepId) {
+      const held = bindingStep(plan, mech, stepId);
+      const then = held && held !== stepId ? drawnFor(held) : undefined;
+      const a = then?.get(e.from);
+      const b = then?.get(e.to);
+      if (a && b) {
+        out.push({ ...e, ends: { from: { x: a.x, y: a.y }, to: { x: b.x, y: b.y } } });
+        continue;
+      }
+    }
     if (!e.anchor) {
       out.push(e);
       continue;

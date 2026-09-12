@@ -151,4 +151,40 @@ if (spread > 41) fail("G1 did not stack tightly: " + JSON.stringify(G1.map((n) =
 if (G2.some((n) => after[n].x !== before[n].x || after[n].y !== before[n].y)) fail("moving G1 moved G2 as well");
 console.log(`the G1 row carried all four of G1, stacked within ${Math.round(spread)} units; G2 stayed put`);
 
+/* --- a chip's own menu places it without the hand --------------------------- */
+
+const chipMenu = async (kind, item) => {
+  await page.locator('[data-side-tab="add"]').click();
+  const box = await page.locator(`[data-palette-chip="${kind}"]`).boundingBox();
+  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2, { button: "right" });
+  await page.locator("[data-context-menu]").first().waitFor({ state: "visible", timeout: 3000 });
+  for (const row of [].concat(item)) {
+    await page.locator(`[data-menu-item="${row}"]`).click();
+    await page.waitForTimeout(500);
+  }
+  await page.waitForTimeout(500);
+};
+
+const freeCircles = async () =>
+  (await plan.load()).entities.filter(
+    (e) => e.type === "zone" && e.shape === "circle" && !e.anchor && e.x === 0 && e.y === 0
+  );
+const hadMiddle = (await freeCircles()).length;
+await chipMenu("circle", "Add at the centre");
+const gotMiddle = (await freeCircles()).length;
+if (gotMiddle !== hadMiddle + 1)
+  fail(`"Add at the centre" left ${gotMiddle} free circles on the origin, not ${hadMiddle + 1}`);
+// The second row follows the floor selection, and says who it means: the
+// Groups row is the steadiest way to pick two people on a crowded floor.
+await page.locator('[data-side-tab="add"]').click();
+await page.getByRole("button", { name: "Groups" }).click();
+await page.locator("[data-group-row=healers]").click();
+await page.waitForTimeout(400);
+await chipMenu("donut", "Add on 2 selected");
+doc = await plan.load();
+const onHealers = doc.entities.filter((e) => e.type === "zone" && e.shape === "donut" && e.anchor);
+if (onHealers.length !== 2) fail(`"Add on 2 selected" made ${onHealers.length} donuts, not one each`);
+if (onHealers.some((e) => e.bond)) fail("baits put on a selection were bonded into a group set");
+console.log("the Circle chip's menu drops one in the middle, and the Donut chip binds one to each selected healer");
+
 await finish(s, "OK - " + plan.url);
