@@ -157,7 +157,11 @@ export interface SceneProps {
   onMove(moves: { id: string; x: number; y: number }[]): void;
   /** Wheel over something: resize it (or a tether's range) by that factor. */
   onResize?(ids: string[], factor: number, what: "size" | "opacity"): void;
-  /** Direct-manipulation pins commit the selected entity's visual transform. */
+  /**
+   * Direct-manipulation pins commit the selected entity's visual transform.
+   * A stretch that holds one edge still moves the centre, so the patch may
+   * carry a pose along with the dimension that displaced it.
+   */
   onTransform?(
     id: string,
     patch: {
@@ -167,6 +171,8 @@ export interface SceneProps {
       angle?: number;
       width?: number;
       length?: number;
+      x?: number;
+      y?: number;
     }
   ): Promise<unknown> | void;
 }
@@ -1293,7 +1299,19 @@ export function Scene({
  * art, paths, and directional telegraphs. Round, position-only objects do not
  * grow a decorative control that cannot change their meaning.
  */
-type PinKind = "resize" | "rotate" | "inner" | "angle" | "width" | "length";
+type PinKind = "resize" | "rotate" | "inner" | "angle" | "width" | "length" | "corner";
+
+/**
+ * Which of a box's edges a grip holds, in the shape's own axes: `w` the pair
+ * across its width, `l` the pair along its length, `0` neither. An edge pill
+ * holds one, a corner bracket holds one of each, and whatever a grip does not
+ * hold stands still while it is dragged.
+ */
+type Grip = { w: -1 | 0 | 1; l: -1 | 0 | 1 };
+
+/** A grip's identity: the same string on the tick that draws it and the gesture it starts. */
+const gripId = (kind: PinKind, grip: Grip) =>
+  grip.w || grip.l ? `${kind}:${grip.w}:${grip.l}` : kind;
 
 function SelectionPins({
   entity,
@@ -1312,19 +1330,26 @@ function SelectionPins({
     angle?: number;
     width?: number;
     length?: number;
+    x?: number;
+    y?: number;
   }): Promise<unknown> | void;
 }) {
   const group = useRef<Konva.Group>(null);
   const gesture = useRef(0);
-  const [hover, setHover] = useState<PinKind | null>(null);
+  const [hover, setHover] = useState<string | null>(null);
   const [live, setLive] = useState<{
+    id: string;
     kind: PinKind;
+    grip: Grip;
     factor: number;
     rotation: number;
     inner: number;
     angle: number;
     width: number;
     length: number;
+    /** How far the centre has walked, since holding one edge still moves it. */
+    dx: number;
+    dy: number;
   } | null>(null);
   const directional =
     entity.type === "marker" ||
@@ -1360,11 +1385,15 @@ function SelectionPins({
     const d = Math.max(rayOut(silhouette, edgeScale, rotation, dx, dy) + 2 * unit, 14 * unit);
     return { x: dx * d, y: dy * d };
   };
+  // Stretching one edge leaves the opposite one standing, so the centre walks
+  // half of what that edge gained. The pins ride the shape as dragged, which
+  // means they ride that walked centre rather than the authored pose.
+  const centre = { x: entity.x + (live?.dx ?? 0), y: entity.y + (live?.dy ?? 0) };
   // No grip may leave the visible floor, wherever its edge or ring point
   // lands: pull it straight back inside, keeping its grab disc whole.
   const clampView = (p: { x: number; y: number }) => ({
-    x: Math.min(Math.max(p.x, -viewHalf - entity.x + 12 * unit), viewHalf - entity.x - 12 * unit),
-    y: Math.min(Math.max(p.y, -viewHalf - entity.y + 12 * unit), viewHalf - entity.y - 12 * unit),
+    x: Math.min(Math.max(p.x, -viewHalf - centre.x + 12 * unit), viewHalf - centre.x - 12 * unit),
+    y: Math.min(Math.max(p.y, -viewHalf - centre.y + 12 * unit), viewHalf - centre.y - 12 * unit),
   });
   // The resize tick keeps the old corner convention (south-east); the rotate
   // tick rides the ring at the object's facing, so it follows a turn.
@@ -1396,6 +1425,10 @@ function SelectionPins({
   const halfL = boxy ? Math.max((liveL / 2) * boxy.scale * factor, 14 * unit) : 0;
   const widthAt = { x: xAxis.x * halfW, y: xAxis.y * halfW };
   const lengthAt = { x: frontAxis.x * halfL, y: frontAxis.y * halfL };
+  const cornerAt = (sw: 1 | -1, sl: 1 | -1) => ({
+    x: xAxis.x * halfW * sw + frontAxis.x * halfL * sl,
+    y: xAxis.y * halfW * sw + frontAxis.y * halfL * sl,
+  });
   // The resize arrows must point along the direction the grip actually drags
   // on screen, which turns with the shape.
   const axisCursor = (axis: { x: number; y: number }) => {
@@ -1411,7 +1444,12 @@ function SelectionPins({
     if (container) container.style.cursor = style;
   };
 
-  function begin(kind: PinKind, evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+  function begin(
+    kind: PinKind,
+    evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>,
+    grip: Grip = { w: 0, l: 0 }
+  ) {
+    const id = gripId(kind, grip);
     // A right-press on a pin opens the menu; it never starts a resize or a turn.
     if (evt.evt instanceof MouseEvent && evt.evt.button !== 0) return;
     evt.cancelBubble = true;
@@ -1433,18 +1471,38 @@ function SelectionPins({
       angle: cone ? cone.angle : 0,
       width: boxy ? boxy.width : 0,
       length: boxy ? boxy.length : 0,
+      dx: 0,
+      dy: 0,
     };
-    // Projection of the grab point onto the edited axis, so a later pointer
-    // position reads as a ratio of the starting dimension.
+    // A stretch is measured from the anchor — the edge the grip does not hold,
+    // left exactly where the grab found it — so the shape grows out of the side
+    // being pulled instead of out of both. The axes are the authored ones,
+    // since no stretch turns the shape.
     const rad = (entity.rotation * Math.PI) / 180;
-    const axis =
-      kind === "width"
-        ? { x: Math.cos(rad), y: Math.sin(rad) }
-        : { x: Math.sin(rad), y: -Math.cos(rad) };
-    const fromAxis = Math.max(
-      1,
-      Math.abs((point.x - center.x) * axis.x + (point.y - center.y) * axis.y)
-    );
+    const along = { x: Math.cos(rad), y: Math.sin(rad) };
+    const front = { x: Math.sin(rad), y: -Math.cos(rad) };
+    const halfW0 = boxy ? (boxy.width / 2) * entity.scale : 0;
+    const halfL0 = boxy ? (boxy.length / 2) * entity.scale : 0;
+    // Where in its grab disc the pointer took the edge: the edge follows the
+    // pointer's travel from there, rather than jumping under it.
+    const held = {
+      x: (point.x - center.x) / pixelsPerUnit,
+      y: (point.y - center.y) / pixelsPerUnit,
+    };
+    const slopW = grip.w ? held.x * along.x + held.y * along.y - grip.w * halfW0 : 0;
+    const slopL = grip.l ? held.x * front.x + held.y * front.y - grip.l * halfL0 : 0;
+    /** The extent from the anchor out to a held edge now under `at`, and the centre's walk. */
+    const stretched = (
+      side: -1 | 1,
+      axis: { x: number; y: number },
+      slop: number,
+      half0: number,
+      at: { x: number; y: number }
+    ) => {
+      const edge = at.x * axis.x + at.y * axis.y - slop;
+      const span = Math.max(8 * entity.scale, side * edge + half0);
+      return { span, walk: side * (span / 2 - half0) };
+    };
 
     const track = (move: MouseEvent | TouchEvent) => {
       stage.setPointersPositions(move);
@@ -1466,16 +1524,29 @@ function SelectionPins({
         if (Math.abs(deg - snap) <= 5) deg = snap % 360;
         state.rotation = deg;
         node.rotation(deg);
-      } else if ((kind === "width" || kind === "length") && boxy) {
-        const along = Math.abs((at.x - center.x) * axis.x + (at.y - center.y) * axis.y);
-        const raw = along / fromAxis;
-        if (kind === "width") {
-          state.width = Math.max(8, boxy.width * raw);
-          node.scaleX((entity.scale * state.width) / boxy.width);
-        } else {
-          state.length = Math.max(8, boxy.length * raw);
-          node.scaleY((entity.scale * state.length) / boxy.length);
+      } else if ((kind === "width" || kind === "length" || kind === "corner") && boxy) {
+        const now = {
+          x: (at.x - center.x) / pixelsPerUnit,
+          y: (at.y - center.y) / pixelsPerUnit,
+        };
+        let walkW = 0;
+        let walkL = 0;
+        if (grip.w) {
+          const w = stretched(grip.w, along, slopW, halfW0, now);
+          state.width = w.span / entity.scale;
+          walkW = w.walk;
         }
+        if (grip.l) {
+          const l = stretched(grip.l, front, slopL, halfL0, now);
+          state.length = l.span / entity.scale;
+          walkL = l.walk;
+        }
+        state.dx = along.x * walkW + front.x * walkL;
+        state.dy = along.y * walkW + front.y * walkL;
+        node.scaleX((entity.scale * state.width) / boxy.width);
+        node.scaleY((entity.scale * state.length) / boxy.length);
+        node.x(entity.x + state.dx);
+        node.y(entity.y + state.dy);
       } else if (kind === "inner" && donut) {
         const raw = Math.hypot(at.x - center.x, at.y - center.y) / fromDist;
         state.inner = Math.max(0, Math.min(donut.radius - 2, donut.innerRadius * raw));
@@ -1490,7 +1561,7 @@ function SelectionPins({
         if (Math.abs(deg - snap) <= 3 && snap >= 5) deg = snap;
         state.angle = deg;
       }
-      setLive({ kind, ...state });
+      setLive({ id, kind, grip, ...state });
     };
     const release = () => {
       window.removeEventListener("mousemove", track);
@@ -1500,18 +1571,17 @@ function SelectionPins({
       cursor("");
       setLive(null);
       setHover(null);
-      const moved =
-        kind === "resize"
+      const stretch = !!boxy && !!(grip.w || grip.l);
+      const moved = stretch
+        ? Math.abs(state.width - boxy!.width) > 0.4 ||
+          Math.abs(state.length - boxy!.length) > 0.4
+        : kind === "resize"
           ? Math.abs(state.factor - 1) > 0.002
           : kind === "rotate"
             ? state.rotation !== entity.rotation
             : kind === "inner"
               ? !!donut && Math.abs(state.inner - donut.innerRadius) > 0.4
-              : kind === "width"
-                ? !!boxy && Math.abs(state.width - boxy.width) > 0.4
-                : kind === "length"
-                  ? !!boxy && Math.abs(state.length - boxy.length) > 0.4
-                  : !!cone && Math.abs(state.angle - cone.angle) > 0.4;
+              : !!cone && Math.abs(state.angle - cone.angle) > 0.4;
       // The preview lived on the Konva node itself. The document stores
       // meaningful dimensions instead (the same fields the wheel changes),
       // so restore the authored node transform before the optimistic op
@@ -1519,14 +1589,29 @@ function SelectionPins({
       node.scaleX(entity.scale);
       node.scaleY(entity.scale);
       node.rotation(entity.rotation);
+      node.x(entity.x);
+      node.y(entity.y);
       if (!moved) return;
+      // The document keeps whole dimensions, so the centre is worked out from
+      // the rounded ones: the edge nobody touched must not creep by the
+      // rounding of the edge that was dragged.
+      const width = Math.round(state.width);
+      const length = Math.round(state.length);
+      const walkW = grip.w * ((width / 2) * entity.scale - halfW0);
+      const walkL = grip.l * ((length / 2) * entity.scale - halfL0);
       void onTransform({
         factor: kind === "resize" ? Math.round(state.factor * 1000) / 1000 : 1,
         ...(kind === "rotate" && directional ? { rotation: Math.round(state.rotation * 10) / 10 } : {}),
         ...(kind === "inner" ? { innerRadius: Math.round(state.inner) } : {}),
         ...(kind === "angle" ? { angle: Math.round(state.angle) } : {}),
-        ...(kind === "width" ? { width: Math.round(state.width) } : {}),
-        ...(kind === "length" ? { length: Math.round(state.length) } : {}),
+        ...(grip.w ? { width } : {}),
+        ...(grip.l ? { length } : {}),
+        ...(stretch && (walkW || walkL)
+          ? {
+              x: Math.round(entity.x + along.x * walkW + front.x * walkL),
+              y: Math.round(entity.y + along.y * walkW + front.y * walkL),
+            }
+          : {}),
       });
     };
     window.addEventListener("mousemove", track);
@@ -1541,67 +1626,81 @@ function SelectionPins({
     at: { x: number; y: number },
     mark: ReactNode,
     grabCursor: string,
-    key?: string,
-    hitRadius = 11
+    opts: { hitRadius?: number; grip?: Grip } = {}
   ) => {
-    const lit = hover === kind || live?.kind === kind;
+    const grip = opts.grip ?? { w: 0 as const, l: 0 as const };
+    const hitRadius = opts.hitRadius ?? 11;
+    // Each edge and corner is its own grip, so only the one in the hand lights:
+    // lighting a whole pair would say the pair moves, and it does not.
+    const id = gripId(kind, grip);
+    const lit = hover === id || live?.id === id;
     return (
-      <Group key={key ?? kind} x={at.x} y={at.y}>
+      <Group key={id} x={at.x} y={at.y}>
         {lit && <Circle radius={hitRadius * unit} fill="rgba(122, 162, 247, 0.25)" listening={false} />}
         {mark}
         <Circle
           radius={hitRadius * unit}
           fill="#000"
           opacity={0}
-          onMouseEnter={() => { setHover(kind); cursor(grabCursor); }}
+          onMouseEnter={() => { setHover(id); cursor(grabCursor); }}
           onMouseLeave={() => { if (!live) { setHover(null); cursor(""); } }}
-          onMouseDown={(evt) => begin(kind, evt)}
-          onTouchStart={(evt) => begin(kind, evt)}
+          onMouseDown={(evt) => begin(kind, evt, grip)}
+          onTouchStart={(evt) => begin(kind, evt, grip)}
         />
       </Group>
     );
   };
 
-  const readoutAt =
-    live?.kind === "resize"
+  // A stretch grip's readout sits by the grip itself, which is the edge or the
+  // corner in the hand — and that one keeps moving while the rest hold still.
+  const stretchAt =
+    live && live.grip.w && live.grip.l
+      ? cornerAt(live.grip.w as 1 | -1, live.grip.l as 1 | -1)
+      : live?.grip.w
+        ? { x: widthAt.x * live.grip.w, y: widthAt.y * live.grip.w }
+        : live?.grip.l
+          ? { x: lengthAt.x * live.grip.l, y: lengthAt.y * live.grip.l }
+          : null;
+  const readoutAt = stretchAt
+    ? { x: stretchAt.x + 16 * unit, y: stretchAt.y + 16 * unit }
+    : live?.kind === "resize"
       ? { x: resizeAt.x + 16 * unit, y: resizeAt.y + 16 * unit }
       : live?.kind === "inner"
         ? { x: innerAt.x - 70 * unit, y: innerAt.y - 30 * unit }
         : live?.kind === "angle"
           ? { x: coneAt.x + 16 * unit, y: coneAt.y + 16 * unit }
-          : live?.kind === "width"
-            ? { x: widthAt.x + 16 * unit, y: widthAt.y + 16 * unit }
-            : live?.kind === "length"
-              ? { x: lengthAt.x + 16 * unit, y: lengthAt.y - 30 * unit }
-              : { x: resizeAt.x + 16 * unit, y: edgeAt(0, -1).y - 30 * unit };
+          : { x: resizeAt.x + 16 * unit, y: edgeAt(0, -1).y - 30 * unit };
+  const readoutW = (live?.kind === "corner" ? 74 : 54) * unit;
   const readout = live && (
     <Group x={readoutAt.x} y={readoutAt.y}>
-      <Rect width={54 * unit} height={20 * unit} cornerRadius={5 * unit} fill="#232833" stroke="#2e3543" strokeWidth={1 * unit} />
+      <Rect width={readoutW} height={20 * unit} cornerRadius={5 * unit} fill="#232833" stroke="#2e3543" strokeWidth={1 * unit} />
       <Text
-        width={54 * unit}
+        width={readoutW}
         height={20 * unit}
         align="center"
         verticalAlign="middle"
         fontSize={12 * unit}
         fill="#e6ebf2"
         text={
-          live.kind === "resize"
-            ? `${Math.round(live.factor * 100)}%`
-            : live.kind === "inner"
-              ? `${Math.round(live.inner)}`
-              : live.kind === "width"
-                ? `${Math.round(live.width)}`
-                : live.kind === "length"
-                  ? `${Math.round(live.length)}`
-                  : `${Math.round(live.kind === "angle" ? live.angle : live.rotation)}°`
+          live.kind === "corner"
+            ? `${Math.round(live.width)}×${Math.round(live.length)}`
+            : live.kind === "resize"
+              ? `${Math.round(live.factor * 100)}%`
+              : live.kind === "inner"
+                ? `${Math.round(live.inner)}`
+                : live.kind === "width"
+                  ? `${Math.round(live.width)}`
+                  : live.kind === "length"
+                    ? `${Math.round(live.length)}`
+                    : `${Math.round(live.kind === "angle" ? live.angle : live.rotation)}°`
         }
       />
     </Group>
   );
 
-  const grew = (kind: PinKind) => (hover === kind || live?.kind === kind ? 1.4 : 1);
+  const grew = (id: string) => (hover === id || live?.id === id ? 1.4 : 1);
   return (
-    <Group ref={group} name="selection-pins" x={entity.x} y={entity.y}>
+    <Group ref={group} name="selection-pins" x={centre.x} y={centre.y}>
       <SilhouetteEdge
         name="selection"
         silhouette={silhouette}
@@ -1610,8 +1709,8 @@ function SelectionPins({
         unit={unit}
         color={chipColor(entity)}
       />
-      {/* Boxy shapes edit width and length independently on their own
-          edges; a uniform corner scale would only fight those grips. */}
+      {/* A boxy shape wears eight grips of its own, each holding the side
+          opposite it still; a uniform centre scale would only fight them. */}
       {!boxy &&
         tick(
         "resize",
@@ -1697,47 +1796,80 @@ function SelectionPins({
       {boxy &&
         // A pill riding the middle of each of the four edges, long side lying
         // along its edge: the pair on the sides edits width, the pair on the
-        // ends edits length. Both of a pair light up together.
-        [1, -1].flatMap((side) => [
-          tick(
-            "width",
-            clampView({ x: widthAt.x * side, y: widthAt.y * side }),
-            <Rect
-              width={8 * unit * grew("width")}
-              height={36 * unit * grew("width")}
-              offsetX={(8 * unit * grew("width")) / 2}
-              offsetY={(36 * unit * grew("width")) / 2}
-              cornerRadius={4 * unit * grew("width")}
-              rotation={rotation}
-              fill="#e6ebf2"
-              listening={false}
-              shadowColor="#14171c"
-              shadowBlur={2 * unit}
-            />,
-            axisCursor(xAxis),
-            `width${side}`,
-            20
-          ),
-          tick(
-            "length",
-            clampView({ x: lengthAt.x * side, y: lengthAt.y * side }),
-            <Rect
-              width={36 * unit * grew("length")}
-              height={8 * unit * grew("length")}
-              offsetX={(36 * unit * grew("length")) / 2}
-              offsetY={(8 * unit * grew("length")) / 2}
-              cornerRadius={4 * unit * grew("length")}
-              rotation={rotation}
-              fill="#e6ebf2"
-              listening={false}
-              shadowColor="#14171c"
-              shadowBlur={2 * unit}
-            />,
-            axisCursor(frontAxis),
-            `length${side}`,
-            20
-          ),
-        ])}
+        // ends edits length. Dragging one walks that edge and leaves the one
+        // across from it standing, so the box grows the way you pull it.
+        ([1, -1] as const).flatMap((side) => {
+          const w = grew(gripId("width", { w: side, l: 0 }));
+          const l = grew(gripId("length", { w: 0, l: side }));
+          return [
+            tick(
+              "width",
+              clampView({ x: widthAt.x * side, y: widthAt.y * side }),
+              <Rect
+                width={8 * unit * w}
+                height={36 * unit * w}
+                offsetX={(8 * unit * w) / 2}
+                offsetY={(36 * unit * w) / 2}
+                cornerRadius={4 * unit * w}
+                rotation={rotation}
+                fill="#e6ebf2"
+                listening={false}
+                shadowColor="#14171c"
+                shadowBlur={2 * unit}
+              />,
+              axisCursor(xAxis),
+              { grip: { w: side, l: 0 }, hitRadius: 18 }
+            ),
+            tick(
+              "length",
+              clampView({ x: lengthAt.x * side, y: lengthAt.y * side }),
+              <Rect
+                width={36 * unit * l}
+                height={8 * unit * l}
+                offsetX={(36 * unit * l) / 2}
+                offsetY={(8 * unit * l) / 2}
+                cornerRadius={4 * unit * l}
+                rotation={rotation}
+                fill="#e6ebf2"
+                listening={false}
+                shadowColor="#14171c"
+                shadowBlur={2 * unit}
+              />,
+              axisCursor(frontAxis),
+              { grip: { w: 0, l: side }, hitRadius: 18 }
+            ),
+          ];
+        })}
+      {boxy &&
+        // A bracket in each corner, its two arms lying inside the two edges it
+        // holds: one drag stretches both, anchored on the corner across the
+        // box. Drawn after the pills so on a shape too thin to keep them apart
+        // the corner, which is the smaller target, wins the overlap.
+        ([1, -1] as const).flatMap((sw) =>
+          ([1, -1] as const).map((sl) => {
+            const arm = 9 * unit * grew(gripId("corner", { w: sw, l: sl }));
+            return tick(
+              "corner",
+              clampView(cornerAt(sw, sl)),
+              <Line
+                points={[-sw * arm, 0, 0, 0, 0, sl * arm]}
+                rotation={rotation}
+                stroke="#e6ebf2"
+                strokeWidth={3 * unit}
+                lineCap="round"
+                lineJoin="round"
+                listening={false}
+                shadowColor="#14171c"
+                shadowBlur={2 * unit}
+              />,
+              axisCursor({
+                x: xAxis.x * sw + frontAxis.x * sl,
+                y: xAxis.y * sw + frontAxis.y * sl,
+              }),
+              { grip: { w: sw, l: sl }, hitRadius: 10 }
+            );
+          })
+        )}
       {readout}
     </Group>
   );
