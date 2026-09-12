@@ -22,6 +22,7 @@ import {
   variantStepEdited,
   type Entity,
   type Plan,
+  type PropBag,
 } from "../shared/schema";
 import { BAIT_KINDS, baitNeedsSource, baitSpec, type BaitKind } from "../shared/ops";
 import { playersHit } from "../shared/hits";
@@ -36,6 +37,12 @@ import {
 
 
 
+/**
+ * How a Part made from a panel finds its Beat. The editor owns the rule — the
+ * open Beat, the host's, or a new one minted for this step — and hands it over
+ * so a sidebar add lands in a Beat exactly like a drop on the floor does.
+ */
+export type BeatForPart = (name: string, host?: Entity) => { ops: Op[]; stamp: PropBag };
 
 /**
  * Who this zone catches. Players are points in FFXIV, so a token whose art
@@ -308,6 +315,7 @@ function BaitPanel({
   shown,
   editable,
   run,
+  beatForPart,
 }: {
   plan: Plan;
   target: Entity;
@@ -318,6 +326,8 @@ function BaitPanel({
   shown?: Record<string, string>;
   editable: boolean;
   run(ops: Op | Op[]): Promise<unknown>;
+  /** The Beat this add joins, and what to stamp on it — the drop path's rule. */
+  beatForPart: BeatForPart;
 }) {
   const sources = (plan.variantModel === "beat"
     ? composeBeatVariantEntities(plan, stepId, shown).entities
@@ -361,15 +371,22 @@ function BaitPanel({
         <button
           className="btn"
           disabled={!editable || (needsSource && !from)}
-          onClick={() =>
-            run({
-              op: "add_entity",
-              spec: baitSpec(kind, target.id, from || undefined, {
-                name: `${kind} ${target.name ?? ""}`.trim(),
-                steps: [stepId],
-              }) as never,
-            })
-          }
+          onClick={() => {
+            // Every Part lives in a Beat: the open one, or a new one made in
+            // this step. The Beat decides which steps it is on the floor for,
+            // so the bait carries no step list of its own.
+            const beat = beatForPart(kind.charAt(0).toUpperCase() + kind.slice(1), target);
+            void run([
+              ...beat.ops,
+              {
+                op: "add_entity",
+                spec: baitSpec(kind, target.id, from || undefined, {
+                  name: `${kind} ${target.name ?? ""}`.trim(),
+                  ...beat.stamp,
+                }) as never,
+              },
+            ]);
+          }}
         >
           add
         </button>
@@ -504,6 +521,7 @@ export function Inspector({
   shown: playing,
   editable,
   run,
+  beatForPart,
   onDeselect,
 }: {
   plan: Plan;
@@ -515,6 +533,8 @@ export function Inspector({
   shown?: Record<string, string>;
   editable: boolean;
   run(ops: Op | Op[]): Promise<unknown>;
+  /** The Beat a Part made from this panel joins, and what to stamp on it. */
+  beatForPart: BeatForPart;
   onDeselect(): void;
 }) {
   if (!entity) {
@@ -596,6 +616,7 @@ export function Inspector({
           shown={playing}
           editable={editable}
           run={run}
+          beatForPart={beatForPart}
         />
       )}
 

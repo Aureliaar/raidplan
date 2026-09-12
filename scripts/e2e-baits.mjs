@@ -152,4 +152,47 @@ if (Math.hypot(stayed.x - shown.x, stayed.y - shown.y) > 2)
   fail(`the unbound donut moved to ${Math.round(stayed.x)},${Math.round(stayed.y)} when H1 walked off`);
 console.log("Unbind dropped the rule, and the donut stayed put when H1 walked off");
 
+/* --- "bait this player" is an ordinary add: it lands in a Beat -------------- */
+
+/** Add a bait of `kind` to the selected actor through the sidebar panel. */
+const baitThrough = async (kind, who) => {
+  const panel = page.getByText(/^bait this /).locator("..");
+  if (!(await panel.count())) fail(`selecting ${who} did not open the bait panel`);
+  await panel.locator("select").first().selectOption(kind);
+  await panel.getByRole("button", { name: "add" }).click();
+  await page.waitForTimeout(700);
+  const made = (await plan.load()).entities.find((e) => e.name === `${kind} ${who}`);
+  if (!made) fail(`the ${kind} the panel put on ${who} is not in the plan`);
+  return made;
+};
+
+await f.deselect();
+const m2 = await shape("M2");
+await f.click(m2.x, m2.y);
+const spread = await baitThrough("spread", "M2");
+doc = await plan.load();
+const own = doc.mechs.find((m) => m.id === spread.mech);
+if (!own) fail(`the panel's spread is in Beat ${spread.mech ?? "nothing"}, which is no Beat of this plan`);
+if (own.snap !== step || own.boom !== step)
+  fail("the Beat the panel made does not start and end in the step it was added from");
+if (spread.steps !== "all")
+  fail(`the spread pins itself to ${JSON.stringify(spread.steps)} instead of letting its Beat time it`);
+if (spread.declaredIn !== step) fail("the spread does not say which step declared it");
+if (!(await page.locator(`[data-mech="${own.id}"]`).count())) fail("the Beat the panel made has no card on the rail");
+console.log(`"bait this player" made its own Beat with a card on the rail, exactly like a drop`);
+
+/* --- and with a Beat open it fills that one instead ------------------------- */
+
+await f.deselect();
+await page.locator('[data-mech="mech_tether"]').click();
+await page.waitForTimeout(300);
+const r1 = await shape("R1");
+await f.click(r1.x, r1.y);
+const puddle = await baitThrough("puddle", "R1");
+if (puddle.mech !== "mech_tether")
+  fail(`with the Tether Beat open the panel put its puddle in ${puddle.mech ?? "no Beat"}`);
+if ((await plan.load()).mechs.length !== doc.mechs.length)
+  fail("the panel minted a Beat of its own even though one was open");
+console.log("with a Beat open the panel filled it rather than minting another");
+
 await finish(s, "OK - " + plan.url);
