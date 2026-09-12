@@ -4,8 +4,9 @@
  * palette for the inspector; a right-press opens the menu the Part owns rather
  * than dragging it; a tether, which has no pose of its own, is still a click
  * target; Shift-click gathers a set that one drag carries; the wheel sizes the
- * shape it is over — and a drop never flashes back to where it started while
- * the server is still answering.
+ * shape it is over; a box's edge and corner grips stretch out of the side you
+ * pull and leave the side across from it standing — and a drop never flashes
+ * back to where it started while the server is still answering.
  *
  * This exists because a `listening={false}` on the token art once made half the
  * canvas unclickable, and nothing else catches that: it typechecks and builds.
@@ -150,6 +151,52 @@ if (Math.abs(factor - 1.08 ** 2) > 0.03) fail(`two notches scaled the donut by $
 if (Math.abs(grown.innerRadius / donut.innerRadius - factor) > 0.05)
   fail(`the hole did not keep up with the ring: ${grown.innerRadius}/${grown.radius}`);
 console.log(`two notches of the wheel over the donut: ${donut.radius}/${donut.innerRadius} -> ${grown.radius}/${grown.innerRadius}`);
+
+/* --- a grip stretches the side you pull, not both -------------------------- */
+
+// |-C-| pulled by its right pill is |-C---|, never |--C--|: the held edge walks
+// and the one across from it stands still, which means the dimension and the
+// pose travel together. A corner does it on both axes at once, anchored on the
+// corner diagonally across the box.
+await f.deselect();
+await plan.ops({
+  op: "add_entity",
+  spec: { type: "zone", shape: "rect", width: 200, length: 120, x: 0, y: -150 },
+});
+await page.waitForTimeout(600);
+const rect = (await plan.load()).entities.find((e) => e.shape === "rect");
+const box = (id, doc) => {
+  const e = doc.entities.find((candidate) => candidate.id === id);
+  return { w: e.width, l: e.length, left: e.x - e.width / 2, top: e.y - e.length / 2 };
+};
+await f.click(rect.x, rect.y);
+await inspector.waitFor();
+
+let was = box(rect.id, await plan.load());
+await f.measure();
+const pill = f.screen(rect.x + rect.width / 2, rect.y);
+await drag(page, pill, { x: pill.x + 60 * f.scale, y: pill.y }, { steps: 10, settle: 700 });
+let now = box(rect.id, await plan.load());
+check(
+  Math.abs(now.w - (was.w + 60)) < 6 && Math.abs(now.left - was.left) < 3 && Math.abs(now.l - was.l) < 1,
+  "the right edge pill stretches rightwards only",
+  `width ${was.w} -> ${now.w}, left edge ${was.left} -> ${now.left}`
+);
+
+was = now;
+const wide = (await plan.load()).entities.find((e) => e.id === rect.id);
+await f.measure();
+const se = f.screen(wide.x + wide.width / 2, wide.y + wide.length / 2);
+await drag(page, se, { x: se.x + 40 * f.scale, y: se.y + 30 * f.scale }, { steps: 10, settle: 700 });
+now = box(rect.id, await plan.load());
+check(
+  Math.abs(now.w - (was.w + 40)) < 6 &&
+    Math.abs(now.l - (was.l + 30)) < 6 &&
+    Math.abs(now.left - was.left) < 3 &&
+    Math.abs(now.top - was.top) < 3,
+  "the SE corner stretches out of the NW one",
+  `${was.w}x${was.l} -> ${now.w}x${now.l}, NW corner ${was.left},${was.top} -> ${now.left},${now.top}`
+);
 
 /* --- a drop holds still while the server answers ---------------------------- */
 

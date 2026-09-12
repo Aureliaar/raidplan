@@ -2477,10 +2477,19 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                       ? { length: next.length }
                       : {}),
                   };
+                  // An edge or corner grip stretches one side and holds the
+                  // other still, which moves the shape as surely as it resizes
+                  // it: the pose travels with the dimension, in one op.
+                  const posePatch =
+                    next.x !== undefined && next.y !== undefined &&
+                    (Math.abs(next.x - entity.x) > 0.4 || Math.abs(next.y - entity.y) > 0.4)
+                      ? { x: next.x, y: next.y }
+                      : {};
                   const sizeChanged = Object.keys(sizePatch).length > 0;
+                  const poseChanged = Object.keys(posePatch).length > 0;
                   const rotationChanged =
                     next.rotation !== undefined && Math.abs(next.rotation - entity.rotation) > 0.05;
-                  if (!sizeChanged && !rotationChanged) return;
+                  if (!sizeChanged && !rotationChanged && !poseChanged) return;
 
                   if (plan.variantModel === "step" && editingVariant && isActor(entity)) {
                     const ops: Op[] = [];
@@ -2504,6 +2513,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                       id,
                       patch: {
                         ...sizePatch,
+                        ...posePatch,
                         ...(rotationChanged ? { rotation: next.rotation } : {}),
                       },
                       stepId: step.id,
