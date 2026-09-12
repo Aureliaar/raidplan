@@ -27,7 +27,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
-import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy } from "../../shared/schema";
+import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy, tetherEnds } from "../../shared/schema";
 import { composeStepVariantEntities } from "../../shared/step-variants";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
@@ -238,12 +238,29 @@ function useGlide(
   }
 
   const k = ease(p);
+  const targetById = new Map(target.map((e) => [e.id, e]));
+  const lerp = (a: { x: number; y: number }, b: { x: number; y: number }) => ({
+    x: a.x + (b.x - a.x) * k,
+    y: a.y + (b.y - a.y) * k,
+  });
   // A shape that is in both steps slides and, if it is drawn fainter in one of
   // them, fades as it goes. One that is only in the step being walked into
   // comes up out of nothing.
-  const moving = target.map((e) => {
+  const moving = target.map((e): Entity => {
     const was = from.current.get(e.id);
     if (!was) return { ...e, opacity: e.opacity * k };
+    // A tether pinned where its Beat froze slides between pinned and following
+    // too, rather than jumping across while the people it joins walk.
+    if (e.type === "tether" && was.type === "tether" && (e.ends || was.ends)) {
+      const a = tetherEnds(was, from.current);
+      const b = tetherEnds(e, targetById);
+      if (a && b)
+        return {
+          ...e,
+          opacity: was.opacity + (e.opacity - was.opacity) * k,
+          ends: { from: lerp(a.from, b.from), to: lerp(a.to, b.to) },
+        };
+    }
     return {
       ...e,
       x: was.x + (e.x - was.x) * k,
@@ -2584,10 +2601,9 @@ function hitArea(e: Entity, byId: Map<string, Entity>): number {
       return (w + e.width) * (h + e.width) * scale;
     }
     case "tether": {
-      const a = byId.get(e.from);
-      const b = byId.get(e.to);
-      if (!a || !b) return Infinity;
-      return Math.hypot(b.x - a.x, b.y - a.y) * TETHER_HIT_WIDTH;
+      const ends = tetherEnds(e, byId);
+      if (!ends) return Infinity;
+      return Math.hypot(ends.to.x - ends.from.x, ends.to.y - ends.from.y) * TETHER_HIT_WIDTH;
     }
     case "zone":
       switch (e.shape) {
@@ -3253,9 +3269,9 @@ function Tether({
   selected: boolean;
   dim?: boolean;
 }) {
-  const a = byId.get(entity.from);
-  const b = byId.get(entity.to);
-  if (!a || !b) return null;
+  const ends = tetherEnds(entity, byId);
+  if (!ends) return null;
+  const { from: a, to: b } = ends;
   const distance = Math.hypot(b.x - a.x, b.y - a.y);
   const satisfied = entity.range === undefined
     ? undefined

@@ -105,6 +105,9 @@ function materializeBeat(staging: Plan, beat: Mech, variantId: string): { beats:
             ...(entity.anchor.near
               ? { near: partIds.get(entity.anchor.near) ?? entity.anchor.near }
               : {}),
+            ...(entity.anchor.along
+              ? { along: partIds.get(entity.anchor.along) ?? entity.anchor.along }
+              : {}),
           }
         : entity.anchor;
       const endpoints = entity.type === "tether"

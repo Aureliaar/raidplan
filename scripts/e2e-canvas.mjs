@@ -71,10 +71,39 @@ const x = Number(await page.locator("input[type=number]").first().inputValue());
 const y = Number(await page.locator("input[type=number]").nth(1).inputValue());
 if (Math.abs(x - h1.x) > 2 || Math.abs(y - h1.y) > 2)
   fail(`H1 followed the pointer to ${x},${y} (should be ${Math.round(h1.x)},${Math.round(h1.y)})`);
+// The two panels are tabs: Add comes back without giving up the selection, and
+// the Details tab is only out when there is nothing under it to talk about.
+await page.locator('[data-side-tab="add"]').click();
+await palette.waitFor();
+await page.keyboard.press("Tab");
+await inspector.waitFor();
+await page.keyboard.press("Tab");
+await palette.waitFor();
+await page.locator('[data-side-tab="details"]').click();
+await inspector.waitFor();
+if ((await page.locator("input.field").first().inputValue()) !== "H1")
+  fail("the Details tab came back about something other than H1");
 await inspector.locator("button", { hasText: "✕" }).click();
 await palette.waitFor();
 if (await inspector.count()) fail("the inspector stayed up after it was closed");
-console.log("a click swaps the palette for the inspector and leaves H1 where it stood");
+if (!(await page.locator('[data-side-tab="details"]').isDisabled()))
+  fail("the Details tab is still offered with nothing selected");
+console.log("a click swaps the palette for the inspector, Tab and the tabs switch back, and H1 stands still");
+
+// A right-click brings the inspector with it, which sends a scrolled palette
+// back to the top. That reset is the panel settling, not somebody scrolling
+// out from under the menu, and it used to take the menu straight back down.
+await page.locator("aside[data-panel] > div").last().evaluate((e) => (e.scrollTop = 400));
+await page.waitForTimeout(200);
+const scrolled = posed(await plan.load(), "boss", step);
+const onBoss = f.screen(scrolled.x, scrolled.y);
+await page.mouse.click(onBoss.x, onBoss.y, { button: "right" });
+await page.waitForTimeout(400);
+if (!(await page.locator("[data-context-menu]").count()))
+  fail("the right-click menu died when the panel it swapped in reset the scroll");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+console.log("a right-click over a scrolled palette still opens its menu");
 
 /* --- a right-press opens the menu the Part owns, and never drags ----------- */
 

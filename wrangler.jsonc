@@ -6,6 +6,16 @@
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
 
+  // The public origin. Attached as a custom domain, so Cloudflare owns the DNS
+  // record and the certificate; the workers.dev URL stays enabled alongside it.
+  // APP_URL is deliberately unset — appUrl() then answers from the request
+  // origin, so both hostnames build their own OAuth redirect_uri.
+  "routes": [
+    { "pattern": "raidplan.aure.onl", "custom_domain": true }
+  ],
+  // Wrangler turns workers.dev off whenever routes are set and this is absent.
+  "workers_dev": true,
+
   "assets": {
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",

@@ -9,6 +9,7 @@ import {
   type Anchor,
   anchorToPoint,
   BAIT_KINDS,
+  baitNeedsSource,
   baitSpec,
   createPlan,
   describePlan,
@@ -1166,7 +1167,7 @@ export const TOOLS: ToolDef[] = [
       name: z.string().optional().describe("Defaults to whatever goes in it first"),
       snapshot_in: z.string().optional().describe("Step id, index or name. Defaults to the first step"),
       goes_off_in: z.string().optional().describe("Step id, index or name. Defaults to the snapshot step"),
-      freezes_in: z.string().optional().describe("Step id, index or name: the last step its baits and anchors follow their targets in. Only a Beat of three or more steps has a choice — it must sit between the snapshot and the step before it goes off. Defaults to the snapshot step"),
+      freezes_in: z.string().optional().describe("Step id, index or name: the last step its baits, anchors and tethers follow their targets in. Only a Beat of three or more steps has a choice — it must sit between the snapshot and the step before it goes off. Defaults to the snapshot step"),
       color: z.string().optional().describe("Hex colour its shapes are drawn in. Defaults to the least-used of the palette"),
     },
     async run(ctx, a) {
@@ -1186,14 +1187,14 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "update_mech",
     description:
-      "Rename a mechanic, recolour it, or move where it snapshots, freezes or goes off. Its baits and anchors follow their targets up to the step it freezes in and hold that pose from there to the explosion; pass an empty string to freeze at the snapshot again. Only a Beat spanning three or more steps has anywhere to put the marker.",
+      "Rename a mechanic, recolour it, or move where it snapshots, freezes or goes off. Its baits, anchors and tethers follow their targets up to the step it freezes in and hold that pose from there to the explosion; pass an empty string to freeze at the snapshot again. Only a Beat spanning three or more steps has anywhere to put the marker.",
     schema: {
       plan_id: z.string(),
       mech: z.string().describe("Mech id, 1-based index or name"),
       name: z.string().optional(),
       snapshot_in: z.string().optional().describe("Step id, index or name"),
       goes_off_in: z.string().optional().describe("Step id, index or name"),
-      freezes_in: z.string().optional().describe('Step id, index or name: the last step its baits and anchors follow their targets in. Must be between the snapshot and the step before it goes off; "" freezes at the snapshot'),
+      freezes_in: z.string().optional().describe('Step id, index or name: the last step its baits, anchors and tethers follow their targets in. Must be between the snapshot and the step before it goes off; "" freezes at the snapshot'),
       color: z.string().optional().describe("Hex colour its shapes are drawn in"),
     },
     async run(ctx, a) {
@@ -1213,7 +1214,7 @@ export const TOOLS: ToolDef[] = [
       const m = res.plan.mechs.find((x) => x.id === mechId)!;
       return (
         `${mechLabel(res.plan, m)} is on the floor for ${mechSpan(res.plan, m).length} step(s), ` +
-        `and its baits follow until step ${res.plan.steps.findIndex((s) => s.id === freezeStep(res.plan, m)) + 1}.`
+        `and its baits and tethers follow until step ${res.plan.steps.findIndex((s) => s.id === freezeStep(res.plan, m)) + 1}.`
       );
     },
   }),
@@ -1588,7 +1589,9 @@ export const TOOLS: ToolDef[] = [
       "or `pick` (closest/farthest, where `count` is how many of them one bait covers), which is what a " +
       "proximity-baited mechanic actually does: rearrange the party and the AoE re-targets. " +
       "kinds: beam and cone fire from `from` through the target (out to the wall by default); " +
-      "donut, spread, puddle, stack, tower, proximity sit on the target; tether links the two.",
+      "donut, spread, puddle, stack, tower, proximity sit on the target; tether links the two. " +
+      "Or give `along` (a tether) instead of on/pick/from: a beam, cone or linestack then fires down " +
+      "that tether, out of its enemy end, and follows it when it is re-paired.",
     schema: {
       plan_id: z.string(),
       kind: z.enum(BAIT_KINDS),
@@ -1614,6 +1617,12 @@ export const TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe("What the beam/cone/tether comes out of: the boss, an add, an orb, any entity"),
+      along: z
+        .string()
+        .optional()
+        .describe(
+          "Instead of on/pick/from: a tether id or name for a beam, cone or linestack to fire down. It joins the tether's Beat unless `mech` says otherwise"
+        ),
       name: z.string().optional().describe("Mechanic name; each bait gets the target appended"),
       radius: z.number().positive().optional(),
       inner_radius: z.number().min(0).optional(),
@@ -1640,8 +1649,15 @@ export const TOOLS: ToolDef[] = [
         .split(",")
         .map((t) => t.trim())
         .filter(Boolean);
-      if (!named.length && !a.pick) throw new Error("Give `on` (named targets) or `pick` (closest/farthest)");
-      if (named.length && a.pick) throw new Error("Give either `on` or `pick`, not both");
+      if (a.along) {
+        if (named.length || a.pick || a.from) throw new Error("`along` replaces on, pick and from: give it alone");
+        if (!baitNeedsSource(a.kind) || a.kind === "tether")
+          throw new Error("Only a beam, cone or linestack can fire along a tether");
+      } else {
+        if (!named.length && !a.pick)
+          throw new Error("Give `on` (named targets), `pick` (closest/farthest) or `along` (a tether)");
+        if (named.length && a.pick) throw new Error("Give either `on` or `pick`, not both");
+      }
 
       const props = {
         radius: a.radius,
@@ -1661,8 +1677,27 @@ export const TOOLS: ToolDef[] = [
         const variant = poseVariant(plan, stepId, a.variant, a.beat);
         const visible = scenePlan(plan, stepId, variant);
         const source = a.from ? resolveRef(visible, a.from).id : undefined;
-        const beat = beatFor(plan, a.mech, stepId, a.name ?? a.kind);
+        const tether = a.along ? resolveRef(visible, a.along) : undefined;
+        if (tether && tether.type !== "tether") throw new Error(`${a.along} is not a tether`);
+        const beat = beatFor(plan, a.mech ?? tether?.mech, stepId, a.name ?? a.kind);
         labels = [];
+
+        if (tether?.type === "tether") {
+          // Built as an ordinary aimed bait, then bound to the tether alone:
+          // named ends of its own would go stale when the tether is re-paired.
+          const spec = baitSpec(a.kind, tether.to, tether.from, { ...props, name: a.name, mech: beat.mech });
+          const { extend } = spec.anchor as { extend?: boolean };
+          labels.push(`along ${tether.name ?? tether.id}`);
+          return [
+            ...beat.prelude,
+            {
+              op: "add_entity",
+              stepId,
+              variant,
+              spec: { ...spec, anchor: { along: tether.id, extend } },
+            } satisfies Op,
+          ];
+        }
 
         if (a.pick) {
           // Several targets is one bait with a count, not one bait per slot of
@@ -1703,6 +1738,8 @@ export const TOOLS: ToolDef[] = [
 
       const ids = res.values.slice(res.values.length - labels.length).map((v: unknown) => idOf(v));
       const what = labels.map((l, i) => `${l} [${ids[i]}]`).join(", ");
+      if (a.along)
+        return `Added a ${a.kind} ${what}. It fires down the tether and follows it when it is re-paired.`;
       if (a.pick) {
         const covered = a.count ?? 1;
         const who = `the ${covered > 1 ? `${covered} ` : ""}${a.pick} ${a.of ?? "player"}${covered > 1 ? "s" : ""}`;
@@ -1979,7 +2016,7 @@ Coordinates are arena units with the origin at the arena centre: +x is east (rig
 A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degrees, 0 = north, increasing clockwise (90 = east).
 Arena distances are yalms: a manual arena.widthYalms wins, supported encounters use known dimensions, and unknown fights default to 40 yalms across. Calibration never changes stored coordinates.
 Actors (players, enemies) and waymarks are plan-wide; per-step position overrides are how movement is expressed. Every Part (zone, bait, tether, text, icon, bait anchor) lives in a Beat, which decides the steps it is on the floor for: an add without mech makes a new Beat for it in that step, and merge_mechs folds Beats together.
-A Beat's baits and anchors follow their targets up to the step it freezes in (update_mech freezes_in, the snapshot by default) and are drawn where they stood there from then until it goes off. Only a Beat of three or more steps has anywhere to put that marker.
+A Beat's baits, anchors and tethers follow their targets up to the step it freezes in (update_mech freezes_in, the snapshot by default) and are drawn where they stood there from then until it goes off. Only a Beat of three or more steps has anywhere to put that marker.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
 A Beat is one timed card/frame. Its child Variant boxes are mutually exclusive and contain only divergent Beat Parts plus optional sparse actor movement. Shared Parts stay directly on the Beat. Preview choices and edit destinations are separate: passing beat + variant explicitly chooses where an edit is stored, never a saved preview. Saved Routes are non-owning complete Beat-selection maps and cannot contain movement conflicts. Variants exist only on Beats; Mechanic-wide Variants are retired.
 A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest", which re-targets itself as the party moves. A mechanic that catches several people is one bait with "count" — it draws that many shapes, over the ranks after "rank" — not one bait per target. Either way it holds in every step with no overrides to redo.

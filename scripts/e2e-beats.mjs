@@ -152,6 +152,22 @@ if (!doc.entities.filter((e) => e.type === "zone").every((z) => z.mech === beat)
 if (merged.snap !== cast || merged.boom !== after) fail("the merged Beat does not cover both spans");
 console.log("a circle dropped in Cast got a Beat of its own; carried onto the first, it folded in and the span grew");
 
+/* --- clicking the card points at everything in the Beat --------------------- */
+
+// Opening a Beat is how you fill it, so the palette has to survive the click —
+// and the Parts it holds come up selected, ready to be moved or styled as one.
+await page.locator("canvas").first().click({ position: { x: 8, y: 8 } });
+await page.waitForTimeout(300);
+if (await page.locator('[data-side-tab="details"]').isDisabled().then((d) => !d))
+  fail("clicking bare floor left something selected");
+await card.click();
+await page.waitForTimeout(500);
+if (await page.locator('[data-side-tab="details"]').isDisabled())
+  fail("clicking the Beat card selected nothing");
+if (!(await page.locator('[data-panel="palette"]').count()))
+  fail("clicking the Beat card took the palette away, so it cannot be filled");
+console.log("clicking the Beat card selects the Parts in it and keeps the palette up");
+
 /* --- a Beat is one thing: named where it sits, deleted with all it holds ---- */
 
 await gotoStep(page, 2);

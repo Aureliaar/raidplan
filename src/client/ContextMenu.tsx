@@ -50,6 +50,15 @@ interface MenuState {
 
 let state: MenuState | null = null;
 let opened = 0;
+/**
+ * When the current menu went up. A right-click can change what the panels are
+ * showing — picking its target swaps the inspector in, or sends a scrolled
+ * palette back to the top — and a scroller that resets fires a scroll event
+ * like any other. Scrolls in that first moment are the layout settling around
+ * the menu, not somebody scrolling out from under it.
+ */
+let openedAt = 0;
+const SETTLING_MS = 300;
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((listener) => listener());
 
@@ -60,6 +69,7 @@ export function openContextMenu(point: MenuPoint, items: MenuItem[]): void {
     return;
   }
   state = { key: ++opened, point, items };
+  openedAt = performance.now();
   emit();
 }
 
@@ -311,7 +321,10 @@ export function ContextMenuHost() {
       if (ev.target instanceof Element && ev.target.closest("[data-context-menu]")) return;
       closeContextMenu();
     };
-    const onScroll = () => closeContextMenu();
+    const onScroll = () => {
+      if (performance.now() - openedAt < SETTLING_MS) return;
+      closeContextMenu();
+    };
     const onBlur = () => closeContextMenu();
     // Escape has to beat the editor's own window keydown, which would otherwise
     // step out of variant editing behind the menu; Delete has to be swallowed
