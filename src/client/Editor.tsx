@@ -1213,10 +1213,26 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     setHover(null);
   }
 
+  /** A group's name: fixed groups by label, debuff groups by the status. */
+  function groupLabel(group: GroupId): string {
+    if (!group.startsWith("debuff:")) return GROUP_LABEL[group as (typeof GROUPS)[number]];
+    const id = group.slice(7);
+    for (const d of dress?.values() ?? []) if (d.debuff && String(d.debuff.id) === id) return d.debuff.name;
+    return "Debuff";
+  }
+
+  /** Everyone wearing a debuff this step, one drop group per status. */
+  function debuffGroups(): GroupId[] {
+    const ids = new Set<string>();
+    for (const d of dress?.values() ?? []) if (d.debuff) ids.add(String(d.debuff.id));
+    return [...ids].map((id) => `debuff:${id}` as GroupId);
+  }
+
   function membersOf(group: GroupId): PlayerEntity[] {
     return entitiesForStep(plan!, step!.id, undefined, shown).filter((e): e is PlayerEntity => {
       if (e.type !== "player") return false;
       if (group === "party") return true;
+      if (group.startsWith("debuff:")) return String(dress?.get(e.id)?.debuff?.id) === group.slice(7);
       // The light parties, read off the callout names a static already uses:
       // MT H1 M1 R1 against OT H2 M2 R2. Anyone named otherwise is in neither,
       // which is honest — the plan has not said which side they are on.
@@ -1595,7 +1611,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         return;
       }
       const people = membersOf(target.group);
-      if (!people.length) return setError(`No ${target.group} in this step to bind to`);
+      if (!people.length) return setError(`No ${groupLabel(target.group)} in this step to bind to`);
       // One drop, one thing — the eight shapes it draws are that thing's faces.
       const bond = {
         id: "bond_" + Math.random().toString(36).slice(2, 10),
@@ -2287,8 +2303,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           return { mode: "anchor", detail: "each support tethered to a damager" };
         }
         const people = membersOf(target.group).length;
-        if (!people) return none(`no ${GROUP_LABEL[target.group]} in this step`, true);
-        return { mode: "anchor", detail: `one each to ${GROUP_LABEL[target.group]} (${people})${aimedFrom()}` };
+        if (!people) return none(`no ${groupLabel(target.group)} in this step`, true);
+        return { mode: "anchor", detail: `one each to ${groupLabel(target.group)} (${people})${aimedFrom()}` };
       }
       case "source": {
         if (isPaletteTether(kind))
@@ -3136,14 +3152,14 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 carrying &&
                 carrying !== "anchor" &&
                 !isPaletteCosmetic(carrying) && (
-                  <div className="drop-rail absolute right-2 top-1/2 z-20 flex -translate-y-1/2 flex-col gap-1.5">
-                    {GROUPS.map((g) => {
+                  <div className="drop-rail fixed bottom-4 right-4 z-40 flex max-h-[calc(100vh-2rem)] flex-col flex-wrap-reverse content-end justify-end gap-1.5">
+                    {[...GROUPS, ...debuffGroups()].map((g) => {
                       const people = membersOf(g).length;
                       return (
                         <div
                           key={g}
                           data-drop-group={g}
-                          title={`Drop a mechanic here to give one to each of the ${g}`}
+                          title={`Drop a mechanic here to give one to each of the ${groupLabel(g)}`}
                           onDragOver={(ev) => {
                             ev.preventDefault();
                             ev.dataTransfer.dropEffect = "copy";
@@ -3163,7 +3179,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                             hover === g ? "border-blue-400 bg-blue-500/25" : "border-blue-500/60"
                           }`}
                         >
-                          <div>{GROUP_LABEL[g]}</div>
+                          <div>{groupLabel(g)}</div>
                           <div className="text-[11px] font-normal text-ink-400">
                             {people} {people === 1 ? "player" : "players"}
                           </div>
@@ -6707,9 +6723,10 @@ function ShareButton({
 /* ------------------------------------------------------------ drag and drop */
 
 const GROUPS = ["party", "g1", "g2", "supports", "damagers", "tanks", "healers"] as const;
-type GroupId = (typeof GROUPS)[number];
+/** A fixed group, or everyone wearing one debuff this step ("debuff:<status id>"). */
+type GroupId = (typeof GROUPS)[number] | `debuff:${string}`;
 
-const GROUP_LABEL: Record<GroupId, string> = {
+const GROUP_LABEL: Record<(typeof GROUPS)[number], string> = {
   party: "Party",
   g1: "G1",
   g2: "G2",

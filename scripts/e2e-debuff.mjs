@@ -69,6 +69,28 @@ if (deal.mode !== "sd") fail("the fold did not flip the tokens to S/D: " + deal.
 if (!(await modal.getByText(/Supports take/).count())) fail("the popup's sentence does not name the supports");
 console.log("a status dropped on Tanks went to the tanks; one on Supports folded both pools and flipped to S/D");
 
+/* --- while a mech is in hand, each worn status is a drop group ------------- */
+
+await modal.getByRole("button", { name: "Done" }).click();
+await page.waitForTimeout(400);
+const chip = await page.locator('[data-palette-chip="circle"]').boundingBox();
+await page.mouse.move(chip.x + chip.width / 2, chip.y + chip.height / 2);
+await page.mouse.down();
+await page.mouse.move(chip.x + 200, chip.y + 40, { steps: 6 });
+const soul = page.locator('[data-drop-group^="debuff:"]', { hasText: "Umbralbright Soul" });
+await soul.waitFor({ timeout: 3000 }).catch(() => fail("no Umbralbright Soul drop group while a Circle is in hand"));
+const rail = await page.locator(".drop-rail").boundingBox();
+const view = page.viewportSize();
+if (rail.x + rail.width < view.width - 40 || rail.y + rail.height < view.height - 40)
+  fail("the drop groups are not in the bottom-right corner: " + JSON.stringify(rail));
+const at = await soul.boundingBox();
+await page.mouse.move(at.x + at.width / 2, at.y + at.height / 2, { steps: 6 });
+await page.mouse.up();
+await page.waitForTimeout(700);
+const bonded = (await plan.load()).entities.filter((e) => e.shape === "circle" && e.bond?.group?.startsWith("debuff:"));
+if (bonded.length !== 1) fail("a Circle dropped on Umbralbright Soul did not land on its one wearer: " + JSON.stringify(bonded));
+console.log("the drop groups sit bottom-right, and a Circle on Umbralbright Soul went to the one player wearing it");
+
 /* --- a later plan that names the encounter finds the fight by itself ------- */
 
 const later = await s.createPlan({ name: "debuff e2e 2", encounter: "P12S — Athena", withParty: true });
