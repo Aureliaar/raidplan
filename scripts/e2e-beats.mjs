@@ -168,6 +168,31 @@ if (!(await page.locator('[data-panel="palette"]').count()))
   fail("clicking the Beat card took the palette away, so it cannot be filled");
 console.log("clicking the Beat card selects the Parts in it and keeps the palette up");
 
+/* --- a locked Beat is looked straight through, and let go by right-click --- */
+
+await gotoStep(page, 1);
+const circle = (await plan.load()).entities.find((e) => e.shape === "circle");
+// Inside the circle, clear of the party standing around it.
+const spot = { x: circle.x - 50, y: circle.y - 100 };
+const inspecting = async (id) => (await page.locator("aside").innerText()).includes(id);
+await card.click({ button: "right" });
+await page.locator('[data-menu-item="Lock Beat"]').click();
+await page.waitForTimeout(600);
+if (!(await plan.load()).mechs[0]?.locked) fail("Lock Beat on the card's menu did not lock the Beat");
+await f.deselect();
+await f.click(spot.x, spot.y);
+if (await inspecting(circle.id)) fail("a click on a Part of a locked Beat still selected it");
+await f.deselect();
+const onCircle = f.screen(spot.x, spot.y);
+await page.mouse.click(onCircle.x, onCircle.y, { button: "right" });
+await page.locator('[data-menu-item="Unlock Beat"]').click();
+await page.waitForTimeout(600);
+if ((await plan.load()).mechs[0]?.locked) fail("Unlock Beat on its Part's menu left the Beat locked");
+await f.deselect();
+await f.click(spot.x, spot.y);
+if (!(await inspecting(circle.id))) fail("a click on the circle did not select it once its Beat was unlocked");
+console.log("Lock Beat made its circle unclickable, and Unlock Beat on the circle's own menu freed it");
+
 /* --- a Beat is one thing: named where it sits, deleted with all it holds ---- */
 
 await gotoStep(page, 2);

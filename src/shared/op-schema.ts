@@ -240,7 +240,7 @@ const PublicOpSchema = z.discriminatedUnion("op", [
   strict({ op: z.literal("set_default_beat_variant_route"), routeId: id.optional() }),
   strict({ op: z.literal("add_mech"), id: id.optional(), name: z.string().optional(), snap: id.optional(), boom: id.optional(), freeze: z.string().optional(), color: z.string().optional(), plain: z.boolean().optional() }),
   strict({ op: z.literal("merge_mechs"), into: id, mechIds: ids }),
-  strict({ op: z.literal("update_mech"), mechId: id, patch: strict({ name: z.string().optional(), snap: id.optional(), boom: id.optional(), freeze: z.string().optional(), color: z.string().optional(), debuffs: debuffs.optional() }) }),
+  strict({ op: z.literal("update_mech"), mechId: id, patch: strict({ name: z.string().optional(), snap: id.optional(), boom: id.optional(), freeze: z.string().optional(), color: z.string().optional(), debuffs: debuffs.optional(), locked: z.boolean().optional() }) }),
   strict({ op: z.literal("delete_mech"), mechId: id, keepEntities: z.boolean().optional() }),
   strict({ op: z.literal("assign_mech"), ids, mechId: id.nullable(), ...context }),
   strict({ op: z.literal("add_waymarks"), distance: z.number().optional() }),

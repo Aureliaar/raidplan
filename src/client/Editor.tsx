@@ -47,6 +47,7 @@ import {
   isFanCopy,
   hydratePlan,
   isActor,
+  isLocked,
   mechLabel,
   MECH_COLORS,
   mechColor,
@@ -802,8 +803,17 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       if (!mod && (ev.key === "Delete" || ev.key === "Backspace")) {
         if (selection.length) {
           ev.preventDefault();
+          // A locked thing is only in the selection because it was right-clicked,
+          // and a stray key is exactly the touch the lock is there to stop.
+          const drawn = plan ? entitiesForStep(plan, step?.id, undefined, shown) : [];
+          const loose = selection.filter((id) => {
+            const e = drawn.find((candidate) => candidate.id === id);
+            return !e || !isLocked(plan!, e);
+          });
+          if (loose.length !== selection.length) setNote("Locked — right-click it to unlock");
+          if (!loose.length) return;
           setSelected(null);
-          void run({ op: "delete_entities", ids: selection });
+          void run({ op: "delete_entities", ids: loose });
           return;
         }
         // Nothing on the canvas is selected, so the key falls through to the
@@ -1830,6 +1840,31 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     { label: "Bring to front", onSelect: () => void run({ op: "reorder_entity", id, where: "front" }) },
   ];
 
+  /**
+   * The one way back from a lock. A Part of a locked Beat is let go by
+   * unlocking the Beat, since that is what is holding it.
+   */
+  function lockItem(entity: Entity): MenuItem {
+    if (entity.locked)
+      return {
+        label: "Unlock",
+        onSelect: () => void run({ op: "update_entity", id: entity.id, patch: { locked: false } }),
+      };
+    const beat = entity.mech ? plan!.mechs.find((m) => m.id === entity.mech) : undefined;
+    if (beat?.locked)
+      return {
+        label: "Unlock Beat",
+        onSelect: () => void run({ op: "update_mech", mechId: beat.id, patch: { locked: false } }),
+      };
+    return {
+      label: "Lock",
+      onSelect: () => {
+        setSelected(null);
+        void run({ op: "update_entity", id: entity.id, patch: { locked: true } });
+      },
+    };
+  }
+
   const deleteItem = (ids: string[]): MenuItem => ({
     label: "Delete",
     danger: true,
@@ -1850,6 +1885,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     if (entity.type === "marker")
       return [
         { heading: "Waymark" },
+        lockItem(entity),
         { label: "Duplicate", onSelect: () => void run({ op: "duplicate_entity", id }) },
         ...reorderItems(id),
         { separator: true },
@@ -1862,6 +1898,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         (!!editingVariant && variantStepEdited(plan!, step!.id, editingVariant));
       return [
         { heading: entity.type === "player" ? "Player" : "Enemy" },
+        lockItem(entity),
         {
           label: "Clear override on this step",
           disabled: !overridden,
@@ -1901,6 +1938,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       });
     return [
       { heading: "Part" },
+      lockItem(entity),
       moveToBeatItem([id]),
       ...(entity.type === "tether" ? [anchorToTethersItem([id], "Anchor to tether")] : []),
       ...(anchor
@@ -1943,6 +1981,13 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const tethers = ids.filter((id) => drawn.some((e) => e.id === id && e.type === "tether"));
     return [
       { heading: `${ids.length} selected` },
+      {
+        label: "Lock",
+        onSelect: () => {
+          setSelected(null);
+          void run(ids.map((id) => ({ op: "update_entity" as const, id, patch: { locked: true } })));
+        },
+      },
       moveToBeatItem(parts),
       anchorToTethersItem(tethers, "Anchor to each tether"),
       {
@@ -2727,6 +2772,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 highlight={highlight}
                 glide={glide}
                 onward={onward}
+                picking={!!pendingTether}
                 onPick={(id) => {
                   if (!pendingTether) return false;
                   const target = authoredScene.find((e) => e.id === id);
@@ -4300,6 +4346,10 @@ function StepRail({
           }),
       });
     items.push(
+      {
+        label: mech.locked ? "Unlock Beat" : "Lock Beat",
+        onSelect: () => void run({ op: "update_mech", mechId: mech.id, patch: { locked: !mech.locked } }),
+      },
       { label: "Rename Beat", onSelect: () => setRenaming(mech.id) },
       {
         label: "Merge into…",
@@ -4772,6 +4822,7 @@ function StepRail({
               {expanded ? (
                 <>
                   <span className="relative w-full truncate text-left text-[11px] font-semibold leading-[14px]">
+                    {mech.locked && <LockGlyph />}
                     {label}
                   </span>
                   <span className="relative w-full truncate text-left text-[10px] leading-[13px] text-ink-400">
@@ -4800,6 +4851,7 @@ function StepRail({
                       overflow: "hidden",
                     }}
                   >
+                    {mech.locked && <LockGlyph />}
                     {label}
                     {/* A one-row card has room for one line, so the count rides
                         along on the name. */}
@@ -6587,6 +6639,22 @@ const PALETTE_HELP =
   "Drag onto the floor to place one, onto a group to give everybody one, or onto a boss, " +
   "add, or bait anchor to have it thrown at whoever stands nearest. Drop a tether on any object, " +
   "then pick any other object. Scroll over anything on the arena to size it — shift for fine steps.";
+
+/** A locked Beat's padlock, sized to sit in front of its name. */
+function LockGlyph() {
+  return (
+    <svg
+      aria-label="Locked"
+      viewBox="0 0 10 12"
+      className="mr-0.5 inline-block h-[9px] w-[8px] align-[-1px]"
+      fill="none"
+      stroke="currentColor"
+    >
+      <path d="M2.5 5.5 V3.5 a2.5 2.5 0 0 1 5 0 V5.5" strokeWidth="1.4" />
+      <rect x="1" y="5.5" width="8" height="6" rx="1" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
 
 function PaletteGlyph({ kind, size = 30 }: { kind: PaletteKind; size?: number }) {
   const stroke = "#7aa2f7";

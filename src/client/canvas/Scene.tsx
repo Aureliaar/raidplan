@@ -27,7 +27,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
-import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy, tetherEnds } from "../../shared/schema";
+import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy, isLocked, tetherEnds } from "../../shared/schema";
 import { composeStepVariantEntities } from "../../shared/step-variants";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
@@ -146,6 +146,11 @@ export interface SceneProps {
   sweep?: MutableRefObject<((ev: MouseEvent) => void) | null>;
   /** Intercept a click before normal selection/dragging, for two-click authoring tools. */
   onPick?(id: string): boolean;
+  /**
+   * A two-click tool is waiting for its second click. Choosing the boss as a
+   * tether's other end does not touch the boss, so locks do not hide it then.
+   */
+  picking?: boolean;
   onSelect(ids: string[]): void;
   /**
    * A right-click on the floor or on something standing on it. The canvas is
@@ -426,6 +431,7 @@ export function Scene({
   onward = true,
   sweep,
   onPick,
+  picking,
   onSelect,
   onContextMenu,
   onMove,
@@ -478,6 +484,9 @@ export function Scene({
   // A tether is already immovable, though, and selecting one is how its shared
   // style/range becomes editable in the inspector.
   const frozen = (e: Entity) => offLayer(e) || (!!e.bond && e.type !== "tether") || going.has(e.id);
+  // Locked by hand or by its Beat: every left-button gesture looks straight
+  // through it, and only a right-click still lands on it.
+  const locked = (e: Entity) => isLocked(plan, e);
 
   const committed = useMemo(() => entitiesForStep(plan, stepId, undefined, shown), [plan, stepId, shown]);
   const selectedIds = useMemo(
@@ -532,6 +541,7 @@ export function Scene({
             !going.has(e.id)
         )}
         selectedIds={selectedIds}
+        locked={locked}
         pixelsPerUnit={scale}
         viewHalf={size / 2 / scale}
         floorHalf={arena.width / 2}
@@ -599,7 +609,7 @@ export function Scene({
    * still how their shared style becomes editable — the selection just leaves
    * them where they are.
    */
-  const carriable = (e: Entity) => !frozen(e) && !e.locked && e.type !== "tether" && !e.anchor;
+  const carriable = (e: Entity) => !frozen(e) && !locked(e) && e.type !== "tether" && !e.anchor;
 
   function beginGroupDrag(id: string, picked: Set<string> = selectedIds) {
     const source = committed.find((e) => e.id === id);
@@ -610,7 +620,7 @@ export function Scene({
       // how its nudge off the target is authored. Swept up in a selection it
       // would instead take that nudge on top of the movement it inherits, so a
       // marquee over a party would leave every spread doubly displaced.
-      const grabbedBait = e.id === id && !!e.anchor && !frozen(e) && !e.locked;
+      const grabbedBait = e.id === id && !!e.anchor && !frozen(e) && !locked(e);
       if (!picked.has(e.id) || !(carriable(e) || grabbedBait)) continue;
       const base = anchorBase.get(e.id);
       members.set(e.id, {
@@ -771,7 +781,7 @@ export function Scene({
   function under(
     evt: Konva.KonvaEventObject<MouseEvent | TouchEvent | WheelEvent>,
     /** The wheel resizes a bonded set through any of its faces; a click cannot. */
-    include: (e: Entity) => boolean = (e) => !frozen(e)
+    include: (e: Entity) => boolean = (e) => !frozen(e) && !locked(e)
   ) {
     const stage = evt.target.getStage();
     const point = stage?.getPointerPosition();
@@ -829,6 +839,8 @@ export function Scene({
     const chip = evt.target.findAncestor(".chip", true) as Konva.Group | undefined;
     const chipFor = chip?.getAttr("entityId") as string | undefined;
     if (chipFor) {
+      const named = byId.get(chipFor);
+      if (named && locked(named)) return;
       if (additive) {
         onSelect(selected.includes(chipFor) ? selected.filter((id) => id !== chipFor) : [...selected, chipFor]);
       } else {
@@ -836,7 +848,7 @@ export function Scene({
       }
       return;
     }
-    const best = under(evt);
+    const best = under(evt, picking ? (e) => !frozen(e) : undefined);
     // A bare waymark is frozen scenery on the Step layer. An editable shape
     // visibly on top of it still wins, though: otherwise a player parked on a
     // waymark (R1 on D in the final P11S slide) cannot be grabbed at all.
@@ -863,7 +875,7 @@ export function Scene({
     const entity = entities.find((e) => e.id === best!.id);
     // A tether is two endpoints and nothing else, so there is nothing to drag.
     // A bait can be dragged: the drop lands as an offset from its anchor.
-    if (editable && entity && !entity.locked && entity.type !== "tether") {
+    if (editable && entity && !locked(entity) && entity.type !== "tether") {
       const node = best.node;
       // React has not rendered a newly clicked selection yet, so resolve its
       // symmetry partners now instead of waiting for a second gesture.
@@ -955,7 +967,7 @@ export function Scene({
     const hits = [
       ...new Set(
         entities
-          .filter((e) => !frozen(e))
+          .filter((e) => !frozen(e) && !locked(e))
           .filter((e) => swept.has(e.id) || inBox(stage.findOne(`#${e.id}`)))
           .map((e) => fanOwnerId(e.id))
       ),
@@ -980,7 +992,7 @@ export function Scene({
     const point = { x: evt.evt.clientX, y: evt.evt.clientY };
     const chip = evt.target.findAncestor(".chip", true) as Konva.Group | undefined;
     const chipFor = chip?.getAttr("entityId") as string | undefined;
-    const hit = chipFor ?? under(evt as never)?.id;
+    const hit = chipFor ?? under(evt as never, (e) => !frozen(e))?.id;
     if (hit) {
       if (!selectedIds.has(hit)) onSelect([hit]);
       onContextMenu({ kind: "entity", id: hit, point });
@@ -1006,7 +1018,7 @@ export function Scene({
    */
   function wheelAt(evt: Konva.KonvaEventObject<WheelEvent>) {
     if (!editable || !onResize) return;
-    const hit = under(evt, (e) => !frozen(e) || !!e.bond);
+    const hit = under(evt, (e) => (!frozen(e) || !!e.bond) && !locked(e));
     if (!hit) return;
     evt.evt.preventDefault();
     const step = evt.evt.shiftKey ? 1.02 : 1.08;
@@ -1023,7 +1035,7 @@ export function Scene({
   const pinnedId = (() => {
     if (!editable || selectedIds.size !== 1) return null;
     const entity = entities.find((candidate) => selectedIds.has(candidate.id));
-    return entity && !frozen(entity) && !entity.locked && entity.type !== "tether" ? entity.id : null;
+    return entity && !frozen(entity) && !locked(entity) && entity.type !== "tether" ? entity.id : null;
   })();
 
   return (
@@ -2491,6 +2503,7 @@ function ChipGlyph({
 function Chips({
   entities,
   selectedIds,
+  locked,
   pixelsPerUnit,
   viewHalf,
   floorHalf,
@@ -2499,6 +2512,8 @@ function Chips({
 }: {
   entities: Entity[];
   selectedIds: Set<string>;
+  /** Locked things say so on their chip, which is not a way to click them. */
+  locked: (e: Entity) => boolean;
   pixelsPerUnit: number;
   /** Half-extent (arena units) of the visible canvas around the arena centre. */
   viewHalf: number;
@@ -2519,7 +2534,9 @@ function Chips({
   };
 
   const slots = entities.map((e) => {
-    const { label, sub } = chipText(e);
+    const text = chipText(e);
+    const label = text.label;
+    const sub = locked(e) ? (text.sub ? `${text.sub} · locked` : "locked") : text.sub;
     const glyph = e.type !== "text";
     // A debuffed player carries their status on the chip too, drawn taller
     // than the token glyph so "who has it" reads without hunting the floor.
@@ -2649,7 +2666,7 @@ function Chips({
             opacity={quiet && !lit ? 0.45 : 1}
             onMouseEnter={() => {
               setHover(e.id);
-              cursor("pointer");
+              cursor(locked(e) ? "" : "pointer");
             }}
             onMouseLeave={() => {
               setHover(null);

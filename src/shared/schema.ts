@@ -601,6 +601,8 @@ export const MechSchema = z.object({
   variants: z.array(VariantSchema).default([]),
   /** Set when this cast is a debuff deal: pools of statuses on role groups. */
   debuffs: MechDebuffsSchema.nullish(),
+  /** Every Part in it is locked on the canvas — see `isLocked`. */
+  locked: z.boolean().optional(),
 });
 export type Mech = z.infer<typeof MechSchema>;
 
@@ -1164,6 +1166,16 @@ export function authoredEntitiesForStep(
  */
 export function isActor(entity: Entity): boolean {
   return entity.type === "player" || (entity.type === "enemy" && entity.role !== "anchor");
+}
+
+/**
+ * Locked by hand, or a Part of a locked Beat. A left click, a sweep or the
+ * wheel goes straight through a locked thing to whatever is under it; only a
+ * right-click still finds it, which is where it is unlocked.
+ */
+export function isLocked(plan: Pick<Plan, "mechs">, entity: Entity): boolean {
+  if (entity.locked) return true;
+  return !!entity.mech && !!plan.mechs.find((mech) => mech.id === entity.mech)?.locked;
 }
 
 /** Actors and waymarks never enter a Beat content snapshot. */

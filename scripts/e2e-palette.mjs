@@ -7,7 +7,7 @@
  * is an ordinary enemy mechanics can come out of; and a group's row carries
  * the whole group.
  */
-import { chip, drawn, fail, finish, floor, session } from "./harness.mjs";
+import { chip, drag, drawn, fail, finish, floor, session } from "./harness.mjs";
 
 const s = await session("palette-e2e");
 const { page } = s;
@@ -122,6 +122,32 @@ doc = await plan.load();
 if (!doc.entities.some((e) => e.shape === "rect" && e.anchor?.from === boss.id))
   fail("a beam dropped on the boss is not thrown from it");
 console.log("the Boss chip makes an ordinary enemy, and a beam dropped on it comes out of it");
+
+/* --- the boss comes locked: a click looks through it, a right-click lets it go */
+
+// The biggest thing on the floor would otherwise be the easiest to grab by
+// mistake. Aim at its back, away from the beam leaving its front.
+if (!boss.locked) fail("a new Boss is not locked, so it is the easiest thing on the floor to grab");
+const beamOut = doc.entities.find((e) => e.shape === "rect" && e.anchor?.from === boss.id);
+const turn = ((await drawn(page, plan.id)).find((e) => e.id === beamOut.id)?.rotation ?? 0) * (Math.PI / 180);
+const back = { x: boss.x - 40 * Math.sin(turn), y: boss.y + 40 * Math.cos(turn) };
+const inspecting = async (id) => (await page.locator("aside").innerText()).includes(id);
+await f.click(back.x, back.y);
+if (await inspecting(boss.id)) fail("a click on the locked boss selected it");
+await drag(page, f.screen(back.x, back.y), f.screen(back.x + 90, back.y + 60));
+const stayed = (await plan.load()).entities.find((e) => e.id === boss.id);
+if (stayed.x !== boss.x || stayed.y !== boss.y) fail(`a drag moved the locked boss to ${stayed.x},${stayed.y}`);
+await f.deselect();
+const bossAt = f.screen(back.x, back.y);
+await page.mouse.click(bossAt.x, bossAt.y, { button: "right" });
+await page.locator('[data-menu-item="Unlock"]').click();
+await page.waitForTimeout(600);
+if ((await plan.load()).entities.find((e) => e.id === boss.id).locked) fail("Unlock on the boss's menu left it locked");
+await f.deselect();
+await f.click(back.x, back.y);
+if (!(await inspecting(boss.id))) fail("a click on the unlocked boss did not select it");
+await f.deselect();
+console.log("the Boss comes locked: a click and a drag go through it, and Unlock on its right-click menu frees it");
 
 /* --- a group's row carries the whole group ---------------------------------- */
 

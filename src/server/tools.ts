@@ -1196,6 +1196,7 @@ export const TOOLS: ToolDef[] = [
       goes_off_in: z.string().optional().describe("Step id, index or name"),
       freezes_in: z.string().optional().describe('Step id, index or name: the last step its baits, anchors and tethers follow their targets in. Must be between the snapshot and the step before it goes off; "" freezes at the snapshot'),
       color: z.string().optional().describe("Hex colour its shapes are drawn in"),
+      locked: z.boolean().optional().describe("Lock every Part in it: a click on the canvas goes through them"),
     },
     async run(ctx, a) {
       // Resolved on the way in: after a rename the name it was found by is gone.
@@ -1209,6 +1210,7 @@ export const TOOLS: ToolDef[] = [
           boom: stepIdOf(plan, a.goes_off_in),
           freeze: a.freezes_in === "" ? "" : stepIdOf(plan, a.freezes_in),
           color: a.color,
+          locked: a.locked,
         },
       }));
       const m = res.plan.mechs.find((x) => x.id === mechId)!;
@@ -1339,6 +1341,10 @@ export const TOOLS: ToolDef[] = [
       icon: z.string().optional().describe("Override the art, e.g. actor/enemy2 (see list_assets)"),
       rotation: z.number().optional().describe("Facing in degrees, 0 = north"),
       color: z.string().optional(),
+      locked: z
+        .boolean()
+        .optional()
+        .describe("Locked things are skipped by a click on the canvas and unlocked by right-click. Defaults to true for a creature, false for an anchor"),
       ...stepArg,
       ...posArgs,
     },
@@ -1360,6 +1366,9 @@ export const TOOLS: ToolDef[] = [
             icon: a.icon,
             rotation: a.rotation,
             color: a.color,
+            // The boss is the biggest thing on the floor, so it would otherwise
+            // be the easiest thing to grab by mistake.
+            locked: a.locked ?? !a.anchor,
             mech: beat?.mech,
             declaredIn: beat ? stepId : undefined,
             ...positionOf(plan, a),

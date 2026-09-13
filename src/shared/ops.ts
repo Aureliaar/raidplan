@@ -2691,7 +2691,9 @@ const PALETTE_BAIT: Record<PaletteMechanicKind, { kind: BaitKind; props: PropBag
 
 /** A palette item dropped on bare floor: an enemy or a shape you place and move yourself. */
 const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
-  boss: { type: "enemy", role: "enemy", icon: "actor/boss", size: 140 },
+  // Locked from birth: the biggest thing on the floor would otherwise be the
+  // easiest to grab by mistake.
+  boss: { type: "enemy", role: "enemy", icon: "actor/boss", size: 140, locked: true },
   add: { type: "enemy", role: "enemy", icon: "actor/enemy", size: 90 },
   circle: { type: "zone", shape: "circle", radius: 200 },
   donut: { type: "zone", shape: "donut", radius: 300, innerRadius: 120 },
