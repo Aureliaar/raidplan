@@ -3475,8 +3475,9 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
     case "tower": {
       // The strategy board's soak disc — a glowing rim over a faint wash and a
       // lit core — with a tower's creases running out from the core. All in the
-      // zone's own colour. Short of the right number of people the rim is
-      // dented; how many are in is on its chip.
+      // zone's own colour. The rim is always dented, like the board's. Short of
+      // the right number of people the core is lit; once met it goes out and
+      // half the creases close. How many are in is on its chip.
       const r = zone.radius;
       const tint = (alpha: number) => withAlpha(color, alpha);
       return (
@@ -3487,7 +3488,7 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
             fillRadialGradientEndRadius={r}
             fillRadialGradientColorStops={[0, tint(0.04), 0.55, tint(0.1), 1, tint(0.3)] as unknown as number[]}
           />
-          {TOWER_CRACKS.map((crack, i) => (
+          {TOWER_CRACKS.filter((_, i) => !soaked || i % 2 === 0).map((crack, i) => (
             <Line
               key={i}
               points={crack.flatMap(([f, a]) => [Math.sin(a) * f * r, -Math.cos(a) * f * r])}
@@ -3499,17 +3500,20 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
               listening={false}
             />
           ))}
-          <Circle radius={r} stroke={color} strokeWidth={18} opacity={0.22} listening={false} />
-          {soakRim(r)}
-          <Circle
-            radius={r * 0.3}
-            fillRadialGradientStartRadius={0}
-            fillRadialGradientEndRadius={r * 0.3}
-            fillRadialGradientColorStops={[0, tint(0.55), 0.55, tint(0.25), 1, tint(0)] as unknown as number[]}
-            listening={false}
-          />
-          <Circle radius={r * 0.2} stroke={color} strokeWidth={14} opacity={0.35} listening={false} />
-          <Circle radius={r * 0.2} stroke="#fffdf5" strokeWidth={5} listening={false} />
+          <Line points={dentedRing(r)} closed {...border} lineJoin="round" />
+          {!soaked && (
+            <>
+            <Circle
+              radius={r * 0.3}
+              fillRadialGradientStartRadius={0}
+              fillRadialGradientEndRadius={r * 0.3}
+              fillRadialGradientColorStops={[0, tint(0.55), 0.55, tint(0.25), 1, tint(0)] as unknown as number[]}
+              listening={false}
+            />
+            <Circle radius={r * 0.2} stroke={color} strokeWidth={14} opacity={0.35} listening={false} />
+            <Circle radius={r * 0.2} stroke="#fffdf5" strokeWidth={5} listening={false} />
+            </>
+          )}
         </>
       );
     }
