@@ -979,7 +979,13 @@ export function Inspector({
                 }
               >
                 {!entity.mech && <option value="">no Beat</option>}
-                {plan.mechs.map((m) => (
+                {plan.mechs
+                  .filter((m) => {
+                    // Only the Beats of the mechanic you are looking at, plus its own.
+                    const mechanic = plan.steps.find((s) => s.id === stepId)?.mechanic;
+                    return m.id === entity.mech || plan.steps.find((s) => s.id === m.snap)?.mechanic === mechanic;
+                  })
+                  .map((m) => (
                   <option key={m.id} value={m.id}>
                     {mechLabel(plan, m)}
                   </option>

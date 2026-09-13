@@ -1030,9 +1030,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         ev.preventDefault();
         setGlide((n) => n + 1);
         setOnward(key === "s");
-        // The whole fight in order, not one section of it: walking off the end
-        // of a mechanic is walking into the next one, which is what it is.
-        setStepIndex(Math.max(0, Math.min(plan.steps.length - 1, here + (key === "s" ? 1 : -1))));
+        // Stays inside the mechanic you are in: its ends are walls, not doors.
+        const mechanic = plan.steps[here].mechanic;
+        const next = plan.steps[here + (key === "s" ? 1 : -1)];
+        if (next && next.mechanic === mechanic) setStepIndex(here + (key === "s" ? 1 : -1));
         return;
       }
       const active = activeStepVariants(plan, plan.steps[here].id, shown);
@@ -4346,6 +4347,9 @@ function StepRail({
       // Beat, which preserves the old click-again-to-close behavior — and
       // either way the click said "this Beat", so its Parts come up selected.
       if (settled.wasOpen) onOpenMech(null);
+      // Clicking a Beat you are not standing in takes you to where it starts.
+      const row = visible.indexOf(current);
+      if ((row < lo || row > hi) && visible[lo]) onSelect(plan.steps.indexOf(visible[lo]));
       onPickBeat(mech.id);
       return;
     }
