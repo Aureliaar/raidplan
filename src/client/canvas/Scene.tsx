@@ -3126,6 +3126,18 @@ function EntityName({
  * old flat fill when the color is not a plain hex we can make translucent.
  */
 
+/**
+ * The cracks in a tower's floor, as (fraction of radius, bearing) runs from
+ * the core out to the rim. Fixed, so every tower cracks the same way.
+ */
+const TOWER_CRACKS: [number, number][][] = Array.from({ length: 18 }, (_, i) => {
+  const base = (i / 18) * Math.PI * 2;
+  const jitter = (k: number) => Math.sin(i * 12.9898 + k * 78.233) * 0.09;
+  const start = 0.3 + ((i * 7) % 5) * 0.03;
+  const end = i % 3 === 0 ? 0.97 : 0.62 + ((i * 11) % 4) * 0.07;
+  return [0, 1, 2, 3].map((k) => [start + ((end - start) * k) / 3, base + jitter(k)] as [number, number]);
+});
+
 function telegraphFill(
   zone: ZoneEntity,
   radius: number,
@@ -3429,18 +3441,34 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
       );
 
     case "tower": {
-      // The game's tower art at the tower's size. Short of the right number of
-      // people, a dashed rim sits on its edge; how many are in is on its chip.
+      // After the game's floor telegraph: a rim, a bright core where the pillar
+      // lands, and cracks running out between them — in the zone's own colour.
+      // Short of the right number of people the rim breaks into dashes; how
+      // many are in is on its chip.
+      const r = zone.radius;
       return (
         <>
-          <Sprite
-            src={assetUrl("mechanic/tower")}
-            width={zone.radius * 2}
-            height={zone.radius * 2}
+          <Circle radius={r} {...soakBorder} />
+          {TOWER_CRACKS.map((crack, i) => (
+            <Line
+              key={i}
+              points={crack.flatMap(([f, a]) => [Math.sin(a) * f * r, -Math.cos(a) * f * r])}
+              stroke={color}
+              strokeWidth={3}
+              opacity={0.7}
+              lineCap="round"
+              lineJoin="round"
+              listening={false}
+            />
+          ))}
+          <Circle
+            radius={r * 0.24}
+            fillRadialGradientStartRadius={0}
+            fillRadialGradientEndRadius={r * 0.24}
+            fillRadialGradientColorStops={[0, "rgba(255,255,240,0.95)", 0.6, "rgba(255,240,200,0.55)", 1, "rgba(255,220,160,0)"] as unknown as number[]}
             listening={false}
-            fallback={<Circle radius={zone.radius} {...border} />}
           />
-          {soaked === false && <Circle radius={zone.radius} {...soakBorder} />}
+          <Circle radius={r * 0.22} stroke={color} strokeWidth={4} opacity={0.9} listening={false} />
         </>
       );
     }
