@@ -33,6 +33,7 @@ import { ArenaSchema } from "../../shared/schema";
 import { BAR_SHAPES, type Bar, ZONE_DEFAULT, barPlan, barTelegraph, hazardTile, isBig, radialFit, rgbaOf, telegraphStops } from "./zoneFill";
 import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy, isLocked, tetherEnds } from "../../shared/schema";
 import { composeStepVariantEntities } from "../../shared/step-variants";
+import { zoneCovers } from "../../shared/hits";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
 import { assetUrl, enemyIconKey, jobIconKey, waymarkIconKey } from "../../shared/assets";
@@ -520,6 +521,17 @@ export function Scene({
   // What is actually on the floor this frame: the step's shapes, or them on
   // their way there. Everything below reads this, so a walk moves the lot.
   const { entities, going, blast, walking } = useGlide(settled, glide, onward);
+  // How many players stand in each stack and tower right now, so a soak reads
+  // as satisfied or not while people walk into it.
+  const caught = useMemo(() => {
+    const players = entities.filter((e) => e.type === "player");
+    const counts = new Map<string, number>();
+    for (const e of entities) {
+      if (e.type !== "zone" || (e.shape !== "stack" && e.shape !== "tower")) continue;
+      counts.set(e.id, players.filter((p) => zoneCovers(e, p.x, p.y)).length);
+    }
+    return counts;
+  }, [entities]);
   // What actually moves the floor: a walk between steps, or something in the
   // hand. A marquee is not motion — and sweeping the margin over a run of chips
   // is how a pile on one tile gets selected, so they have to be there for it.
@@ -554,6 +566,7 @@ export function Scene({
         viewHalf={size / 2 / scale}
         floorHalf={arena.width / 2}
         dress={dress}
+        caught={caught}
         leaders={chipsFade.leaders}
       />
     );
@@ -1131,7 +1144,7 @@ export function Scene({
                 }}
               >
                 <GrabTarget entity={e} />
-                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} dress={dress?.get(e.id)} />
+                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} caught={caught.get(e.id)} dress={dress?.get(e.id)} />
                 {/* A selected thing wears a hairline in its own colour, hugging
                     its silhouette; the one under the pins draws it there
                     instead. A highlighted row's shapes light up in the accent. */}
@@ -2380,7 +2393,7 @@ const SHAPE_NAMES: Partial<Record<ZoneEntity["shape"], string>> = {
 const crossName = (rotation: number) => (((rotation % 90) + 90) % 90 === 0 ? "Plus" : "Cross");
 
 /** What a chip says: a name, and the one dimension a raider would ask about. */
-function chipText(e: Entity): { label: string; sub: string } {
+function chipText(e: Entity, caught?: number): { label: string; sub: string } {
   const cap = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
   switch (e.type) {
     case "player":
@@ -2398,7 +2411,9 @@ function chipText(e: Entity): { label: string; sub: string } {
       const k = e.scale;
       const turn = e.rotation ? ` · ${Math.round(e.rotation)}°` : "";
       const boxy = ["rect", "line", "knockback", "arrow", "linestack", "cross"].includes(e.shape);
-      const sub = boxy
+      const sub = caught !== undefined && (e.shape === "stack" || e.shape === "tower")
+        ? `${caught}/${e.soak}`
+        : boxy
         ? `${Math.round(e.width * k)} × ${Math.round(e.length * k)}${turn}`
         : e.shape === "cone"
           ? `r ${Math.round(e.radius * k)} · ${Math.round(e.angle)}°`
@@ -2573,9 +2588,12 @@ function Chips({
   viewHalf,
   floorHalf,
   dress,
+  caught,
   leaders,
 }: {
   entities: Entity[];
+  /** Players standing in each stack and tower, which its chip counts. */
+  caught: Map<string, number>;
   selectedIds: Set<string>;
   /** Locked things say so on their chip, which is not a way to click them. */
   locked: (e: Entity) => boolean;
@@ -2599,7 +2617,7 @@ function Chips({
   };
 
   const slots = entities.map((e) => {
-    const text = chipText(e);
+    const text = chipText(e, caught.get(e.id));
     const label = text.label;
     const sub = locked(e) ? (text.sub ? `${text.sub} · locked` : "locked") : text.sub;
     const glyph = e.type !== "text";
@@ -2873,10 +2891,13 @@ function radiusHint(e: Entity): number {
 function EntityShape({
   entity,
   blast = 0,
+  caught,
   dress,
 }: {
   entity: Entity;
   blast?: number;
+  /** Players standing in it, for a stack or tower. */
+  caught?: number;
   /** A debuff mech is on the floor: what this token wears instead. */
   dress?: DebuffDress;
 }) {
@@ -3026,7 +3047,7 @@ function EntityShape({
     }
 
     case "zone":
-      return <ZoneShape zone={entity} blast={blast} />;
+      return <ZoneShape zone={entity} blast={blast} caught={caught} />;
 
     case "text": {
       // Width drives both centring and the hit box, so keep it near the content.
@@ -3121,6 +3142,37 @@ function fitInto(fit: RadialFit, rotation: number): RadialFit {
  * (`fit`); bars pass "bar" and have it drawn underneath by `BarFill`, keeping
  * only an invisible fill here so the whole shape still takes clicks.
  */
+
+/** A circle with small notches pressed in at even steps around it. */
+function dentedRing(radius: number): number[] {
+  const dents = 24;
+  const depth = Math.min(radius * 0.08, 22);
+  const half = Math.PI / dents / 2.5;
+  const points: number[] = [];
+  const at = (a: number, r: number) => points.push(Math.sin(a) * r, -Math.cos(a) * r);
+  for (let i = 0; i < dents; i++) {
+    const a = (i / dents) * Math.PI * 2;
+    const next = ((i + 1) / dents) * Math.PI * 2;
+    at(a - half, radius);
+    at(a, radius - depth);
+    at(a + half, radius);
+    for (let k = 1; k < 4; k++) at(a + half + ((next - half - (a + half)) * k) / 4, radius);
+  }
+  return points;
+}
+
+/**
+ * The cracks in a tower's floor, as (fraction of radius, bearing) runs from
+ * the core out to the rim. Fixed, so every tower cracks the same way.
+ */
+const TOWER_CRACKS: [number, number][][] = Array.from({ length: 18 }, (_, i) => {
+  const base = (i / 18) * Math.PI * 2;
+  const jitter = (k: number) => Math.sin(i * 12.9898 + k * 78.233) * 0.09;
+  const start = 0.3 + ((i * 7) % 5) * 0.03;
+  const end = i % 3 === 0 ? 0.97 : 0.62 + ((i * 11) % 4) * 0.07;
+  return [0, 1, 2, 3].map((k) => [start + ((end - start) * k) / 3, base + jitter(k)] as [number, number]);
+});
+
 function telegraphFill(
   zone: ZoneEntity,
   radius: number,
@@ -3188,7 +3240,7 @@ function crossOutline(width: number, span: number): number[] {
   return [-w, -s, w, -s, w, -w, s, -w, s, w, w, w, w, s, -w, s, -w, w, -s, w, -s, -w, -w, -w];
 }
 
-function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
+function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: number; caught?: number }) {
   const arena = useContext(ArenaContext);
   const color = zone.color ?? ZONE_DEFAULT;
   const hide = zone.look === "hide" && !zone.hollow;
@@ -3210,6 +3262,18 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       ? { cx: 0, cy: 0, r: BAR_RADIUS }
       : { cx: zone.width / 2, cy: zone.length / 2, r: BAR_RADIUS };
   const paint = (radius: number, how?: RadialFit | "bar") => telegraphFill(zone, radius, blast, arena, how);
+  // A stack is met once enough people are in it; a tower wants exactly its
+  // number, since a spare body in a tower is one missing from the next.
+  const soaked =
+    caught === undefined ? undefined : zone.shape === "tower" ? caught === zone.soak : caught >= zone.soak;
+  // Never told apart by colour — a zone's colour is the author's. Short of
+  // people, the rim is dented all the way round; met, it is smooth.
+  const soakRim = (radius: number) =>
+    soaked === false ? (
+      <Line points={dentedRing(radius)} closed {...border} lineJoin="round" />
+    ) : (
+      <Circle radius={radius} {...border} />
+    );
 
   switch (zone.shape) {
     case "circle":
@@ -3350,22 +3414,15 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       );
 
     case "stack":
-      // Always the game's stack marker — the arrows pointing in — with how
-      // many it wants written under it. The N-person discs are towers.
+      // The game's stack marker — the arrows pointing in — on an unfilled
+      // ring, dashed until enough people are in. The count is on its chip.
       return (
         <>
-          <Circle radius={zone.radius} {...paint(zone.radius, fit)} {...border} />
+          {soakRim(zone.radius)}
           <Stamp
             art="stack"
             size={stampSize(zone.radius)}
             fallback={<Circle radius={zone.radius * 0.6} stroke={color} strokeWidth={6} dash={[18, 12]} />}
-          />
-          <Label
-            y={stampSize(zone.radius) * 0.7}
-            text={`${zone.soak}`}
-            size={stampSize(zone.radius) * 0.35}
-            color="#f7fafc"
-            bold
           />
         </>
       );
@@ -3477,28 +3534,34 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       );
 
     case "tower": {
-      // The game draws a tower wanting two, three or four with that many discs
-      // in it; anything else gets the plain tower and the count underneath.
-      const art = { 1: "one-person-aoe", 2: "two-person-aoe", 3: "three-person-aoe", 4: "four-person-aoe" }[
-        zone.soak
-      ];
+      // After the game's floor telegraph: a rim, a bright core where the pillar
+      // lands, and cracks running out between them — in the zone's own colour.
+      // Short of the right number of people the rim breaks into dashes; how
+      // many are in is on its chip.
+      const r = zone.radius;
       return (
         <>
-          <Circle radius={zone.radius} {...paint(zone.radius, fit)} {...border} />
-          <Stamp
-            art={art ?? "tower"}
-            size={stampSize(zone.radius)}
-            fallback={<Circle radius={zone.radius * 0.7} stroke={color} strokeWidth={8} />}
-          />
-          {!art && (
-            <Label
-              y={stampSize(zone.radius) * 0.7}
-              text={`${zone.soak}`}
-              size={stampSize(zone.radius) * 0.35}
-              color="#f7fafc"
-              bold
+          {soakRim(r)}
+          {TOWER_CRACKS.map((crack, i) => (
+            <Line
+              key={i}
+              points={crack.flatMap(([f, a]) => [Math.sin(a) * f * r, -Math.cos(a) * f * r])}
+              stroke={color}
+              strokeWidth={3}
+              opacity={0.7}
+              lineCap="round"
+              lineJoin="round"
+              listening={false}
             />
-          )}
+          ))}
+          <Circle
+            radius={r * 0.24}
+            fillRadialGradientStartRadius={0}
+            fillRadialGradientEndRadius={r * 0.24}
+            fillRadialGradientColorStops={[0, "rgba(255,255,240,0.95)", 0.6, "rgba(255,240,200,0.55)", 1, "rgba(255,220,160,0)"] as unknown as number[]}
+            listening={false}
+          />
+          <Circle radius={r * 0.22} stroke={color} strokeWidth={4} opacity={0.9} listening={false} />
         </>
       );
     }
