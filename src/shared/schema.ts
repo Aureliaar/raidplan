@@ -785,12 +785,14 @@ export function hydratePlan(plan: Plan): Plan {
     variantModel: "step" as const,
     mechanics: (plan.mechanics ?? []).map((mechanic) => ({ ...mechanic, variants: [] })),
     mechs: (plan.mechs ?? []).map((beat) => ({ ...beat, variant: undefined, variants: [] })),
-    // An actor is plan-wide, so it is never a Beat's Part. One filed under a
-    // Beat anyway would only be drawn during that Beat's steps — a player
-    // missing from the rest of the fight — so the claim is dropped on load.
+    // A player is in the whole fight, so a player is never in a Beat. One filed
+    // under a Beat anyway would only be drawn during that Beat's steps — MT
+    // missing from the rest of the fight — so the claim is dropped on load. An
+    // add is different: it spawns for a mechanic and goes with it, so it keeps
+    // its Beat (and still moves step by step, being an actor).
     entities: plan.entities.map(({ mech, ...entity }) => ({
       ...entity,
-      ...(mech && !isActor(entity as Entity) ? { mech } : {}),
+      ...(mech && entity.type !== "player" ? { mech } : {}),
       overrides: Object.fromEntries(
         Object.entries(entity.overrides ?? {}).filter(([key]) => !key.includes("@")),
       ),
@@ -1169,6 +1171,10 @@ export function authoredEntitiesForStep(
  * plan and posed step by step. An anchor is deliberately not one — it is a
  * place a mechanic comes out of, so it belongs to that mechanic's Beat and
  * lives and dies with it.
+ *
+ * Being an actor is about movement, not lifetime: an add is an actor that may
+ * still sit in a Beat, on the floor only for that Beat's steps. Only players
+ * are kept out of Beats.
  */
 export function isActor(entity: Entity): boolean {
   return entity.type === "player" || (entity.type === "enemy" && entity.role !== "anchor");
@@ -1507,6 +1513,22 @@ export function mechLabel(plan: Plan, mech: Mech): string {
   const kind = first.type === "zone" ? first.shape : first.type;
   const label = first.bond?.label ?? first.name ?? kind;
   return label.charAt(0).toUpperCase() + label.slice(1);
+}
+
+/**
+ * A Beat with nothing in it: no Part and no add, in the shared scene or in any
+ * step's split, and no status dealt out by it — a debuff Beat's content lives
+ * on the Beat itself, not on the floor. Deleting one loses nothing, and its
+ * menu says so.
+ */
+export function beatIsEmpty(plan: Plan, mechId: string): boolean {
+  const mine = (entity: Entity) => entity.mech === mechId;
+  const pools = plan.mechs.find((mech) => mech.id === mechId)?.debuffs?.pools ?? {};
+  return (
+    !Object.values(pools).some((statuses) => statuses?.length) &&
+    !plan.entities.some(mine) &&
+    !plan.steps.some((step) => Object.values(step.variantScenes ?? {}).some((scene) => scene.some(mine)))
+  );
 }
 
 /** Does this entity exist in the given step? */

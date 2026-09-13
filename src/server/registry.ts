@@ -382,7 +382,14 @@ export class Registry extends DurableObject<AppEnv> {
       if (row) return row.role as PlanRole;
     }
     const plan = [...this.ctx.storage.sql.exec(`SELECT isPublic FROM plans WHERE id = ?`, planId)][0];
-    if (plan?.isPublic) return "viewer";
+    if (!plan) return null;
+    // Early-development fallback: an admin can fix anyone's plan, as if they
+    // owned it, rather than waiting for the owner to share it with them.
+    if (userId) {
+      const admin = [...this.ctx.storage.sql.exec(`SELECT admin FROM users WHERE id = ?`, userId)][0];
+      if (admin?.admin) return "owner";
+    }
+    if (plan.isPublic) return "viewer";
     return null;
   }
 

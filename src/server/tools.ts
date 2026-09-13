@@ -1323,7 +1323,9 @@ export const TOOLS: ToolDef[] = [
       "Add a boss, an add, or any object a mechanic comes out of — an orb, a portal, a crystal. " +
       "Small ones (size ~60) are what you point a bait's `from` at when the source is not the boss. " +
       "`anchor` makes a bare point instead of a creature: not part of the cast but a Part like any shape, " +
-      "so it lives in a Beat and is on the floor for exactly as long as what it fires.",
+      "so it lives in a Beat and is on the floor for exactly as long as what it fires. " +
+      "An add that spawns for one mechanic takes that Beat as `mech`: it still moves step by step, but is only on the floor for the Beat's steps. " +
+      "Leave `mech` out for the boss, who is there all fight.",
     schema: {
       plan_id: z.string(),
       name: z.string().optional(),
@@ -1335,7 +1337,7 @@ export const TOOLS: ToolDef[] = [
         .string()
         .optional()
         .describe(
-          "With `anchor`: the Beat it joins (id, index or name); leave it out and a new Beat is made for it in `step`"
+          "The Beat it joins (id, index or name). An anchor always lives in one — leave it out and a new Beat is made for it in `step`; a creature without it is there all fight"
         ),
       size: z.number().positive().optional().describe("Hitbox radius in arena units"),
       icon: z.string().optional().describe("Override the art, e.g. actor/enemy2 (see list_assets)"),
@@ -1352,9 +1354,9 @@ export const TOOLS: ToolDef[] = [
       const res = await edit(ctx, a.plan_id, (plan) => {
         const stepId = stepIdOf(plan, a.step);
         const variant = poseVariant(plan, stepId, a.variant, a.beat);
-        // Only an anchor takes a Beat: a boss and its adds are the cast, there
-        // for the whole fight, and belong to no one mechanic.
-        const beat = a.anchor ? beatFor(plan, a.mech, stepId, a.name ?? "anchor") : undefined;
+        // An anchor always takes a Beat; an add takes one when it is named, and
+        // the boss — named none — is there for the whole fight.
+        const beat = a.anchor || a.mech ? beatFor(plan, a.mech, stepId, a.name ?? "anchor") : undefined;
         return [
           ...(beat?.prelude ?? []),
           { op: "add_entity" as const, stepId, variant, spec: {
@@ -2027,7 +2029,7 @@ export const PLAN_PRIMER = `Raid plans are top-down diagrams of an FFXIV arena.
 Coordinates are arena units with the origin at the arena centre: +x is east (right), +y is south (down).
 A default arena is 1000x1000, so the north wall is y = -500. Rotation is in degrees, 0 = north, increasing clockwise (90 = east).
 Arena distances are yalms: a manual arena.widthYalms wins, supported encounters use known dimensions, and unknown fights default to 40 yalms across. Calibration never changes stored coordinates.
-Actors (players, enemies) and waymarks are plan-wide; per-step position overrides are how movement is expressed. Every Part (zone, bait, tether, text, icon, bait anchor) lives in a Beat, which decides the steps it is on the floor for: an add without mech makes a new Beat for it in that step, and merge_mechs folds Beats together.
+Actors (players, enemies) and waymarks are plan-wide; per-step position overrides are how movement is expressed. An add may also sit in a Beat (add_enemy mech), which limits it to that Beat's steps; players never do. Every Part (zone, bait, tether, text, icon, bait anchor) lives in a Beat, which decides the steps it is on the floor for: an add without mech makes a new Beat for it in that step, and merge_mechs folds Beats together.
 A Beat's baits, anchors and tethers follow their targets up to the step it freezes in (update_mech freezes_in, the snapshot by default) and are drawn where they stood there from then until it goes off. Only a Beat of three or more steps has anywhere to put that marker.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
 A Beat is one timed card/frame. Its child Variant boxes are mutually exclusive and contain only divergent Beat Parts plus optional sparse actor movement. Shared Parts stay directly on the Beat. Preview choices and edit destinations are separate: passing beat + variant explicitly chooses where an edit is stored, never a saved preview. Saved Routes are non-owning complete Beat-selection maps and cannot contain movement conflicts. Variants exist only on Beats; Mechanic-wide Variants are retired.

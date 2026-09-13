@@ -47,6 +47,7 @@ import {
   isFanCopy,
   hydratePlan,
   isActor,
+  beatIsEmpty,
   isLocked,
   mechLabel,
   MECH_COLORS,
@@ -166,6 +167,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * Details is one Tab away, rather than the palette being taken off you.
    */
   const beatPick = useRef<string | null>(null);
+  /**
+   * The Beat whose card is the selection, and exactly what that selected. While
+   * the selection is still that set, Delete takes the Beat — the same act as its
+   * menu's Delete — rather than emptying it; pick anything else and it is gone.
+   */
+  const beatSelection = useRef<{ beat: string; ids: string } | null>(null);
   // Whatever put a new thing under the selection — a click, a drop, a paste,
   // a right-click on its way to the menu — says what it is. Everything after
   // that is the tab you last chose.
@@ -820,6 +827,20 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         return;
       }
       if (!mod && (ev.key === "Delete" || ev.key === "Backspace")) {
+        const card = beatSelection.current;
+        if (
+          card &&
+          card.beat === mech &&
+          plan?.mechs.some((beat) => beat.id === card.beat) &&
+          [...selection].sort().join() === card.ids
+        ) {
+          ev.preventDefault();
+          beatSelection.current = null;
+          openBeat(null);
+          setSelected(null);
+          void run({ op: "delete_mech", mechId: card.beat });
+          return;
+        }
         if (selection.length) {
           ev.preventDefault();
           // A locked thing is only in the selection because it was right-clicked,
@@ -1308,16 +1329,16 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const matching = authoredScene.filter(
       (e) =>
         e.type === "enemy" &&
-        (kind === "anchor"
-          ? e.role === "anchor"
-          : e.role !== "anchor" && e.icon === `actor/enemy_${kind === "boss" ? "large" : "medium"}`)
+        (kind === "anchor" ? e.role === "anchor" : e.role !== "anchor" && e.icon === paletteSpec(kind).icon)
     ).length;
-    const name = kind === "anchor" ? `anchor ${matching + 1}` : `${kind} ${matching + 1}`;
-    // A boss and its adds are the cast: they are there all fight. An anchor is
-    // not a creature but a place a mechanic fires from, so it is a Part and
-    // lives in a Beat — left unnamed, because whatever is baited off it says
-    // what the Beat is far better than "bait anchor" does.
-    const beat = kind === "anchor" ? beatForDrop("") : undefined;
+    // Only the boss gets a name: an add's Beat says what it is for, and a row of
+    // "add 1" labels over the floor says nothing.
+    const name = kind === "anchor" ? `anchor ${matching + 1}` : kind === "boss" ? `boss ${matching + 1}` : "";
+    // The boss is there all fight. An add spawns for a mechanic and goes with
+    // it, and an anchor is a place a mechanic fires from, so both live in a
+    // Beat — which is left unnamed, because whatever is baited off them says
+    // what the Beat is far better than "add" does.
+    const beat = kind === "boss" ? undefined : beatForDrop("");
     const res = await run([
       ...(beat?.ops ?? []),
       {
@@ -1817,6 +1838,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   function selectBeatParts(id: string) {
     const parts = authoredScene.filter((entity) => entity.mech === id);
     beatPick.current = parts.at(-1)?.id ?? null;
+    beatSelection.current = { beat: id, ids: parts.map((part) => part.id).sort().join() };
     setSelection(parts.map((part) => part.id));
   }
 
@@ -1948,6 +1970,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       return [
         { heading: entity.type === "player" ? "Player" : "Enemy" },
         lockItem(entity),
+        // An add spawns for a mechanic and leaves with it; a player never does.
+        ...(entity.type === "enemy" ? [moveToBeatItem([id])] : []),
         {
           label: "Clear override on this step",
           disabled: !overridden,
@@ -2023,7 +2047,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       const found = authoredScene.find((candidate) => candidate.id === id);
       return found ? [found] : [];
     });
-    const parts = chosen.filter((e) => e.type !== "marker" && !isActor(e)).map((e) => e.id);
+    const parts = chosen.filter((e) => e.type !== "marker" && e.type !== "player").map((e) => e.id);
     // A player is one person in the party; duplicating the set skips them.
     const copyable = chosen.filter((e) => e.type !== "player").map((e) => e.id);
     const drawn = entitiesForStep(plan!, step!.id, undefined, shown);
@@ -4545,7 +4569,7 @@ function StepRail({
       },
       { separator: true },
       {
-        label: "Delete Beat and everything in it",
+        label: beatIsEmpty(plan, mech.id) ? "Delete empty Beat" : "Delete Beat and everything in it",
         danger: true,
         onSelect: () => {
           onOpenMech(null);
@@ -6021,7 +6045,7 @@ function MechBox({
             <span className="min-w-0 flex-1 truncate font-semibold">{mechLabel(plan, open)}</span>
             <button
               className="text-ink-400 hover:text-red-300"
-              title="Delete this Beat and everything in it"
+              title={beatIsEmpty(plan, open.id) ? "Delete this empty Beat" : "Delete this Beat and everything in it"}
               onClick={() => {
                 onOpen(null);
                 void run({ op: "delete_mech", mechId: open.id });

@@ -4,9 +4,9 @@
  * on a bait anchor is thrown at whoever stands nearest it; a group chip gives
  * everybody in the group one, thrown from a source even on a plan with no
  * enemy; a tether dropped on one thing is finished by picking another; a Boss
- * is an ordinary enemy mechanics can come out of; R switches binding off, so a
- * drop on a player lands on the floor; and a group's row carries
- * the whole group.
+ * is an ordinary enemy mechanics can come out of; an Add is unnamed and lives
+ * in a Beat; R switches binding off, so a drop on a player lands on the floor;
+ * and a group's row carries the whole group.
  */
 import { chip, drag, drawn, fail, finish, floor, posed, session } from "./harness.mjs";
 
@@ -149,6 +149,28 @@ await f.click(back.x, back.y);
 if (!(await inspecting(boss.id))) fail("a click on the unlocked boss did not select it");
 await f.deselect();
 console.log("the Boss comes locked: a click and a drag go through it, and Unlock on its right-click menu frees it");
+
+/* --- an Add spawns for a mechanic: unnamed, in a Beat, gone after it ------- */
+
+await f.drop("Add", -420, -420);
+doc = await plan.load();
+const add = doc.entities.find((e) => e.type === "enemy" && e.role !== "anchor" && e.id !== boss.id);
+if (!add) fail("the Add chip made no enemy");
+if (add.name) fail(`a new add is named ${JSON.stringify(add.name)} instead of nothing`);
+const addBeat = doc.mechs.find((m) => m.id === add.mech);
+// Every write is re-hydrated before it is stored, so this also proves loading
+// a plan does not strip an add out of its Beat.
+if (!addBeat || addBeat.snap !== step) fail("the add is in no Beat of this step: " + JSON.stringify(add));
+await plan.ops({ op: "add_step", name: "After the add" });
+doc = await plan.load();
+const later = doc.steps.find((st) => st.name === "After the add").id;
+await page.waitForTimeout(400);
+if (!(await drawn(page, plan.id, step)).some((e) => e.id === add.id)) fail("the add is not drawn in its own step");
+if ((await drawn(page, plan.id, later)).some((e) => e.id === add.id)) fail("the add is still on the floor after its Beat");
+if (!(await drawn(page, plan.id, later)).some((e) => e.id === boss.id)) fail("the boss left with the add's Beat");
+await plan.ops([{ op: "delete_step", stepId: later }]);
+await page.waitForTimeout(400);
+console.log("an Add lands unnamed in a Beat of its own and leaves the floor with it, while the boss stays");
 
 /* --- while in hand, the pointer says baited, anchored or none ------------- */
 

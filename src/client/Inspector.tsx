@@ -9,7 +9,6 @@ import {
   authoredEntitiesForStep,
   composeBeatVariantEntities,
   entitiesForStep,
-  isActor,
   tetherEnds,
   tetherRide,
   mechLabel,
@@ -943,8 +942,8 @@ export function Inspector({
             </button>
             {/* Which cast this shape is part of: a mech times it and aims it,
                 so moving it between slots is a real edit, not a label. A
-                player or an enemy is in every step, so it is in no Beat. */}
-            {!isActor(entity) && (
+                player is in every step, so it is in no Beat; an add can be. */}
+            {entity.type !== "player" && (
               <>
               {mechOf && (
                 <span

@@ -2218,8 +2218,8 @@ export function assignMech(
 ): Plan {
   if (mechId && !plan.mechs.some((m) => m.id === mechId)) throw new Error(`No mech ${mechId}`);
   const want = new Set(ids);
-  if (mechId && plan.entities.some((entity) => want.has(entity.id) && isActor(entity)))
-    throw new Error("Players and enemies are shared by the whole plan; only Parts go into a Beat");
+  if (mechId && plan.entities.some((entity) => want.has(entity.id) && entity.type === "player"))
+    throw new Error("Players are in the whole fight; they never go into a Beat");
   if (stepId && variantId) {
     if (plan.variantModel === "beat") {
       const detached = beatContentForEdit(plan, stepId, variantId);

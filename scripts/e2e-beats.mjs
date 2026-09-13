@@ -176,6 +176,8 @@ const circle = (await plan.load()).entities.find((e) => e.shape === "circle");
 const spot = { x: circle.x - 50, y: circle.y - 100 };
 const inspecting = async (id) => (await page.locator("aside").innerText()).includes(id);
 await card.click({ button: "right" });
+if (!(await page.locator('[data-menu-item="Delete Beat and everything in it"]').count()))
+  fail("a Beat holding shapes does not warn that deleting it takes them too");
 await page.locator('[data-menu-item="Lock Beat"]').click();
 await page.waitForTimeout(600);
 if (!(await plan.load()).mechs[0]?.locked) fail("Lock Beat on the card's menu did not lock the Beat");
@@ -193,6 +195,35 @@ await f.click(spot.x, spot.y);
 if (!(await inspecting(circle.id))) fail("a click on the circle did not select it once its Beat was unlocked");
 console.log("Lock Beat made its circle unclickable, and Unlock Beat on the circle's own menu freed it");
 
+// A Beat with nothing in it says so: deleting it loses nothing.
+await f.deselect();
+// A debuff Beat holds its statuses rather than shapes, so it is not empty.
+await plan.ops([
+  { op: "add_mech", id: "mech_empty-e2e", name: "Empty", snap: after, plain: true },
+  { op: "add_mech", id: "mech_debuff-e2e", name: "Debuffs", snap: after, plain: true },
+]);
+await plan.ops([
+  { op: "update_mech", mechId: "mech_debuff-e2e", patch: { debuffs: { mode: "generic", pools: { supports: [{ id: 1003579, name: "Umbralbright Soul" }] } } } },
+]);
+await gotoStep(page, 4);
+await page.locator('[data-mech="mech_debuff-e2e"]').click({ button: "right" });
+if (!(await page.locator('[data-menu-item="Delete Beat and everything in it"]').count()))
+  fail("a Beat dealing a debuff is offered as empty");
+await page.keyboard.press("Escape");
+await page.waitForTimeout(200);
+await page.locator('[data-mech="mech_empty-e2e"]').click({ button: "right" });
+await page.locator('[data-menu-item="Delete empty Beat"]').click();
+await page.waitForTimeout(600);
+if ((await plan.load()).mechs.some((m) => m.id === "mech_empty-e2e")) fail("Delete empty Beat left the Beat behind");
+// Delete on a selected card is the same act as the menu's: the Beat goes.
+await page.locator('[data-mech="mech_debuff-e2e"]').click();
+await page.waitForTimeout(300);
+await page.keyboard.press("Delete");
+await page.waitForTimeout(600);
+if ((await plan.load()).mechs.some((m) => m.id === "mech_debuff-e2e")) fail("Delete on a selected debuff Beat left it behind");
+await gotoStep(page, 1);
+console.log("an empty Beat's menu offers Delete empty Beat, and it goes; a debuff Beat still warns, and Delete on its card takes it");
+
 /* --- a Beat is one thing: named where it sits, deleted with all it holds ---- */
 
 await gotoStep(page, 2);
@@ -204,10 +235,14 @@ await nameField.fill("Ice Missile");
 await nameField.press("Enter");
 await page.waitForTimeout(600);
 if ((await plan.load()).mechs[0]?.name !== "Ice Missile") fail("renaming the Beat did not stick");
-await page.getByTitle("Delete this Beat and everything in it").click();
+if (!(await page.getByTitle("Delete this Beat and everything in it").count())) fail("the open Beat has no delete button");
+await card.click();
+await page.waitForTimeout(300);
+if (!(await filling())) await card.click();
+await page.keyboard.press("Delete");
 await page.waitForTimeout(700);
 doc = await plan.load();
-if (doc.mechs.length || doc.entities.some((e) => e.type === "zone")) fail("deleting the Beat left it, or its shapes, behind");
-console.log("F2 renamed it Ice Missile, and its delete button took all nine shapes with it");
+if (doc.mechs.length || doc.entities.some((e) => e.type === "zone")) fail("Delete on the Beat's card left it, or its shapes, behind");
+console.log("F2 renamed it Ice Missile, and Delete on its card took the Beat and all nine shapes with it");
 
 await finish(s, "OK - " + plan.url);
