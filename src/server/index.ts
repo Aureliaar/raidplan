@@ -324,9 +324,17 @@ app.get("/api/plans/:id/history", async (c) => {
   return c.json(await (await planStub(c.env, id)).history());
 });
 
+app.get("/api/plans/:id/history/:revisionId", async (c) => {
+  const id = c.req.param("id");
+  await roleOrThrow(c, id, "view");
+  const revision = await (await planStub(c.env, id)).revision(c.req.param("revisionId"));
+  if (!revision) throw new HttpError(404, "That revision is no longer available");
+  return c.json(revision);
+});
+
 app.post("/api/plans/:id/history/undo", async (c) => {
   const id = c.req.param("id");
-  await roleOrThrow(c, id, "own");
+  await roleOrThrow(c, id, "edit");
   const result = await (await planStub(c.env, id)).undo();
   await registry(c.env).touchPlan(id, { name: result.plan.name, encounter: result.plan.encounter });
   return c.json(result);
@@ -334,7 +342,7 @@ app.post("/api/plans/:id/history/undo", async (c) => {
 
 app.post("/api/plans/:id/history/redo", async (c) => {
   const id = c.req.param("id");
-  await roleOrThrow(c, id, "own");
+  await roleOrThrow(c, id, "edit");
   const result = await (await planStub(c.env, id)).redo();
   await registry(c.env).touchPlan(id, { name: result.plan.name, encounter: result.plan.encounter });
   return c.json(result);
@@ -342,7 +350,7 @@ app.post("/api/plans/:id/history/redo", async (c) => {
 
 app.post("/api/plans/:id/history/revert", async (c) => {
   const id = c.req.param("id");
-  await roleOrThrow(c, id, "own");
+  await roleOrThrow(c, id, "edit");
   const user = requireUser(c);
   const body = (await c.req.json()) as { revisionId?: string; sessionId?: string };
   if (!body.revisionId) throw new HttpError(400, "Choose a revision to restore");

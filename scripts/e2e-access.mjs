@@ -1,14 +1,14 @@
 /**
  * Who may see a plan. A signed-in user who was never given one must not be
  * able to read it — over HTTP *or* over the sync socket; an edit link makes an
- * editor; and a public plan can be duplicated into a copy the viewer owns.
+ * editor, whose Ctrl+Z works like the owner's; and a public plan can be duplicated into a copy the viewer owns.
  *
  * The socket case is the one worth testing: the Agents SDK sends the current
  * state as soon as a connection is accepted, so rejecting inside `onConnect`
  * leaks the document anyway. The check has to happen in the Worker, before
  * routing.
  */
-import { base, check, finish, launch, session } from "./harness.mjs";
+import { base, check, finish, launch, planNameField, session } from "./harness.mjs";
 
 const browser = await launch();
 const owner = await session(`owner-${Date.now()}`, { browser });
@@ -47,6 +47,19 @@ await guest.page.goto(editLink, { waitUntil: "domcontentloaded" });
 const asGuest = await guest.api.get(`/api/plans/${plan.id}`);
 check(asGuest.role === "editor", "edit link grants editing");
 check((await socket(guest.page)) === "state", "edit link grants sync");
+
+// Undo is part of editing, not of owning: an editor's Ctrl+Z takes back their edit.
+const beforeRename = (await owner.api.get(`/api/plans/${plan.id}`)).plan.name;
+await guest.openPlan(plan.id);
+const rename = await planNameField(guest.page);
+await rename.fill("renamed by an editor");
+await rename.press("Tab");
+await guest.page.waitForTimeout(600);
+check((await owner.api.get(`/api/plans/${plan.id}`)).plan.name === "renamed by an editor", "editor's rename saved");
+await guest.page.mouse.click(5, 5);
+await guest.page.keyboard.press("Control+z");
+await guest.page.waitForTimeout(800);
+check((await owner.api.get(`/api/plans/${plan.id}`)).plan.name === beforeRename, "editor's Ctrl+Z undoes their edit");
 
 await owner.api.post(`/api/plans/${plan.id}/public`, { isPublic: true });
 const { id: copyId } = await stranger.api.post(`/api/plans/${plan.id}/duplicate`);
