@@ -27,7 +27,7 @@ import {
 } from "react-konva";
 import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
-import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy, isLocked, tetherEnds } from "../../shared/schema";
+import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy, isLocked, mechLabel, tetherEnds } from "../../shared/schema";
 import { composeStepVariantEntities } from "../../shared/step-variants";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
@@ -146,6 +146,11 @@ export interface SceneProps {
    * around it: the chips sit at the very edge, and the hand wants room.
    */
   sweep?: MutableRefObject<((ev: MouseEvent) => void) | null>;
+  /**
+   * Free page, in pixels, either side of the square. The stage reaches into it
+   * so chips can sit there, off everything Parts are drawn over.
+   */
+  gutter?: number;
   /** Intercept a click before normal selection/dragging, for two-click authoring tools. */
   onPick?(id: string): boolean;
   /**
@@ -433,6 +438,7 @@ export function Scene({
   glide = 0,
   onward = true,
   sweep,
+  gutter = 0,
   onPick,
   picking,
   onSelect,
@@ -443,6 +449,8 @@ export function Scene({
 }: SceneProps) {
   const { arena } = plan;
   const scale = viewScale(arena, size);
+  /** Where the arena centre sits across the stage, which is wider than the square by the gutters. */
+  const ox = size / 2 + gutter;
 
   /**
    * Where the thing under the pointer is mid-drag, before the op that commits
@@ -546,7 +554,9 @@ export function Scene({
         selectedIds={selectedIds}
         locked={locked}
         pixelsPerUnit={scale}
+        plan={plan}
         viewHalf={size / 2 / scale}
+        gutter={gutter / scale}
         floorHalf={arena.width / 2}
         dress={dress}
         leaders={chipsFade.leaders}
@@ -794,7 +804,7 @@ export function Scene({
     if (!stage || !point) return undefined;
 
     const hits = stage.getAllIntersections(point);
-    const arenaAt = { x: (point.x - size / 2) / scale, y: (point.y - size / 2) / scale };
+    const arenaAt = { x: (point.x - ox) / scale, y: (point.y - size / 2) / scale };
     let best: { node: Konva.Group; id: string } | undefined;
     let bestSize = Infinity;
     let bestRank = Infinity;
@@ -857,7 +867,7 @@ export function Scene({
         (entity) =>
           entity.type === "marker" &&
           Math.hypot(
-            (stagePoint.x - size / 2) / scale - entity.x,
+            (stagePoint.x - ox) / scale - entity.x,
             (stagePoint.y - size / 2) / scale - entity.y,
           ) <= entity.size * entity.scale * 0.55
       );
@@ -1036,7 +1046,7 @@ export function Scene({
     onContextMenu({
       kind: "floor",
       arenaPoint: {
-        x: Math.round((at.x - size / 2) / scale),
+        x: Math.round((at.x - ox) / scale),
         y: Math.round((at.y - size / 2) / scale),
       },
       point,
@@ -1074,15 +1084,26 @@ export function Scene({
   return (
     <Stage
       ref={stageRef}
-      width={size}
+      width={size + 2 * gutter}
       height={size}
+      style={{ marginLeft: -gutter, width: size + 2 * gutter }}
       onMouseDown={pickAt}
       onTouchStart={pickAt}
       onContextMenu={contextAt}
       onWheel={wheelAt}
     >
       <Layer>
-        <Group x={size / 2} y={size / 2} scaleX={scale} scaleY={scale}>
+        {/* Parts stay on the square, so the gutters are the chips' alone. */}
+        <Group
+          x={ox}
+          y={size / 2}
+          scaleX={scale}
+          scaleY={scale}
+          clipX={-size / 2 / scale}
+          clipY={-size / 2 / scale}
+          clipWidth={size / scale}
+          clipHeight={size / scale}
+        >
           <ArenaFloor plan={plan} />
           {entities.map((e) =>
             e.type === "tether" ? (
@@ -1311,7 +1332,7 @@ export function Scene({
           costs it a single pixel, and the fade is done on the canvas element
           rather than by drawing, so it costs nothing either. */}
       <Layer ref={chipsFade.layer} listening={chipsFade.shown && !chipsMoving}>
-        <Group x={size / 2} y={size / 2} scaleX={scale} scaleY={scale}>
+        <Group x={ox} y={size / 2} scaleX={scale} scaleY={scale}>
           <Group ref={chipsFade.group}>{chipsHeld.current}</Group>
         </Group>
       </Layer>
@@ -2364,17 +2385,17 @@ function chipColor(e: Entity): string {
   }
 }
 
-const SHAPE_NAMES: Partial<Record<ZoneEntity["shape"], string>> = {
-  circle: "AoE",
-  linestack: "Line stack",
-};
-
-/** A cross squared to the cardinals is a plus; anything else is an ×. */
-const crossName = (rotation: number) => (((rotation % 90) + 90) % 90 === 0 ? "Plus" : "Cross");
-
-/** What a chip says: a name, and the one dimension a raider would ask about. */
-function chipText(e: Entity): { label: string; sub: string } {
-  const cap = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+/**
+ * What a chip says. A Part is named by its Beat — the glyph already says what
+ * shape it is — and a bait adds what it fires from, never who it is on now.
+ */
+function chipText(e: Entity, plan: Plan): { label: string; sub: string } {
+  const name = (id: string | undefined) => {
+    const other = id ? plan.entities.find((candidate) => candidate.id === id) : undefined;
+    return other ? chipText(other, plan).label : "";
+  };
+  const beat = e.mech ? plan.mechs.find((candidate) => candidate.id === e.mech) : undefined;
+  const beatName = beat ? mechLabel(plan, beat) : "";
   switch (e.type) {
     case "player":
       // The callout name is the whole identity a raider needs ("R2"); the
@@ -2388,26 +2409,19 @@ function chipText(e: Entity): { label: string; sub: string } {
     case "marker":
       return { label: e.marker, sub: "waymark" };
     case "zone": {
-      const k = e.scale;
-      const turn = e.rotation ? ` · ${Math.round(e.rotation)}°` : "";
-      const boxy = ["rect", "line", "knockback", "arrow", "linestack", "cross"].includes(e.shape);
-      const sub = boxy
-        ? `${Math.round(e.width * k)} × ${Math.round(e.length * k)}${turn}`
-        : e.shape === "cone"
-          ? `r ${Math.round(e.radius * k)} · ${Math.round(e.angle)}°`
-          : e.shape === "donut"
-            ? `r ${Math.round(e.innerRadius * k)}–${Math.round(e.radius * k)}`
-            : `r ${Math.round(e.radius * k)}`;
-      const many = e.anchor?.pick && e.anchor.count > 1 ? ` · ×${e.anchor.count}` : "";
-      const shapeName = e.shape === "cross" ? crossName(e.rotation) : SHAPE_NAMES[e.shape] || cap(e.shape);
-      return { label: e.name || e.bond?.label || shapeName, sub: sub + many };
+      const source = e.anchor?.along ? "along tether" : e.anchor?.from ? `from ${name(e.anchor.from)}` : "";
+      const many = e.anchor?.pick && e.anchor.count > 1 ? `×${e.anchor.count}` : "";
+      return {
+        label: e.name || beatName || e.bond?.label || (e.shape === "circle" ? "AoE" : "Zone"),
+        sub: [source, many].filter(Boolean).join(" · "),
+      };
     }
     case "text":
       return { label: e.text.length > 18 ? `${e.text.slice(0, 17)}…` : e.text, sub: "text" };
     case "path":
-      return { label: e.name || "Path", sub: `${Math.floor(e.points.length / 2)} pts` };
+      return { label: e.name || beatName || "Path", sub: "" };
     case "icon":
-      return { label: e.name || "Icon", sub: "" };
+      return { label: e.name || beatName || "Icon", sub: "" };
     default:
       return { label: e.type, sub: "" };
   }
@@ -2559,15 +2573,18 @@ function ChipGlyph({
  * target for the thing it names.
  */
 function Chips({
+  plan,
   entities,
   selectedIds,
   locked,
   pixelsPerUnit,
   viewHalf,
+  gutter,
   floorHalf,
   dress,
   leaders,
 }: {
+  plan: Plan;
   entities: Entity[];
   selectedIds: Set<string>;
   /** Locked things say so on their chip, which is not a way to click them. */
@@ -2575,6 +2592,8 @@ function Chips({
   pixelsPerUnit: number;
   /** Half-extent (arena units) of the visible canvas around the arena centre. */
   viewHalf: number;
+  /** Free page (arena units) beyond the square on either side. */
+  gutter: number;
   /** Half the floor's width: where the margin starts. */
   floorHalf: number;
   /** What the party wears while a debuff mech is on the floor, by player id. */
@@ -2592,7 +2611,7 @@ function Chips({
   };
 
   const slots = entities.map((e) => {
-    const text = chipText(e);
+    const text = chipText(e, plan);
     const label = text.label;
     const sub = locked(e) ? (text.sub ? `${text.sub} · locked` : "locked") : text.sub;
     const glyph = e.type !== "text";
@@ -2610,10 +2629,8 @@ function Chips({
         (sub ? 5 + subW : 0)
     );
     const side: -1 | 1 = e.x < 0 ? -1 : 1;
-    // Preferred height: a short 45° run above the top of the shape, so the
-    // leader leaves it diagonally and then runs level to the margin.
-    const reach = extentY(silhouetteOf(e), e.scale, e.rotation);
-    return { e, side, pref: e.y - reach - px(40), y: 0, w, label, sub, glyph, badge, dress: worn, labelW, lane: 0, lanes: 1 };
+    // Preferred height: level with the thing, so the leader runs straight out.
+    return { e, side, pref: e.y, y: 0, w, label, sub, glyph, badge, dress: worn, labelW, lane: 0, lanes: 1 };
   });
   // Stack each margin's chips from their preferred heights, pushing down to
   // clear the one above, then back up from the bottom edge if that overflowed.
@@ -2659,10 +2676,12 @@ function Chips({
   const drawn = slots.map((slot) => {
     const { e, side, y, w } = slot;
     const silhouette = silhouetteOf(e);
-    // The chip hugs the floor's edge from outside, and only creeps over
-    // the floor when the margin is too narrow for it.
-    const inner = side * (floorHalf + px(12));
-    const outer = side * (viewHalf - px(6));
+    // The chip sits in the page beside the square, where no Part is drawn.
+    // Without room there it hugs the floor's edge from outside, and only
+    // creeps over the floor when the margin is too narrow for it too.
+    const roomy = gutter - px(14) >= w;
+    const inner = side * (roomy ? viewHalf + px(8) : floorHalf + px(12));
+    const outer = side * (viewHalf + (roomy ? gutter : 0) - px(6));
     const chipX = side < 0 ? Math.max(inner - w, outer) : Math.min(inner, outer - w);
     const end = side < 0 ? chipX + w : chipX;
     // A leader is only ever level or at 45°. It leaves the flank facing
@@ -2675,7 +2694,10 @@ function Chips({
     const fan = px(6) * (slot.lane - (y > e.y ? slot.lanes - 1 : 0));
     const dy = Math.max(-shoulder, Math.min(shoulder, y - e.y + fan));
     const fx = flankX(silhouette, e.scale, e.rotation, dy, side) ?? 0;
-    const from = { x: e.x + fx + side * px(2), y: e.y + dy };
+    // A shape reaching past the square is cut off there, so its leader leaves
+    // from the cut rather than from somewhere past the chip.
+    const flank = e.x + fx + side * px(2);
+    const from = { x: side < 0 ? Math.max(flank, -viewHalf) : Math.min(flank, viewHalf), y: e.y + dy };
     const kx = from.x + side * Math.abs(y - from.y);
     const points =
       side * (end - kx) >= 0 ? [from.x, from.y, kx, y, end, y] : [from.x, from.y, end, y];

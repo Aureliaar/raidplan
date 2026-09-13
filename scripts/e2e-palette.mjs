@@ -234,7 +234,7 @@ await page.locator("[data-group-row=g1]").waitFor();
 await f.measure();
 await page
   .locator("[data-group-row=g1]")
-  .dragTo(f.canvas, { targetPosition: { x: f.box.width * 0.28, y: f.box.height * 0.24 } });
+  .dragTo(f.canvas, { targetPosition: { x: f.box.width / 2 - f.box.height * 0.22, y: f.box.height * 0.24 } });
 await page.waitForTimeout(1200);
 const after = await where();
 const G1 = ["MT", "H1", "M1", "R1"];

@@ -128,7 +128,9 @@ export async function floor(page) {
     scale: 1,
     async measure() {
       f.box = await canvas.boundingBox();
-      f.scale = viewScale(f.box.width);
+      // The stage reaches into the page either side of the square for chips,
+      // so its height is the square.
+      f.scale = viewScale(f.box.height);
       return f;
     },
     /** Page pixels for an arena point, for page.mouse. */

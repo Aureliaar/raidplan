@@ -2884,7 +2884,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
           floor={collapsed && narrow ? Math.max(200, viewportWidth - 32) : undefined}
           pad={collapsed ? 0 : 24}
         >
-          {(size) => (
+          {(size, gutter) => (
             <div
               ref={stageBox}
               className="relative"
@@ -2952,6 +2952,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 shown={shown}
                 dress={dress}
                 size={size}
+                gutter={gutter}
                 selected={selection}
                 editable={canEdit}
                 symmetryCount={symmetryCount}
@@ -3597,7 +3598,8 @@ function CanvasArea({
   floor,
   pad = 24,
 }: {
-  children: (size: number) => React.ReactNode;
+  /** The square's size, and the free page either side of it. */
+  children: (size: number, gutter: number) => React.ReactNode;
   /** A mouse-down on the bare area beside the canvas. */
   onMouseDown?(ev: React.MouseEvent<HTMLDivElement>): void;
   /** Told how big the arena came out, for chrome that must be its width. */
@@ -3614,12 +3616,14 @@ function CanvasArea({
 }) {
   const ref = useRef<HTMLDivElement>(null);
   const [measured, setMeasured] = useState(600);
+  const [across, setAcross] = useState(600);
   const size = floor === undefined ? measured : Math.round(floor * VIEW_MARGIN);
   useLayoutEffect(() => {
     const el = ref.current;
     if (!el || floor !== undefined) return;
     const observer = new ResizeObserver(() => {
       setMeasured(Math.max(200, Math.min(el.clientWidth, el.clientHeight) - pad));
+      setAcross(el.clientWidth);
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -3640,7 +3644,7 @@ function CanvasArea({
         if (ev.target === ev.currentTarget) onMouseDown?.(ev);
       }}
     >
-      {children(size)}
+      {children(size, floor === undefined ? Math.max(0, Math.floor((across - size) / 2)) : 0)}
     </div>
   );
 }
