@@ -1,0 +1,52 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+  </style>
+</helmet>
+<div style="width: 420px; background: #14171c; color: #b8c0cc; padding: 28px 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px;">
+  <div>
+    <div style="font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #6b7686;">Idea 5</div>
+    <div style="font-size: 18px; font-weight: 700; color: #e6ebf2;">Multi-select transform gizmo</div>
+  </div>
+  <svg width="356" height="356" viewBox="0 0 356 356">
+    <circle cx="178" cy="178" r="168" fill="#1a1e25" stroke="#232833" stroke-width="2"/>
+    <!-- four selected tokens in a light-party spread -->
+    <circle cx="178" cy="78" r="15" fill="#2e3543" stroke="#7aa2f7" stroke-width="2"/>
+    <text x="178" y="83" text-anchor="middle" font-size="10" fill="#b8c0cc" font-weight="bold">MT</text>
+    <circle cx="278" cy="178" r="15" fill="#2e3543" stroke="#7aa2f7" stroke-width="2"/>
+    <text x="278" y="183" text-anchor="middle" font-size="10" fill="#b8c0cc" font-weight="bold">D1</text>
+    <circle cx="178" cy="278" r="15" fill="#2e3543" stroke="#7aa2f7" stroke-width="2"/>
+    <text x="178" y="283" text-anchor="middle" font-size="10" fill="#b8c0cc" font-weight="bold">H1</text>
+    <circle cx="78" cy="178" r="15" fill="#2e3543" stroke="#7aa2f7" stroke-width="2"/>
+    <text x="78" y="183" text-anchor="middle" font-size="10" fill="#b8c0cc" font-weight="bold">D3</text>
+    <!-- group ring at centroid (= arena center here) -->
+    <circle cx="178" cy="178" r="128" fill="none" stroke="#fcd34d" stroke-width="2" stroke-dasharray="6 5" opacity="0.9"/>
+    <!-- rotate grip on the ring -->
+    <circle cx="178" cy="50" r="7" fill="#fcd34d" stroke="#b45309" stroke-width="1.5"/>
+    <!-- scale grip on the ring corner -->
+    <rect x="262" y="80" width="14" height="14" rx="3" fill="#d8dee9" stroke="#71809b" stroke-width="1.5" transform="rotate(45 269 87)"/>
+    <!-- translate cross at centroid -->
+    <g stroke="#7dd3fc" stroke-width="2">
+      <line x1="164" y1="178" x2="192" y2="178"/>
+      <line x1="178" y1="164" x2="178" y2="192"/>
+    </g>
+    <!-- mode label -->
+    <g>
+      <rect x="112" y="200" width="132" height="22" rx="5" fill="#232833" stroke="#2e3543"/>
+      <text x="178" y="215" text-anchor="middle" font-size="11" fill="#8a95a5">ring = rotate &#183; inside = move</text>
+    </g>
+  </svg>
+  <div style="font-size: 12px; color: #8a95a5; line-height: 1.5;">With 2+ selected: drag <b style="color:#b8c0cc;">inside</b> the ring to translate the group, drag the <b style="color:#fcd34d;">ring</b> to rotate around the arena center (matching existing symmetry semantics), and drag the <b style="color:#d8dee9;">corner grip</b> to scale everyone's radius. The amber/sky pairing mirrors the current toolbar toggle, so the mode is legible before the drag starts &mdash; not only in the after-the-fact caption.</div>
+</div>
+</x-dc>
+</body>
+</html>

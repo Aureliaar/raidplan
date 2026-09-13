@@ -1,0 +1,152 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; background: #14171c; color: #b8c0cc; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+    .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7686; }
+    .cap { font-size: 12px; line-height: 1.5; color: #8a95a5; }
+    .h { font-size: 12px; font-weight: 600; color: #e6ebf2; }
+    code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #dfe5ee; }
+    
+  </style>
+</helmet>
+
+<div style="width: 480px; min-height: 700px; box-sizing: border-box; background: #1a1e25; border-right: 1px solid #232833; padding: 8px; display: flex; flex-direction: column;">
+  <div class="label">Encounter</div>
+  <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;">
+    <span style="font-size: 14px; color: #b8c0cc; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Paradeigma 1</span>
+    <span style="margin-left: auto; font-size: 11px; color: #6b7686; flex-shrink: 0;">1 mechanic</span>
+  </div>
+
+  <div style="margin-top: 4px; border-radius: 4px; background: #232833; padding: 4px;">
+    <div style="display: flex; align-items: center;">
+      <div style="flex: 1; min-width: 0; display: flex; align-items: center; gap: 4px; padding: 4px; border-radius: 4px; font-size: 14px; line-height: 20px; color: #b8c0cc; cursor: grab;">
+        <span style="display: inline-flex; color: #6b7686; transform: rotate(90deg);"><svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3l5 5-5 5"></path></svg></span>
+        <span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Mechanic 1</span>
+        <span style="font-size: 11px; color: #6b7686; flex-shrink: 0;">7</span>
+      </div>
+      <span title="Delete this mechanic and its steps" style="display: grid; place-items: center; width: 24px; height: 24px; color: #6b7686;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"></path></svg></span>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 10px; padding: 2px 4px 6px; font-size: 9px; line-height: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7686;">
+      <span style="display: inline-flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 2px; background: #b8c0cc;"></span>cast</span>
+      <span style="display: inline-flex; align-items: center; gap: 4px;"><svg width="8" height="8" viewBox="0 0 10 10" aria-hidden="true" style="display: block; "><path d="M5 0.7L9.3 5 5 9.3 0.7 5z" fill="#b8c0cc" stroke="#dfe5ee" stroke-width="1.2"></path></svg>snap</span>
+      <span style="display: inline-flex; align-items: center; gap: 4px;"><span style="width: 10px; height: 3px; background: rgba(251,191,36,0.8);"></span>resolve</span>
+    </div>
+
+    <div style="position: relative;">
+    <div style="display: grid; grid-template-columns: minmax(0, 1fr) 66px 66px 78px; column-gap: 4px; row-gap: 4px; grid-auto-rows: 28px;">
+      <div style="grid-column: 1; grid-row: 1; display: flex; align-items: center; gap: 2px; height: 28px; border-radius: 4px; background: transparent; color: #b8c0cc; padding: 0 2px 0 4px; box-sizing: border-box; min-width: 0;">
+    <span style="width: 18px; text-align: right; font-size: 12px; color: #6b7686; flex-shrink: 0;">1.</span>
+    <span style="flex: 1; min-width: 0; font-size: 14px; line-height: 20px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Start</span>
+    
+  </div>
+<div style="grid-column: 1; grid-row: 2; display: flex; align-items: center; gap: 2px; height: 28px; border-radius: 4px; background: transparent; color: #b8c0cc; padding: 0 2px 0 4px; box-sizing: border-box; min-width: 0;">
+    <span style="width: 18px; text-align: right; font-size: 12px; color: #6b7686; flex-shrink: 0;">2.</span>
+    <span style="flex: 1; min-width: 0; font-size: 14px; line-height: 20px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Add Movement 1</span>
+    
+  </div>
+<div style="grid-column: 1; grid-row: 3; display: flex; align-items: center; gap: 2px; height: 28px; border-radius: 4px; background: transparent; color: #b8c0cc; padding: 0 2px 0 4px; box-sizing: border-box; min-width: 0;">
+    <span style="width: 18px; text-align: right; font-size: 12px; color: #6b7686; flex-shrink: 0;">3.</span>
+    <span style="flex: 1; min-width: 0; font-size: 14px; line-height: 20px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Add Movement 2</span>
+    
+  </div>
+<div style="grid-column: 1; grid-row: 4; display: flex; align-items: center; gap: 2px; height: 28px; border-radius: 4px; background: #2e3543; color: #ffffff; padding: 0 2px 0 4px; box-sizing: border-box; min-width: 0;">
+    <span style="width: 18px; text-align: right; font-size: 12px; color: rgba(255,255,255,0.7); flex-shrink: 0;">4.</span>
+    <span style="flex: 1; min-width: 0; font-size: 14px; line-height: 20px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Final Ring</span>
+    <span style="display: flex; gap: 0; flex-shrink: 0;"><span title="Split this Step into Variants" style="display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #e6ebf2;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2l5 6-5 6-5-6z"></path></svg></span><span title="Duplicate step" style="display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #e6ebf2;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5"></rect><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"></path></svg></span><span title="Add step after this one" style="display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #e6ebf2;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg></span><span title="Delete step" style="display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #e6ebf2;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"></path></svg></span></span>
+  </div>
+<div style="grid-column: 1; grid-row: 5; display: flex; align-items: center; gap: 2px; height: 28px; border-radius: 4px; background: transparent; color: #b8c0cc; padding: 0 2px 0 4px; box-sizing: border-box; min-width: 0;">
+    <span style="width: 18px; text-align: right; font-size: 12px; color: #6b7686; flex-shrink: 0;">5.</span>
+    <span style="flex: 1; min-width: 0; font-size: 14px; line-height: 20px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Resolve S1</span>
+    
+  </div>
+<div style="grid-column: 1; grid-row: 6; display: flex; align-items: center; gap: 2px; height: 28px; border-radius: 4px; background: rgba(46,53,67,0.55); color: #b8c0cc; padding: 0 2px 0 4px; box-sizing: border-box; min-width: 0;">
+    <span style="width: 18px; text-align: right; font-size: 12px; color: #6b7686; flex-shrink: 0;">6.</span>
+    <span style="flex: 1; min-width: 0; font-size: 14px; line-height: 20px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Resolve S2</span>
+    <span style="display: flex; gap: 0; flex-shrink: 0;"><span title="Split this Step into Variants" style="display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #b8c0cc;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2l5 6-5 6-5-6z"></path></svg></span><span title="Duplicate step" style="display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #b8c0cc;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5"></rect><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"></path></svg></span><span title="Add step after this one" style="display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #b8c0cc;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v10M3 8h10"></path></svg></span><span title="Delete step" style="display: grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #b8c0cc;"><svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"></path></svg></span></span>
+  </div>
+<div style="grid-column: 1; grid-row: 7; display: flex; align-items: center; gap: 2px; height: 28px; border-radius: 4px; background: transparent; color: #b8c0cc; padding: 0 2px 0 4px; box-sizing: border-box; min-width: 0;">
+    <span style="width: 18px; text-align: right; font-size: 12px; color: #6b7686; flex-shrink: 0;">7.</span>
+    <span style="flex: 1; min-width: 0; font-size: 14px; line-height: 20px; padding: 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">End</span>
+    
+  </div>
+      <div title="Add cast — casts in step 1, resolves in step 5. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style="grid-column: 2; grid-row: 1 / 6; position: relative; width: 66px; height: 156px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #b8632f; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(184, 99, 47, 0.18); overflow: visible; box-shadow: 0 0 0 1px rgba(255,255,255,0.25); cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      <div style="position: absolute; left: 0; right: 0; top: 94px; bottom: 0; background: rgba(20,23,28,0.35); box-shadow: inset 1px 0 0 rgba(184, 99, 47, 0.55), inset -1px 0 0 rgba(184, 99, 47, 0.55);"></div>
+      
+      <div style="padding: 4px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Add cast</div>
+    <div style="text-align: center; font-size: 9px; line-height: 11px; color: #6b7686;">&times;1</div>
+    </div>
+    <div style="position: absolute; left: 0; right: 0; top: 0; height: 6px; background: linear-gradient(rgba(184, 99, 47, 0.9), transparent); cursor: ns-resize;"></div>
+       <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 7px; background: linear-gradient(transparent, rgba(251,191,36,0.45)); cursor: ns-resize;"></div>
+    <div title="Snap: baits and anchors follow their target through step 3, then freeze where they are. Drag to move it." style="position: absolute; left: 0; right: 0; top: 93.5px; height: 0; border-top: 1px dashed rgba(255,255,255,0.75);"></div>
+       <div style="position: absolute; left: -5px; top: 89px; width: 10px; height: 10px; cursor: ns-resize;"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" style="display: block; "><path d="M5 0.7L9.3 5 5 9.3 0.7 5z" fill="#dfe5ee" stroke="#e6ebf2" stroke-width="1.2"></path></svg></div>
+  </div>
+      <div title="Ring — casts in step 2, resolves in step 3. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style="grid-column: 3; grid-row: 2 / 4; position: relative; width: 66px; height: 60px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #b03a3a; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(176, 58, 58, 0.18); overflow: visible;  cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      
+      
+      <div style="padding: 4px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Ring</div>
+    <div style="text-align: center; font-size: 9px; line-height: 11px; color: #6b7686;">&times;1</div>
+    </div>
+    
+    
+  </div>
+      <div title="Line — casts in step 5, resolves in step 5. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style="grid-column: 3; grid-row: 5 / 6; position: relative; width: 66px; height: 28px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #8c3a6e; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(140, 58, 110, 0.18); overflow: visible;  cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      
+      
+      <div style="padding: 5px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Line <span style="font-size: 9px; color: #6b7686;">&times;1</span></div>
+    </div>
+    
+    
+  </div>
+      <div style="grid-column: 4; grid-row: 3 / 7; position: relative; margin: -4px 0 -4px -2px; display: flex; flex-direction: column; border-radius: 4px; border: 1px solid rgba(107,118,134,0.7); background: rgba(20,23,28,0.7); overflow: hidden; box-sizing: border-box;">
+    <div style="display: grid; grid-template-columns: 1fr 1fr; flex: 1; min-height: 0;">
+      <div style="display: flex; flex-direction: column; min-height: 0;  background: rgba(147, 197, 253, 0.12); color: #fff;">
+        <div title="A — click to preview and edit it; drag this edge to move the split's start Step" style="height: 12px; flex-shrink: 0; background: #93c5fd; display: flex; align-items: center; padding: 0 4px; font-size: 8px; line-height: 12px; font-weight: 700; color: #14171c; letter-spacing: 0.04em; cursor: grab;">A</div>
+        <div style="flex: 1; min-height: 0; padding: 2px; display: grid; grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 4px;"><div title="Stack — casts in step 3, resolves in step 6. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style="grid-column: 1; grid-row: 1 / 5; position: relative; width: auto; height: 124px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #3f8a3f; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(63, 138, 63, 0.18); overflow: visible;  cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      <div style="position: absolute; left: 0; right: 0; top: 30px; bottom: 0; background: rgba(20,23,28,0.35); box-shadow: inset 1px 0 0 rgba(63, 138, 63, 0.55), inset -1px 0 0 rgba(63, 138, 63, 0.55);"></div>
+      
+      <div style="padding: 4px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Stack</div>
+    <div style="text-align: center; font-size: 9px; line-height: 11px; color: #6b7686;">&times;1</div>
+    </div>
+    
+    <div title="Snap: baits and anchors follow their target through step 3, then freeze where they are. Drag to move it." style="position: absolute; left: 0; right: 0; top: 29.5px; height: 0; border-top: 1px dashed rgba(255,255,255,0.45);"></div>
+       <div style="position: absolute; left: -5px; top: 25px; width: 10px; height: 10px; cursor: ns-resize;"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" style="display: block; "><path d="M5 0.7L9.3 5 5 9.3 0.7 5z" fill="#3f8a3f" stroke="#e6ebf2" stroke-width="1.2"></path></svg></div>
+  </div></div>
+      </div><div style="display: flex; flex-direction: column; min-height: 0; border-left: 1px solid rgba(46,53,67,0.6); color: #b8c0cc; opacity: 0.6;">
+        <div title="B — click to preview and edit it; drag this edge to move the split's start Step" style="height: 12px; flex-shrink: 0; background: #c084fc; display: flex; align-items: center; padding: 0 4px; font-size: 8px; line-height: 12px; font-weight: 700; color: #14171c; letter-spacing: 0.04em; cursor: grab;">B</div>
+        <div style="flex: 1; min-height: 0; padding: 2px; display: grid; grid-template-rows: repeat(4, minmax(0, 1fr)); gap: 4px;"></div>
+      </div>
+    </div>
+    <div title="Drag the Variant container's end Step" style="height: 4px; flex-shrink: 0; background: rgba(251,191,36,0.7); border-top: 1px solid rgba(46,53,67,0.6); cursor: ns-resize;"></div>
+  </div>
+    </div>
+    <div aria-hidden="true" style="position: absolute; left: 0; right: 0; top: 93.5px; height: 0; border-top: 1px dashed rgba(255,255,255,0.18); pointer-events: none;"></div>
+  </div>
+
+    <div style="margin-top: 8px; display: flex; flex-direction: column; gap: 4px;">
+      <div title="A new Beat casting in the Step you are on. Say where it resolves, then drop its Parts in." style="border-radius: 4px; padding: 4px 8px; font-size: 14px; line-height: 20px; text-align: center; background: #2e3543; color: #b8c0cc;">New Beat here</div>
+      <div title="A Beat that deals the fight's debuffs onto role pools." style="border-radius: 4px; padding: 4px 8px; font-size: 14px; line-height: 20px; text-align: center; background: #2e3543; color: #b8c0cc;">New debuff Beat here</div>
+    </div>
+    <div style="margin-top: 16px;">
+      <div class="label" style="margin-bottom: 4px;">Step notes</div>
+      <div style="height: 96px; border-radius: 4px; background: #14171c; border: 1px solid #2e3543;"></div>
+    </div>
+  </div>
+
+  <div style="margin-top: 12px;"><div title="A new section of the fight, with a step in it" style="border-radius: 4px; padding: 4px 8px; font-size: 14px; line-height: 20px; text-align: center; background: #232833; color: #b8c0cc;">New mechanic</div></div>
+</div>
+</x-dc>
+</body>
+</html>

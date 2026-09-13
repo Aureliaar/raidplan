@@ -1,0 +1,66 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; background: #14171c; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    a { color: #7aa2f7; } a:hover { color: #9dbbff; }
+  </style>
+</helmet>
+<div style="width: 760px; height: 480px; background: #14171c; overflow: hidden;">
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="480" viewBox="0 0 760 480" style="display:block">
+  
+<defs>
+  <radialGradient id="aoeFill" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="88">
+    <stop offset="0" stop-color="rgba(255,112,67,0)"/>
+    <stop offset="0.75" stop-color="rgba(255,112,67,0.1)"/>
+    <stop offset="1" stop-color="rgba(255,112,67,0.32)"/>
+  </radialGradient>
+  <radialGradient id="beamFill" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="182.42806801586207">
+    <stop offset="0" stop-color="rgba(255,112,67,0)"/>
+    <stop offset="0.75" stop-color="rgba(255,112,67,0.1)"/>
+    <stop offset="1" stop-color="rgba(255,112,67,0.32)"/>
+  </radialGradient>
+  <filter id="glow" x="-30%" y="-30%" width="160%" height="160%">
+    <feGaussianBlur stdDeviation="5"/>
+  </filter>
+  <clipPath id="clipPlayer"><rect x="-24" y="-24" width="48" height="48" rx="6.4"/></clipPath>
+</defs>
+  <rect width="760" height="480" fill="#14171c"/>
+  <rect x="16" y="16" width="728" height="448" rx="10" fill="#252a33" stroke="#4a525f" stroke-width="3.2"/>
+  
+  <g transform="translate(350 240)" opacity="1">
+    <circle r="88" fill="url(#aoeFill)" stroke="#ff7043" stroke-width="4"/>
+  </g>
+  <g transform="translate(600 240) rotate(25)" opacity="1">
+    <rect x="-48" y="-176" width="96" height="352" fill="url(#beamFill)" stroke="#ff7043" stroke-width="4"/>
+  </g>
+  <g transform="translate(130 240)" opacity="1">
+    <image href="PLD.png" x="-24" y="-24" width="48" height="48" clip-path="url(#clipPlayer)"/>
+    <rect x="-24" y="-24" width="48" height="48" rx="6.4" fill="none" stroke="#3f6ac4" stroke-width="4.8"/>
+    <text x="0" y="45" text-anchor="middle" font-size="17" font-weight="700" fill="#e6edf3" stroke="#0d1117" stroke-width="3" paint-order="stroke" font-family="ui-sans-serif, system-ui, 'Segoe UI', sans-serif">MT</text>
+  </g>
+  
+  <g transform="translate(130 240)"><path d="M -32 -18 L -32 -32 L -18 -32" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M 32 -18 L 32 -32 L 18 -32" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M 32 18 L 32 32 L 18 32" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M -32 18 L -32 32 L -18 32" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><line x1="35.757359312880716" y1="35.757359312880716" x2="44.242640687119284" y2="44.242640687119284" stroke="#14171c" stroke-width="6" stroke-linecap="round" opacity="0.7"/>
+  <line x1="35.757359312880716" y1="35.757359312880716" x2="44.242640687119284" y2="44.242640687119284" stroke="#e6ebf2" stroke-width="3" stroke-linecap="round"/></g>
+  <g transform="translate(350 240)"><path d="M -96 -82 L -96 -96 L -82 -96" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M 96 -82 L 96 -96 L 82 -96" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M 96 82 L 96 96 L 82 96" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M -96 82 L -96 96 L -82 96" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><line x1="99.75735931288071" y1="99.75735931288071" x2="108.24264068711929" y2="108.24264068711929" stroke="#14171c" stroke-width="6" stroke-linecap="round" opacity="0.7"/>
+  <line x1="99.75735931288071" y1="99.75735931288071" x2="108.24264068711929" y2="108.24264068711929" stroke="#e6ebf2" stroke-width="3" stroke-linecap="round"/></g>
+  <g transform="translate(600 240) rotate(25)"><path d="M -56 -170 L -56 -184 L -42 -184" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M 56 -170 L 56 -184 L 42 -184" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M 56 170 L 56 184 L 42 184" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><path d="M -56 170 L -56 184 L -42 184" fill="none" stroke="#7aa2f7" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/><line x1="59.757359312880716" y1="187.7573593128807" x2="68.24264068711929" y2="196.2426406871193" stroke="#14171c" stroke-width="6" stroke-linecap="round" opacity="0.7"/>
+  <line x1="59.757359312880716" y1="187.7573593128807" x2="68.24264068711929" y2="196.2426406871193" stroke="#e6ebf2" stroke-width="3" stroke-linecap="round"/></g>
+  <text x="28" y="44" font-size="15" font-weight="600" fill="#e6ebf2" font-family="ui-sans-serif, system-ui, 'Segoe UI', sans-serif">B · Corner brackets</text>
+  <text x="28" y="64" font-size="12.5" fill="#b8c0cc" font-family="ui-sans-serif, system-ui, 'Segoe UI', sans-serif">Four L marks on the oriented bounding box, 8u out. Nothing touches the shape.</text>
+  <g font-size="11.5" fill="#6b7686" font-family="ui-sans-serif, system-ui, 'Segoe UI', sans-serif" text-anchor="middle">
+  <text x="130" y="452">player · 60u</text>
+  <text x="350" y="452">aoe · r 110u</text>
+  <text x="600" y="452">beam · 120×440u, 25°</text>
+</g>
+</svg>
+</div>
+</x-dc>
+</body>
+</html>

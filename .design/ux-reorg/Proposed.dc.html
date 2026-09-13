@@ -1,0 +1,247 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; background: #14171c; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+    .btn { background: #232833; color: #b8c0cc; border-radius: 4px; padding: 4px 8px; font-size: 14px; line-height: 20px; white-space: nowrap; }
+    .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7686; }
+    .seg { height: 32px; display: flex; align-items: stretch; border: 1px solid #2e3543; background: rgba(20,23,28,0.7); border-radius: 6px; padding: 2px; box-shadow: inset 0 1px 2px rgba(0,0,0,0.4); }
+    .seg > div { display: flex; align-items: center; justify-content: center; gap: 4px; padding: 0 6px; font-size: 12px; border-radius: 4px; color: #6b7686; white-space: nowrap; }
+    .seg > div.on { background: rgba(59,130,246,0.25); color: #dbeafe; font-weight: 600; }
+    .seg > div.sky { background: rgba(14,165,233,0.3); color: #e0f2fe; font-weight: 600; box-shadow: inset 0 0 0 1px rgba(56,189,248,0.7); }
+    .seg kbd { font-size: 10px; font-weight: 400; color: #6b7686; font-family: inherit; }
+    .step { display: flex; align-items: center; gap: 2px; border-radius: 4px; font-size: 14px; color: #b8c0cc; padding: 4px 8px; line-height: 20px; }
+    .tile { display: flex; flex-direction: column; align-items: center; gap: 3px; border: 1px solid #2e3543; background: #1a1e25; border-radius: 4px; padding: 6px 4px 5px; font-size: 11px; color: #b8c0cc; line-height: 1.1; text-align: center; }
+    .tile svg { width: 22px; height: 22px; stroke: #b8c0cc; fill: none; stroke-width: 1.6; }
+    .chip { border: 1px solid #2e3543; background: rgba(26,30,37,0.5); border-radius: 4px; padding: 3px 7px; font-size: 11px; color: #b8c0cc; white-space: nowrap; }
+    .fld { background: #14171c; border: 1px solid #2e3543; border-radius: 4px; padding: 4px 8px; font-size: 14px; color: #b8c0cc; line-height: 20px; }
+  </style>
+</helmet>
+<div style="width: 1600px; height: 880px; background: #14171c; color: #b8c0cc; display: flex; flex-direction: column; overflow: hidden;">
+
+  <!-- A · one-row header -->
+  <div style="height: 48px; box-sizing: border-box; background: #1a1e25; border-bottom: 1px solid #232833; display: flex; align-items: center; gap: 12px; padding: 0 12px;">
+    <div class="btn">&larr; Plans</div>
+    <div style="display: flex; flex-direction: column; gap: 1px; min-width: 0;">
+      <div style="display: flex; align-items: baseline; gap: 8px; white-space: nowrap;">
+        <span style="font-size: 14px; color: #e6ebf2; font-weight: 600;">Pand&aelig;monium 12 Savage Phase 1</span>
+        <span style="font-size: 12px; color: #6b7686;">Athena</span>
+      </div>
+      <div style="font-size: 10px; color: #6b7686;">rev 896 &middot; live &middot; owner</div>
+    </div>
+
+    <div style="margin-left: auto; margin-right: auto; display: flex; align-items: center; gap: 8px;">
+      <div class="seg"><div class="on"><kbd>C</kbd>Chips</div><div><kbd>V</kbd>Party chips</div></div>
+      <div class="seg">
+        <div class="on" style="min-width: 40px;"><kbd>1</kbd>Off</div><div style="min-width: 40px;"><kbd>2</kbd>2&times;</div><div style="min-width: 40px;"><kbd>3</kbd>4&times;</div>
+        <div style="border-left: 1px solid #2e3543; border-radius: 0; margin-left: 2px; padding: 0 4px 0 6px;"><kbd>Q</kbd></div>
+        <div class="sky" style="min-width: 76px;">&harr; Translate</div><div style="min-width: 76px;">&#8635; Rotate</div>
+      </div>
+      <div style="display: flex; align-items: center; gap: 6px;">
+        <span class="lbl">Drag moves</span>
+        <div class="fld" style="padding: 3px 8px; font-size: 13px;">this step only &#9662;</div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; gap: 4px;">
+      <div class="btn">&#8630;</div><div class="btn" style="color: #6b7686;">&#8631;</div><div class="btn">History</div>
+    </div>
+    <div class="btn">Share</div>
+    <div style="font-size: 12px; color: #6b7686;">Aerelion</div>
+  </div>
+
+  <!-- main row -->
+  <div style="flex: 1; min-height: 0; display: flex;">
+
+    <!-- rail: 236 + 5 slim lanes -->
+    <div style="width: 536px; box-sizing: border-box; flex-shrink: 0; background: #1a1e25; border-right: 1px solid #232833; padding: 8px; display: flex; flex-direction: column; gap: 0;">
+      <!-- B · preview pills live here, only when a split is active -->
+      <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12px;">
+        <span class="lbl">Preview</span>
+        <div style="display: flex; align-items: center; gap: 4px; border: 1px solid #60a5fa; background: rgba(23,37,84,0.4); border-radius: 4px; padding: 3px 8px;">Resolve S1: <span style="color: #dbeafe;">Variant A &#9662;</span></div>
+        
+      </div>
+
+      <div class="lbl">Encounter</div>
+      <div style="display: flex; align-items: baseline; gap: 8px; margin-bottom: 8px;">
+        <span style="font-size: 14px; color: #b8c0cc;">Pand&aelig;monium 12 Savage Phase 1</span>
+        <span style="margin-left: auto; font-size: 11px; color: #6b7686;">2 mechanics</span>
+      </div>
+
+      <div style="background: #232833; border-radius: 4px; padding: 4px;">
+        <div style="display: flex; align-items: center; padding: 4px 4px; gap: 4px;">
+          <svg width="10" height="10" viewBox="0 0 10 10" style="transform: rotate(90deg);"><path d="M3 1 L7 5 L3 9" fill="none" stroke="#6b7686" stroke-width="1.5"></path></svg>
+          <span style="font-size: 14px; color: #e6ebf2;">Paradeigma 1</span>
+          <span style="margin-left: auto; font-size: 11px; color: #6b7686;">8</span>
+          <span style="padding: 0 4px; color: #6b7686;">&#10005;</span>
+        </div>
+
+        <!-- grid: steps column + 5 lanes of 56px -->
+        <div style="display: grid; grid-template-columns: minmax(0, 1fr) 56px 56px 56px 56px 56px; column-gap: 4px; row-gap: 4px; align-items: stretch;">
+          <!-- steps -->
+          <div style="grid-column: 1; grid-row: 1;" class="step">1. Start</div>
+          <div style="grid-column: 1; grid-row: 2;" class="step">2. Add Movement 1</div>
+          <div style="grid-column: 1; grid-row: 3;" class="step">3. Add Movement 2</div>
+          <div style="grid-column: 1; grid-row: 4;" class="step">4. Final Ring</div>
+          <div style="grid-column: 1; grid-row: 5; background: #2e3543; color: #fff;" class="step"><span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">5. Resolve S1</span>
+            <span style="display: grid; place-items: center; width: 24px; height: 24px; font-size: 12px; color: #b8c0cc;">&#9671;</span>
+            <span style="display: grid; place-items: center; width: 24px; height: 24px; font-size: 12px; color: #b8c0cc;">D</span>
+            <span style="display: grid; place-items: center; width: 24px; height: 24px; font-size: 12px; color: #b8c0cc;">+</span>
+            <span style="display: grid; place-items: center; width: 24px; height: 24px; font-size: 12px; color: #b8c0cc;">&times;</span>
+          </div>
+          <div style="grid-column: 1; grid-row: 6;" class="step">6. Resolve S2</div>
+          <div style="grid-column: 1; grid-row: 7;" class="step">7. Resolve S3</div>
+          <div style="grid-column: 1; grid-row: 8;" class="step">8. End</div>
+          <div style="grid-column: 1; grid-row: 9; color: #6b7686; font-size: 12px;" class="step">+ step</div>
+
+          <!-- lane 1 -->
+          <div style="grid-column: 2; grid-row: 1 / 6; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #b8632f; background: rgba(184,99,47,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Add beams</div><div style="color: #6b7686; font-size: 9px;">&times;2</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+          <div style="grid-column: 2; grid-row: 6 / 8; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #2f8f8a; background: rgba(47,143,138,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Ring S2</div><div style="color: #6b7686; font-size: 9px;">&times;1</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+          <!-- lane 2 -->
+          <div style="grid-column: 3; grid-row: 2 / 4; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #b03a3a; background: rgba(176,58,58,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Ring 1</div><div style="color: #6b7686; font-size: 9px;">&times;1</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+          <div style="grid-column: 3; grid-row: 4 / 6; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #b03a3a; background: rgba(176,58,58,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Ring 2</div><div style="color: #6b7686; font-size: 9px;">&times;1</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+          <div style="grid-column: 3; grid-row: 6 / 7; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #b8632f; background: rgba(184,99,47,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Add beams</div><div style="color: #6b7686; font-size: 9px;">&times;4</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+          <!-- lane 3 -->
+          <div style="grid-column: 4; grid-row: 3 / 5; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #8c3a6e; background: rgba(140,58,110,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Ring 3</div><div style="color: #6b7686; font-size: 9px;">&times;1</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+          <!-- lane 4 -->
+          <div style="grid-column: 5; grid-row: 4 / 7; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #3f8a3f; background: rgba(63,138,63,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Ring 4</div><div style="color: #6b7686; font-size: 9px;">&times;1</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+          <!-- lane 5 -->
+          <div style="grid-column: 6; grid-row: 1 / 8; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #2f6f8f; background: rgba(47,111,143,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Add tethers</div><div style="color: #6b7686; font-size: 9px;">&times;2</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+          <div style="grid-column: 6; grid-row: 8 / 9; position: relative; min-height: 0;">
+            <div style="position: absolute; inset: 0; border-radius: 4px; border-top: 2px solid #b8a02f; background: rgba(184,160,47,0.18); padding: 3px 4px 0; box-sizing: border-box; display: flex; flex-direction: column; font-size: 10px; line-height: 1.15; color: #b8c0cc;">
+              <div>Add hits</div><div style="color: #6b7686; font-size: 9px;">&times;4</div>
+              <div style="margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin: auto -4px 0; border-radius: 0 0 4px 4px;"></div>
+            </div>
+          </div>
+        </div>
+
+        <div style="margin-top: 8px; display: flex; gap: 4px;">
+          <div class="btn" style="flex: 1; text-align: center;">New Beat here</div>
+          <div class="btn" style="flex: 1; text-align: center;">New debuff Beat here</div>
+        </div>
+
+        <!-- F · notes drawer -->
+        <div style="margin-top: 12px;">
+          <div class="lbl" style="margin-bottom: 4px;">Step notes</div>
+          <div class="fld" style="font-size: 13px; min-height: 40px;">Each Add shoot 2 beams at its closest targets</div>
+        </div>
+      </div>
+
+      <div style="margin-top: 6px; padding: 4px 8px; font-size: 14px; color: #b8c0cc; display: flex; gap: 4px; align-items: center;">
+        <svg width="10" height="10" viewBox="0 0 10 10"><path d="M3 1 L7 5 L3 9" fill="none" stroke="#6b7686" stroke-width="1.5"></path></svg>
+        Paradeigma 2 <span style="margin-left: auto; font-size: 11px; color: #6b7686;">6</span>
+      </div>
+      <div class="btn" style="margin-top: auto; text-align: center;">New mechanic</div>
+    </div>
+
+    <!-- canvas -->
+    <div style="flex: 1; min-width: 0; display: flex; align-items: center; justify-content: center; position: relative;">
+      <div style="position: relative; width: 720px; height: 720px;">
+        <img src="arena.jpg" style="width: 720px; height: 720px; display: block; border-radius: 2px;">
+        <div style="position: absolute; left: 0; right: 0; top: 0; padding: 4px 8px; text-align: center; font-size: 12px; color: #fff; background: rgba(184,99,47,0.35);">Editing: Paradeigma 1 &rsaquo; Add beams</div>
+      </div>
+    </div>
+
+    <!-- aside 320 -->
+    <div style="width: 320px; box-sizing: border-box; flex-shrink: 0; background: #1a1e25; border-left: 1px solid #232833; padding: 12px; display: flex; flex-direction: column; gap: 14px; overflow: hidden;">
+      <!-- C · groups row -->
+      <div>
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;"><span class="lbl">Groups</span><span style="font-size: 10px; color: #6b7686;">click selects &middot; drop gives everybody one</span></div>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px;">
+          <div class="chip">Party <span style="color:#6b7686;">8</span></div><div class="chip">G1 <span style="color:#6b7686;">4</span></div><div class="chip">G2 <span style="color:#6b7686;">4</span></div><div class="chip">Supports <span style="color:#6b7686;">5</span></div><div class="chip">Damagers <span style="color:#6b7686;">3</span></div><div class="chip">Tanks <span style="color:#6b7686;">3</span></div><div class="chip">Healers <span style="color:#6b7686;">2</span></div>
+        </div>
+      </div>
+
+      <!-- D · dense add -->
+      <div>
+        <div style="display: flex; align-items: center; gap: 6px; margin-bottom: 6px;"><span class="lbl">Add</span><span style="width: 14px; height: 14px; border-radius: 7px; border: 1px solid #2e3543; color: #6b7686; font-size: 10px; display: grid; place-items: center;">?</span><span style="font-size: 10px; color: #6b7686;">drag onto the floor, a group, or a boss</span></div>
+        <div style="display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px;">
+          <div class="tile"><svg viewBox="0 0 24 24"><path d="M12 3 L20 12 L12 21 L4 12 Z"></path><path d="M9 11 h6 M12 9 v6"></path></svg>Boss</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><path d="M12 5 L18 12 L12 19 L6 12 Z"></path></svg>Add</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle></svg>Circle</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"></circle><circle cx="12" cy="12" r="4"></circle></svg>Donut</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><path d="M12 21 L5 5 A12 12 0 0 1 19 5 Z"></path></svg>Protean</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="18" rx="1"></rect></svg>Beam</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><text x="12" y="15.5" font-size="9" text-anchor="middle" fill="#b8c0cc" stroke="none">8</text></svg>Stack &times;8</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><text x="12" y="15.5" font-size="9" text-anchor="middle" fill="#b8c0cc" stroke="none">4</text></svg>Stack &times;4</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"></circle><text x="12" y="15.5" font-size="9" text-anchor="middle" fill="#b8c0cc" stroke="none">2</text></svg>Stack &times;2</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><rect x="8" y="3" width="8" height="18" rx="1"></rect><path d="M8 9 h8 M8 15 h8"></path></svg>Line stack</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"></circle><path d="M12 2 v4 M12 18 v4 M2 12 h4 M18 12 h4 M5 5 l3 3 M16 16 l3 3 M19 5 l-3 3 M8 16 l-3 3"></path></svg>Flare</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="3"></circle><circle cx="18" cy="12" r="3"></circle><path d="M9 12 h6"></path></svg>Together tether</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="2.5"></circle><circle cx="19" cy="12" r="2.5"></circle><path d="M8 12 h8 M11 9 l-3 3 3 3 M13 9 l3 3 -3 3"></path></svg>Go-far tether</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"></circle><path d="M12 2 v5 M12 17 v5 M2 12 h5 M17 12 h5"></path></svg>Bait anchor</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><path d="M5 6 h14 M12 6 v13"></path></svg>Text</div>
+          <div class="tile"><svg viewBox="0 0 24 24"><path d="M4 12 h15 M13 6 l6 6 -6 6"></path></svg>Arrow</div>
+        </div>
+      </div>
+
+      <!-- Layout + markers merged -->
+      <div>
+        <div class="lbl" style="margin-bottom: 6px;">Arena</div>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px;">
+          <div class="chip">8-radial</div><div class="chip">4-radial</div><div class="chip">2-radial</div><div class="chip">no grid</div><div class="chip">standard markers</div><div class="chip">PF positions</div><div class="chip">add party</div>
+        </div>
+        <div style="display: flex; flex-wrap: wrap; gap: 4px; align-items: center; margin-bottom: 8px;">
+          <div class="chip" style="border-color: #fbbf24; color: #fde68a;">move waymarks</div><div class="chip">save for fight</div><div class="chip">use saved</div>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px;">
+          <div><div class="lbl" style="margin-bottom: 2px;">shape</div><div class="fld" style="font-size: 12px; padding: 3px 8px;">square &#9662;</div></div>
+          <div><div class="lbl" style="margin-bottom: 2px;">backdrop</div><div class="fld" style="font-size: 12px; padding: 3px 8px;">P12S phase 1 &#9662;</div></div>
+          <div><div class="lbl" style="margin-bottom: 2px;">grid</div><div class="fld" style="font-size: 12px; padding: 3px 8px;">radial &#9662;</div></div>
+          <div><div class="lbl" style="margin-bottom: 2px;">arena width (yalms)</div><div class="fld" style="font-size: 12px; padding: 3px 8px;">40</div></div>
+        </div>
+      </div>
+      <div style="margin-top: auto; font-size: 12px; color: #6b7686;">Select something on the canvas to edit it.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

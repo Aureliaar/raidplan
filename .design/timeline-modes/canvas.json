@@ -1,0 +1,69 @@
+{
+  "artboards": [
+    {
+      "file": "Collapsed.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 390,
+      "h": 844,
+      "title": "Collapsed · phone, viewing"
+    },
+    {
+      "file": "Normal.dc.html",
+      "x": 500,
+      "y": 0,
+      "w": 366,
+      "h": 720,
+      "title": "Normal · today"
+    },
+    {
+      "file": "Main.dc.html",
+      "x": 960,
+      "y": 0,
+      "w": 780,
+      "h": 780,
+      "title": "Expanded · editing"
+    },
+    {
+      "file": "Laptop.dc.html",
+      "x": 0,
+      "y": 1000,
+      "w": 1280,
+      "h": 720,
+      "title": "Collapsed · small laptop, viewing"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "collapsed-note",
+      "x": 0,
+      "y": -260,
+      "w": 390,
+      "text": "Collapsed = viewing\nA non-editing mode for any screen, not only phones: a shared link, a raider reading the plan mid-prog, an old laptop. The rail turns sideways under the arena so the arena takes the whole width. Step pills are 40×44 taps; each Beat is one 8px bar across the steps it spans, cast colour on the left, amber on the right, the diamond on its snap seam and the hollow tail after it. Variants are an A/B pill; the step note strip stands in for the arena card, which is hidden here. Tapping a bar jumps to its cast step."
+    },
+    {
+      "id": "laptop-note",
+      "x": 1320,
+      "y": 1000,
+      "w": 300,
+      "text": "Same mode on a 1280×720 laptop\nThe app's top bar, then the arena as tall as the window allows, and the strip under it at the arena's width. No prev/next buttons: W and S walk the steps, or click a pill. Nothing in the strip edits."
+    },
+    {
+      "id": "normal-note",
+      "x": 500,
+      "y": -190,
+      "w": 366,
+      "text": "Normal = edit\nThe shipped rail plus: the mode switch in the header, one Beat · Debuff Beat · Step row under the grid instead of the lone + in the gutter, and no notes pane, since the arena card is the note. A step that carries one shows a dot by its number; hover reads it."
+    },
+    {
+      "id": "expanded-note",
+      "x": 960,
+      "y": -260,
+      "w": 780,
+      "text": "Expanded\nFor working the timeline: 40px rows so the cast and resolve edges, the body and the diamond are easy to grab, and the hovered card shows its grips. 120px lanes let a card carry its Parts under its name and label the snap seam. The step note sits on its own row as a column, editable in place on the selected step, so you read the whole mechanic top to bottom without switching panes. Variant strips carry their full names. The selected row also shows its actions, since there is room and right-click is invisible; drop them if you would rather keep the menu as the only path."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

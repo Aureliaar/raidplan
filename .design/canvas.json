@@ -1,0 +1,10 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 680, "h": 920, "title": "Proposal", "print": "flow" },
+    { "file": "ContextualHandles.dc.html", "x": 780, "y": 0, "w": 720, "h": 560, "title": "Contextual Handles" },
+    { "file": "DragFeedback.dc.html", "x": 780, "y": 700, "w": 720, "h": 560, "title": "Drag Feedback" },
+    { "file": "GroupGizmo.dc.html", "x": 1600, "y": 0, "w": 420, "h": 640, "title": "Group Gizmo" },
+    { "file": "HandleOptions.dc.html", "x": 1600, "y": 780, "w": 760, "h": 900, "title": "Handle Options" }
+  ],
+  "launch": { "view": "canvas" }
+}

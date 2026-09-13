@@ -1,0 +1,65 @@
+{
+  "artboards": [
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 720,
+      "h": 1560,
+      "title": "Proposal",
+      "print": "flow"
+    },
+    {
+      "file": "Layout.dc.html",
+      "x": 820,
+      "y": 0,
+      "w": 1240,
+      "h": 520,
+      "title": "Where the pixels go"
+    },
+    {
+      "file": "Proposed.dc.html",
+      "x": 820,
+      "y": 660,
+      "w": 1600,
+      "h": 880,
+      "title": "Proposed editor"
+    },
+    {
+      "file": "AddPanel.dc.html",
+      "x": 0,
+      "y": 1700,
+      "w": 1120,
+      "h": 920,
+      "title": "Add panel"
+    },
+    {
+      "file": "Timeline.dc.html",
+      "x": 1240,
+      "y": 1700,
+      "w": 1120,
+      "h": 620,
+      "title": "Timeline lanes"
+    },
+    {
+      "file": "Shortcuts.dc.html",
+      "x": 1240,
+      "y": 2400,
+      "w": 640,
+      "h": 520,
+      "title": "Shortcuts"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "preview-pill-note",
+      "x": 820,
+      "y": 560,
+      "w": 300,
+      "text": "Proposed editor: the Preview pill at the top of the rail is shown for illustration. This plan has no active split, so on the real plan that row is absent."
+    }
+  ],
+  "launch": {
+    "view": "canvas"
+  }
+}

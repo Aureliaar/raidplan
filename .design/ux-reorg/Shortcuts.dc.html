@@ -1,0 +1,56 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; background: #14171c; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+    kbd { display: inline-block; min-width: 18px; padding: 1px 6px; border: 1px solid #2e3543; border-bottom-width: 2px; border-radius: 4px; background: #14171c; color: #e6ebf2; font-family: inherit; font-size: 11px; text-align: center; line-height: 16px; }
+    .row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: #b8c0cc; padding: 3px 0; }
+    .row .k { display: flex; gap: 3px; min-width: 96px; }
+    .h { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7686; margin: 8px 0 2px; }
+  </style>
+</helmet>
+<div style="width: 640px; height: 520px; background: rgba(0,0,0,0.6); display: flex; align-items: center; justify-content: center; box-sizing: border-box;">
+  <div style="width: 560px; background: #1a1e25; border: 1px solid #232833; border-radius: 8px; padding: 16px; box-sizing: border-box; box-shadow: 0 25px 50px rgba(0,0,0,0.5);">
+    <div style="display: flex; align-items: center; gap: 8px;">
+      <div style="font-size: 14px; font-weight: 600; color: #e6ebf2;">Keyboard</div>
+      <div style="font-size: 11px; color: #6b7686;">nothing here fires while typing in a field</div>
+      <div style="margin-left: auto; background: #232833; color: #b8c0cc; border-radius: 4px; padding: 2px 8px; font-size: 12px;">&#10005;</div>
+    </div>
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 24px; margin-top: 6px;">
+      <div>
+        <div class="h">Steps and Beats</div>
+        <div class="row"><span class="k"><kbd>W</kbd><kbd>S</kbd></span>previous / next step</div>
+        <div class="row"><span class="k"><kbd>A</kbd><kbd>D</kbd></span>previous / next Variant of the focused Beat</div>
+        <div class="row"><span class="k"><kbd>F2</kbd></span>rename the hovered step, mechanic or Beat</div>
+        <div class="row"><span class="k"><kbd>Esc</kbd></span>back to editing Shared</div>
+        <div class="h">Selection</div>
+        <div class="row"><span class="k"><kbd>Del</kbd></span>delete selection, or the Variant box being edited</div>
+        <div class="row"><span class="k"><kbd>Ctrl</kbd><kbd>C</kbd></span>copy entities</div>
+        <div class="row"><span class="k"><kbd>Ctrl</kbd><kbd>V</kbd></span>paste entities</div>
+        <div class="row"><span class="k"><kbd>Ctrl</kbd><kbd>Z</kbd></span>undo</div>
+        <div class="row"><span class="k"><kbd>Ctrl</kbd><kbd>Y</kbd></span>redo</div>
+      </div>
+      <div>
+        <div class="h">Placing</div>
+        <div class="row"><span class="k"><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd></span>symmetry off / 2&times; / 4&times;</div>
+        <div class="row"><span class="k"><kbd>Q</kbd></span>mirror &harr; rotate</div>
+        <div class="row"><span class="k"><kbd>Wheel</kbd></span>resize what is under the pointer</div>
+        <div class="row"><span class="k"><kbd>Shift</kbd><kbd>Wheel</kbd></span>fine steps</div>
+        <div class="h">View</div>
+        <div class="row"><span class="k"><kbd>C</kbd></span>margin chips</div>
+        <div class="row"><span class="k"><kbd>V</kbd></span>party chips</div>
+        <div class="row"><span class="k"><kbd>?</kbd></span>this sheet</div>
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

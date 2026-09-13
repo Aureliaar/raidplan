@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+  </style>
+</helmet>
+<div style="width: 720px; background: #14171c; color: #b8c0cc; padding: 28px 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 16px;">
+  <div>
+    <div style="font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #6b7686;">Ideas 3 &amp; 4</div>
+    <div style="font-size: 18px; font-weight: 700; color: #e6ebf2;">Anchor leash &amp; radial snapping</div>
+  </div>
+  <div style="display: flex; gap: 20px;">
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <svg width="316" height="316" viewBox="0 0 316 316">
+        <circle cx="158" cy="158" r="148" fill="#1a1e25" stroke="#232833" stroke-width="2"/>
+        <!-- anchor target: player token -->
+        <circle cx="120" cy="180" r="16" fill="#2e3543" stroke="#60a5fa" stroke-width="2"/>
+        <text x="120" y="185" text-anchor="middle" font-size="11" fill="#b8c0cc" font-weight="bold">H1</text>
+        <!-- bait circle being dragged -->
+        <circle cx="216" cy="112" r="34" fill="rgba(251,146,60,0.20)" stroke="rgba(251,146,60,0.8)" stroke-width="2"/>
+        <!-- leash -->
+        <line x1="132" y1="167" x2="205" y2="123" stroke="#fcd34d" stroke-width="2" stroke-dasharray="5 5"/>
+        <circle cx="120" cy="180" r="22" fill="none" stroke="#fcd34d" stroke-width="1.5" stroke-dasharray="2 4" opacity="0.7"/>
+        <!-- offset readout on the leash -->
+        <g>
+          <rect x="128" y="128" width="92" height="22" rx="5" fill="#232833" stroke="#2e3543"/>
+          <text x="174" y="143" text-anchor="middle" font-size="12" fill="#e6ebf2" font-family="ui-monospace, monospace">+12.0, &#8722;8.5</text>
+        </g>
+        <!-- cursor -->
+        <path d="M216 104 l0 16 l4 -4 l4 7 l3 -2 l-4 -7 l6 0 z" fill="#e6ebf2" stroke="#14171c" stroke-width="1"/>
+      </svg>
+      <div style="font-size: 12px; color: #8a95a5; line-height: 1.5; max-width: 316px;"><b style="color:#b8c0cc;">Anchor leash:</b> dragging an anchored bait draws a dashed leash from the anchor's resolved point with the live offset on it. The faint ring around the target is the snap-back zone &mdash; drop inside it and the offset returns to zero.</div>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <svg width="316" height="316" viewBox="0 0 316 316">
+        <circle cx="158" cy="158" r="148" fill="#1a1e25" stroke="#232833" stroke-width="2"/>
+        <!-- 45-degree spokes, only the snapped one lit -->
+        <line x1="158" y1="158" x2="158" y2="14" stroke="#2e3543" stroke-width="1"/>
+        <line x1="158" y1="158" x2="302" y2="158" stroke="#2e3543" stroke-width="1"/>
+        <line x1="158" y1="158" x2="260" y2="56" stroke="#7dd3fc" stroke-width="1.5" stroke-dasharray="5 4"/>
+        <!-- radius guide arc through a neighbour -->
+        <circle cx="158" cy="158" r="96" fill="none" stroke="#7dd3fc" stroke-width="1.5" stroke-dasharray="2 5" opacity="0.7"/>
+        <!-- neighbour token on the same radius -->
+        <circle cx="62" cy="158" r="14" fill="#2e3543" stroke="#f472b6" stroke-width="2"/>
+        <text x="62" y="163" text-anchor="middle" font-size="10" fill="#b8c0cc" font-weight="bold">D1</text>
+        <!-- dragged token snapped on spoke and radius -->
+        <circle cx="226" cy="90" r="14" fill="#2e3543" stroke="#7aa2f7" stroke-width="2.5"/>
+        <text x="226" y="95" text-anchor="middle" font-size="10" fill="#b8c0cc" font-weight="bold">D2</text>
+        <!-- waymark A, point snap candidate -->
+        <rect x="146" y="26" width="24" height="24" rx="5" fill="none" stroke="#f87171" stroke-width="2"/>
+        <text x="158" y="43" text-anchor="middle" font-size="12" fill="#f87171" font-weight="bold">A</text>
+        <!-- readout -->
+        <g>
+          <rect x="204" y="116" width="90" height="22" rx="5" fill="#232833" stroke="#2e3543"/>
+          <text x="249" y="131" text-anchor="middle" font-size="12" fill="#e6ebf2" font-family="ui-monospace, monospace">45&#176; &#183; r 19y</text>
+        </g>
+        <g>
+          <rect x="60" y="262" width="196" height="24" rx="6" fill="#232833" stroke="#2e3543"/>
+          <text x="158" y="278" text-anchor="middle" font-size="11" fill="#8a95a5">Alt while dragging = no snapping</text>
+        </g>
+      </svg>
+      <div style="font-size: 12px; color: #8a95a5; line-height: 1.5; max-width: 316px;"><b style="color:#b8c0cc;">Radial snap:</b> the drag snaps angle-from-center to 45&#176; spokes and radius to nearby entities (D2 lands on D1's ring, on the NE spoke). Guides render only while snapped, in the quiet pin gray/sky already in use.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

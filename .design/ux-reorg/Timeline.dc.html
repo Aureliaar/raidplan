@@ -1,0 +1,90 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; background: #14171c; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+    .step { display: flex; align-items: center; gap: 2px; border-radius: 4px; font-size: 14px; color: #b8c0cc; padding: 4px 8px; line-height: 20px; white-space: nowrap; }
+    .card { position: absolute; inset: 0; border-radius: 4px; box-sizing: border-box; display: flex; flex-direction: column; color: #b8c0cc; overflow: hidden; }
+    .old { padding: 4px; font-size: 11px; line-height: 1.2; align-items: center; }
+    .old .boom { margin-top: auto; width: calc(100% + 8px); margin-left: -4px; margin-right: -4px; border-bottom: 4px solid rgba(251,191,36,0.8); padding-bottom: 2px; text-align: center; font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: rgba(252,211,77,0.9); }
+    .new { padding: 3px 4px 0; font-size: 10px; line-height: 1.15; }
+    .new .boom { margin-top: auto; height: 3px; background: rgba(251,191,36,0.8); margin-left: -4px; margin-right: -4px; }
+    .act { display: grid; place-items: center; width: 24px; height: 24px; font-size: 12px; color: #b8c0cc; border-radius: 4px; }
+    .cap { font-size: 12px; color: #8a95a5; line-height: 1.5; }
+  </style>
+</helmet>
+<div style="width: 1120px; background: #14171c; color: #b8c0cc; padding: 28px 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 18px;">
+  <div>
+    <div style="font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #6b7686;">E + G &middot; Timeline lanes and step actions &middot; 1:1</div>
+    <div class="cap" style="margin-top: 4px;">Same Paradeigma 1, same five overlapping Beats. Left is what the rail renders today at its unscaled 78 px lane; right is the 56 px lane with wrapped labels, a 3 px resolve edge, and hover actions on any row.</div>
+  </div>
+
+  <div style="display: flex; gap: 48px; align-items: flex-start;">
+    <!-- today -->
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div style="font-size: 12px; font-weight: 600; color: #e6ebf2;">Today &middot; 236 + 5&times;82 = 646 px</div>
+      <div style="width: 520px; background: #232833; border-radius: 4px; padding: 4px; box-sizing: border-box;">
+        <div style="display: grid; grid-template-columns: minmax(0, 1fr) 78px 78px 78px 78px 78px; column-gap: 4px; row-gap: 4px;">
+          <div class="step" style="grid-column: 1; grid-row: 1;">1. Start</div>
+          <div class="step" style="grid-column: 1; grid-row: 2;">2. Add Movement 1</div>
+          <div class="step" style="grid-column: 1; grid-row: 3;">3. Add Movement 2</div>
+          <div class="step" style="grid-column: 1; grid-row: 4;">4. Final Ring</div>
+          <div class="step" style="grid-column: 1; grid-row: 5; background: #2e3543; color: #fff;"><span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;">5. Resolve&hellip;</span><span class="act">&#9671;</span><span class="act">D</span><span class="act">+</span><span class="act">&times;</span></div>
+          <div class="step" style="grid-column: 1; grid-row: 6;">6. Resolve S2</div>
+          <div class="step" style="grid-column: 1; grid-row: 7;">7. Resolve S3</div>
+          <div class="step" style="grid-column: 1; grid-row: 8;">8. End</div>
+
+          <div style="grid-column: 2; grid-row: 1 / 6; position: relative;"><div class="card old" style="border-top: 2px solid #b8632f; background: rgba(184,99,47,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Add&hellip;</div><div style="color: #6b7686;">&times;2</div><div class="boom">boom</div></div></div>
+          <div style="grid-column: 2; grid-row: 6 / 8; position: relative;"><div class="card old" style="border-top: 2px solid #2f8f8a; background: rgba(47,143,138,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Ring&hellip;</div><div style="color: #6b7686;">&times;1</div><div class="boom">boom</div></div></div>
+          <div style="grid-column: 3; grid-row: 2 / 4; position: relative;"><div class="card old" style="border-top: 2px solid #b03a3a; background: rgba(176,58,58,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Ring&hellip;</div><div style="color: #6b7686;">&times;1</div><div class="boom">boom</div></div></div>
+          <div style="grid-column: 3; grid-row: 4 / 6; position: relative;"><div class="card old" style="border-top: 2px solid #b03a3a; background: rgba(176,58,58,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Ring&hellip;</div><div style="color: #6b7686;">&times;1</div><div class="boom">boom</div></div></div>
+          <div style="grid-column: 3; grid-row: 6 / 7; position: relative;"><div class="card old" style="border-top: 2px solid #b8632f; background: rgba(184,99,47,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Add&hellip;</div><div style="color: #6b7686;">&times;4</div><div class="boom">boom</div></div></div>
+          <div style="grid-column: 4; grid-row: 3 / 5; position: relative;"><div class="card old" style="border-top: 2px solid #8c3a6e; background: rgba(140,58,110,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Ring&hellip;</div><div style="color: #6b7686;">&times;1</div><div class="boom">boom</div></div></div>
+          <div style="grid-column: 5; grid-row: 4 / 7; position: relative;"><div class="card old" style="border-top: 2px solid #3f8a3f; background: rgba(63,138,63,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Ring&hellip;</div><div style="color: #6b7686;">&times;1</div><div class="boom">boom</div></div></div>
+          <div style="grid-column: 6; grid-row: 1 / 8; position: relative;"><div class="card old" style="border-top: 2px solid #2f6f8f; background: rgba(47,111,143,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Add&hellip;</div><div style="color: #6b7686;">&times;2</div><div class="boom">boom</div></div></div>
+          <div style="grid-column: 6; grid-row: 8 / 9; position: relative;"><div class="card old" style="border-top: 2px solid #b8a02f; background: rgba(184,160,47,0.18);"><div style="width: 100%; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">Add&hellip;</div><div style="color: #6b7686;">&times;4</div><div class="boom">boom</div></div></div>
+        </div>
+      </div>
+      <div class="cap">Every label truncates after three characters, BOOM costs 14 px of each card, and the step column has 140 px of dead space to the right of the names. Actions appear only on the current step.</div>
+    </div>
+
+    <!-- proposed -->
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div style="font-size: 12px; font-weight: 600; color: #e6ebf2;">Proposed &middot; 236 + 5&times;60 = 536 px</div>
+      <div style="width: 440px; background: #232833; border-radius: 4px; padding: 4px; box-sizing: border-box;">
+        <div style="display: grid; grid-template-columns: minmax(0, 1fr) 56px 56px 56px 56px 56px; column-gap: 4px; row-gap: 4px;">
+          <div class="step" style="grid-column: 1; grid-row: 1;">1. Start</div>
+          <div class="step" style="grid-column: 1; grid-row: 2;">2. Add Movement 1</div>
+          <div class="step" style="grid-column: 1; grid-row: 3; background: #232833; outline: 1px solid #2e3543;"><span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;">3. Add Movement 2</span><span class="act" style="color: #8a95a5;">&#9671;</span><span class="act" style="color: #8a95a5;">D</span><span class="act" style="color: #8a95a5;">+</span><span class="act" style="color: #8a95a5;">&times;</span></div>
+          <div class="step" style="grid-column: 1; grid-row: 4;">4. Final Ring</div>
+          <div class="step" style="grid-column: 1; grid-row: 5; background: #2e3543; color: #fff;"><span style="flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;">5. Resolve S1</span><span class="act">&#9671;</span><span class="act">D</span><span class="act">+</span><span class="act">&times;</span></div>
+          <div class="step" style="grid-column: 1; grid-row: 6;">6. Resolve S2</div>
+          <div class="step" style="grid-column: 1; grid-row: 7;">7. Resolve S3</div>
+          <div class="step" style="grid-column: 1; grid-row: 8;">8. End</div>
+          <div class="step" style="grid-column: 1; grid-row: 9; color: #6b7686; font-size: 12px;">+ step</div>
+
+          <div style="grid-column: 2; grid-row: 1 / 6; position: relative;"><div class="card new" style="border-top: 2px solid #b8632f; background: rgba(184,99,47,0.18);"><div>Add beams</div><div style="color: #6b7686; font-size: 9px;">&times;2</div><div class="boom"></div></div></div>
+          <div style="grid-column: 2; grid-row: 6 / 8; position: relative;"><div class="card new" style="border-top: 2px solid #2f8f8a; background: rgba(47,143,138,0.18);"><div>Ring S2</div><div style="color: #6b7686; font-size: 9px;">&times;1</div><div class="boom"></div></div></div>
+          <div style="grid-column: 3; grid-row: 2 / 4; position: relative;"><div class="card new" style="border-top: 2px solid #b03a3a; background: rgba(176,58,58,0.18);"><div>Ring 1</div><div style="color: #6b7686; font-size: 9px;">&times;1</div><div class="boom"></div></div></div>
+          <div style="grid-column: 3; grid-row: 4 / 6; position: relative;"><div class="card new" style="border-top: 2px solid #b03a3a; background: rgba(176,58,58,0.18);"><div>Ring 2</div><div style="color: #6b7686; font-size: 9px;">&times;1</div><div class="boom"></div></div></div>
+          <div style="grid-column: 3; grid-row: 6 / 7; position: relative;"><div class="card new" style="border-top: 2px solid #b8632f; background: rgba(184,99,47,0.18);"><div>Add beams</div><div style="color: #6b7686; font-size: 9px;">&times;4</div><div class="boom"></div></div></div>
+          <div style="grid-column: 4; grid-row: 3 / 5; position: relative;"><div class="card new" style="border-top: 2px solid #8c3a6e; background: rgba(140,58,110,0.18);"><div>Ring 3</div><div style="color: #6b7686; font-size: 9px;">&times;1</div><div class="boom"></div></div></div>
+          <div style="grid-column: 5; grid-row: 4 / 7; position: relative;"><div class="card new" style="border-top: 2px solid #3f8a3f; background: rgba(63,138,63,0.18);"><div>Ring 4</div><div style="color: #6b7686; font-size: 9px;">&times;1</div><div class="boom"></div></div></div>
+          <div style="grid-column: 6; grid-row: 1 / 8; position: relative;"><div class="card new" style="border-top: 2px solid #2f6f8f; background: rgba(47,111,143,0.18);"><div>Add tethers</div><div style="color: #6b7686; font-size: 9px;">&times;2</div><div class="boom"></div></div></div>
+          <div style="grid-column: 6; grid-row: 8 / 9; position: relative;"><div class="card new" style="border-top: 2px solid #b8a02f; background: rgba(184,160,47,0.18);"><div>Add hits</div><div style="color: #6b7686; font-size: 9px;">&times;4</div><div class="boom"></div></div></div>
+        </div>
+      </div>
+      <div class="cap">Labels wrap to two lines at 10 px before they truncate. The amber resolve edge keeps its meaning (bottom of the card = the cast lands) and its drag handle; &ldquo;boom&rdquo; moves into the tooltip. Row 3 shows the hover state: actions on any row, tooltips name them. A ghost &ldquo;+ step&rdquo; row closes the mechanic. Variant chips inside a card keep their 8 px type and their 29 px / 17 px insets shrink with the footer.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

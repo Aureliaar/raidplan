@@ -1,0 +1,130 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+  </style>
+</helmet>
+<div style="width: 720px; background: #14171c; color: #b8c0cc; padding: 40px 44px; box-sizing: border-box; display: flex; flex-direction: column; gap: 22px;">
+  <div style="display: flex; flex-direction: column; gap: 6px;">
+    <div style="font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #6b7686;">Raidplan &middot; Proposal</div>
+    <h1 style="margin: 0; font-size: 26px; font-weight: 700; color: #e6ebf2; letter-spacing: -0.3px;">Editor chrome reorg &mdash; the pareto wall</h1>
+    <div style="font-size: 13px; color: #8a95a5; line-height: 1.5;">In the screenshot's viewport (1536&times;736 css px at 125% zoom) the arena gets a 504 px square. Every high-value item below is about giving that square back to the arena and putting controls where they act. Scores are 1&ndash;5, from the screenshot plus a read of Editor.tsx.</div>
+  </div>
+
+  <div style="height: 1px; background: #232833;"></div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: #6b7686;">Value vs effort</div>
+    <svg viewBox="0 0 632 300" width="632" height="300" style="display:block; overflow: visible;" font-family="ui-sans-serif, system-ui, Segoe UI, sans-serif">
+      <line x1="56" y1="20" x2="56" y2="250" stroke="#2e3543" stroke-width="1"></line>
+      <line x1="56" y1="250" x2="600" y2="250" stroke="#2e3543" stroke-width="1"></line>
+      <line x1="56" y1="135" x2="600" y2="135" stroke="#232833" stroke-width="1" stroke-dasharray="3 4"></line>
+      <line x1="328" y1="20" x2="328" y2="250" stroke="#232833" stroke-width="1" stroke-dasharray="3 4"></line>
+      <text x="328" y="278" fill="#6b7686" font-size="11" text-anchor="middle">effort &rarr;</text>
+      <text x="18" y="135" fill="#6b7686" font-size="11" text-anchor="middle" transform="rotate(-90 18 135)">value &rarr;</text>
+      <text x="70" y="36" fill="#7aa2f7" font-size="10" letter-spacing="1.5">DO FIRST</text>
+      <text x="586" y="244" fill="#6b7686" font-size="10" letter-spacing="1.5" text-anchor="end">LATER</text>
+      <path d="M 165 44 L 383 44 L 383 100 L 492 100" fill="none" stroke="#7aa2f7" stroke-width="1" stroke-opacity="0.35"></path>
+
+      <g><circle cx="165" cy="76" r="7" fill="#7aa2f7"></circle><text x="178" y="80" fill="#e6ebf2" font-size="12" font-weight="600">A</text><text x="190" y="80" fill="#b8c0cc" font-size="12">One-row header</text><title>A · value 4 · effort 1</title></g>
+      <g><circle cx="165" cy="130" r="7" fill="#7aa2f7"></circle><text x="178" y="134" fill="#e6ebf2" font-size="12" font-weight="600">B</text><text x="190" y="134" fill="#b8c0cc" font-size="12">Fold the Preview strip</text><title>B · value 3 · effort 1</title></g>
+      <g><circle cx="165" cy="160" r="7" fill="#7aa2f7"></circle><text x="178" y="164" fill="#e6ebf2" font-size="12" font-weight="600">G</text><text x="190" y="164" fill="#b8c0cc" font-size="12">Step actions on hover</text><title>G · value 3 · effort 1</title></g>
+      <g><circle cx="165" cy="190" r="7" fill="#7aa2f7"></circle><text x="178" y="194" fill="#e6ebf2" font-size="12" font-weight="600">H</text><text x="190" y="194" fill="#b8c0cc" font-size="12">Shortcut sheet (?)</text><title>H · value 3 · effort 1</title></g>
+      <g><circle cx="165" cy="226" r="7" fill="#7aa2f7"></circle><text x="178" y="230" fill="#e6ebf2" font-size="12" font-weight="600">F</text><text x="190" y="230" fill="#b8c0cc" font-size="12">Notes drawer</text><title>F · value 2 · effort 1</title></g>
+      <g><circle cx="274" cy="44" r="7" fill="#7aa2f7"></circle><text x="287" y="48" fill="#e6ebf2" font-size="12" font-weight="600">C</text><text x="299" y="48" fill="#b8c0cc" font-size="12">Drop zones on demand</text><title>C · value 5 · effort 2</title></g>
+      <g><circle cx="383" cy="44" r="7" fill="#7aa2f7"></circle><text x="396" y="48" fill="#e6ebf2" font-size="12" font-weight="600">E</text><text x="408" y="48" fill="#b8c0cc" font-size="12">Slim timeline lanes</text><title>E · value 5 · effort 3</title></g>
+      <g><circle cx="383" cy="80" r="7" fill="#7aa2f7"></circle><text x="396" y="84" fill="#e6ebf2" font-size="12" font-weight="600">D</text><text x="408" y="84" fill="#b8c0cc" font-size="12">Dense Add palette</text><title>D · value 4 · effort 3</title></g>
+      <g><circle cx="383" cy="110" r="7" fill="#7aa2f7"></circle><text x="396" y="114" fill="#e6ebf2" font-size="12" font-weight="600">I</text><text x="408" y="114" fill="#b8c0cc" font-size="12">Beat editor moves right</text><title>I · value 4 · effort 3</title></g>
+      <g><circle cx="383" cy="216" r="7" fill="#3d5a9c"></circle><text x="396" y="220" fill="#e6ebf2" font-size="12" font-weight="600">J</text><text x="408" y="220" fill="#8a95a5" font-size="12">Floating canvas tools</text><title>J · value 2 · effort 3</title></g>
+      <g><circle cx="492" cy="160" r="7" fill="#3d5a9c"></circle><text x="505" y="164" fill="#e6ebf2" font-size="12" font-weight="600">L</text><text x="517" y="164" fill="#8a95a5" font-size="12">Notes / arrows as parts</text><title>L · value 3 · effort 4</title></g>
+      <g><circle cx="600" cy="100" r="7" fill="#3d5a9c"></circle><text x="592" y="122" fill="#e6ebf2" font-size="12" font-weight="600" text-anchor="end">K</text><text x="580" y="122" fill="#8a95a5" font-size="12" text-anchor="end">Draggable variant ranges (2.4)</text><title>K · value 4 · effort 5</title></g>
+    </svg>
+  </div>
+
+  <div style="height: 1px; background: #232833;"></div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: #6b7686;">Wave 1 &middot; give the arena its window back &middot; ~1 day</div>
+    <div style="display: flex; flex-direction: column; gap: 12px;">
+      <div style="display: flex; gap: 14px; align-items: flex-start;">
+        <div style="min-width: 26px; height: 26px; border-radius: 6px; background: #232833; color: #7aa2f7; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;">A</div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 14px; font-weight: 600; color: #e6ebf2;">One-row header</div>
+          <div style="font-size: 13px; color: #8a95a5; line-height: 1.5;">The header is one <span style="color:#b8c0cc;">flex-wrap</span> row that wraps into two because the title and encounter inputs are 280 + 180 px wide. Make both click-to-edit text (a field only while focused), park <span style="color:#b8c0cc;">rev &middot; live &middot; owner</span> under the title in 10 px, and pin the symmetry / transform / drag-scope cluster in the centre. Undo, redo, History and Share sit right. The header goes from 84 to 48 px. &rarr; <b style="color:#b8c0cc;">Proposed</b> artboard.</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 14px; align-items: flex-start;">
+        <div style="min-width: 26px; height: 26px; border-radius: 6px; background: #232833; color: #7aa2f7; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;">B</div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 14px; font-weight: 600; color: #e6ebf2;">Fold the Preview strip into the rail</div>
+          <div style="font-size: 13px; color: #8a95a5; line-height: 1.5;">The strip spends a full row on &ldquo;No Variant split active in this Step&rdquo;. The edit destination already shows as the mech banner over the canvas; the variant preview pills move to the top of the step rail, above the mechanic list, and appear only when a split is active. Saves 38 px more, 74 px in all. Together with A and C the arena square grows from 504 to ~664 px at the screenshot's window, 1.74&times; the area.</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 14px; align-items: flex-start;">
+        <div style="min-width: 26px; height: 26px; border-radius: 6px; background: #232833; color: #7aa2f7; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;">C</div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 14px; font-weight: 600; color: #e6ebf2;">Group drop zones on demand</div>
+          <div style="font-size: 13px; color: #8a95a5; line-height: 1.5;">The 200 px column of seven dashed cards exists for two jobs: drop a palette item on a group, and select a group. Selection becomes a row of group chips at the top of the Add panel (still drop targets, still ring their members on hover). The big targets appear only while something is in hand, as an overlay strip on the canvas edge, then vanish. Reclaims 216 px of width. &rarr; <b style="color:#b8c0cc;">Proposed</b> and <b style="color:#b8c0cc;">Add panel</b> artboards.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="height: 1px; background: #232833;"></div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: #6b7686;">Wave 2 &middot; density where it counts &middot; ~2 days</div>
+    <div style="display: flex; flex-direction: column; gap: 12px;">
+      <div style="display: flex; gap: 14px; align-items: flex-start;">
+        <div style="min-width: 26px; height: 26px; border-radius: 6px; background: #232833; color: #7aa2f7; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;">E</div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 14px; font-weight: 600; color: #e6ebf2;">Slim timeline lanes</div>
+          <div style="font-size: 13px; color: #8a95a5; line-height: 1.5;">The rail is 236 px of steps plus 82 px per Beat lane with its gap, so five overlapping Beats push it to 646 px and still truncate labels to &ldquo;Add&hellip;&rdquo;. Lanes go to 56 px, the label wraps to two lines at 10 px, the count sits in the corner, and the BOOM word becomes a 3 px amber baseline with the word in the tooltip. Same drag semantics; the rail stops scaling lanes down to fit, and labels stay readable. &rarr; <b style="color:#b8c0cc;">Timeline lanes</b> artboard.</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 14px; align-items: flex-start;">
+        <div style="min-width: 26px; height: 26px; border-radius: 6px; background: #232833; color: #7aa2f7; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;">D</div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 14px; font-weight: 600; color: #e6ebf2;">Dense Add palette</div>
+          <div style="font-size: 13px; color: #8a95a5; line-height: 1.5;">Sixteen two-column tiles with 30 px glyphs plus a five-line help paragraph means the palette scrolls on a 1030 px window. Three columns, 22 px glyphs, grouped Actors / Zones / Baits / Tethers &amp; notes, help behind a <span style="color:#b8c0cc;">?</span> hover, and Layout + Encounter markers merged into one compact Arena section above the existing arena fields. Everything fits without scrolling. &rarr; <b style="color:#b8c0cc;">Add panel</b> artboard.</div>
+        </div>
+      </div>
+      <div style="display: flex; gap: 14px; align-items: flex-start;">
+        <div style="min-width: 26px; height: 26px; border-radius: 6px; background: #232833; color: #7aa2f7; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700;">I</div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 14px; font-weight: 600; color: #e6ebf2;">Beat editor moves to the right aside</div>
+          <div style="font-size: 13px; color: #8a95a5; line-height: 1.5;">The open-Beat card (Location, Variants, colours, deal debuffs, done editing) renders inside the left rail and pushes the timeline down. The right aside already swaps Add &harr; Inspector on selection; a selected Beat becomes a third state there, so the rail stays a timeline and the inspector is the one place for &ldquo;what is selected&rdquo;. Backlog 2.1 / 2.2 already want the inspector for this.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div style="height: 1px; background: #232833;"></div>
+
+  <div style="display: flex; flex-direction: column; gap: 10px;">
+    <div style="font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: #6b7686;">Wave 3 &middot; cheap polish &middot; half a day</div>
+    <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #8a95a5; line-height: 1.5;">
+      <div style="display:flex; gap:10px;"><b style="color:#7aa2f7; min-width: 14px;">G</b><span><b style="color:#e6ebf2; font-weight:600;">Step actions on hover.</b> The ◇ D + × icons show on any hovered row, not just the current one, with named tooltips; a ghost &ldquo;+ step&rdquo; row closes each mechanic.</span></div>
+      <div style="display:flex; gap:10px;"><b style="color:#7aa2f7; min-width: 14px;">H</b><span><b style="color:#e6ebf2; font-weight:600;">Shortcut sheet.</b> Seventeen bindings exist and none are listed anywhere; <span style="color:#b8c0cc;">?</span> opens a one-screen overlay. &rarr; <b style="color:#b8c0cc;">Shortcuts</b> artboard.</span></div>
+      <div style="display:flex; gap:10px;"><b style="color:#7aa2f7; min-width: 14px;">F</b><span><b style="color:#e6ebf2; font-weight:600;">Notes drawer.</b> The 128 px Step-notes textarea duplicates the draggable notes card on the canvas; collapse it to an auto-growing two-line field.</span></div>
+    </div>
+  </div>
+
+  <div style="height: 1px; background: #232833;"></div>
+
+  <div style="display: flex; flex-direction: column; gap: 8px; font-size: 13px; color: #8a95a5; line-height: 1.5;">
+    <div style="font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; color: #6b7686;">Deliberately not on the wall</div>
+    <div><b style="color:#b8c0cc;">K</b> draggable variant ranges (backlog 2.4) and <b style="color:#b8c0cc;">L</b> notes / arrows as parts (5.5) are real wants but each is a model change, not a chrome change. <b style="color:#b8c0cc;">J</b> a floating tool strip over the canvas only pays off once A frees the header; revisit after wave 1.</div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

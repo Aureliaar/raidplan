@@ -1,0 +1,119 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; background: #14171c; color: #b8c0cc; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+    .label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #6b7686; }
+    .cap { font-size: 12px; line-height: 1.5; color: #8a95a5; }
+    .h { font-size: 12px; font-weight: 600; color: #e6ebf2; }
+    code { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: #dfe5ee; }
+    
+  </style>
+</helmet>
+
+<div style="width: 920px; box-sizing: border-box; padding: 28px 32px; display: flex; flex-direction: column; gap: 22px;">
+  <div>
+    <div class="label">Beat card &middot; anatomy &middot; shown at 2&times;</div>
+    <div class="cap" style="margin-top: 4px; max-width: 720px;">The two edges stay what they are today: the coloured top edge is the step the Beat casts in, the amber bottom edge the step it resolves in. The word under it goes. The Snap marker is a diamond on a dashed seam: the Beat's baits and anchors follow their target down to that seam, then freeze where they stand. Below the seam the fill drains out and only the card's sides keep its colour: those steps are on the snapshot.</div>
+  </div>
+  <div style="display: flex; gap: 28px; align-items: flex-start;">
+    <div style="display: flex; flex-direction: column; gap: 10px; width: 150px;">
+    <div class="h">1 step</div>
+    <div style="height: 320px; position: relative;"><div style="transform: scale(2); transform-origin: top left; padding-left: 8px;"><div title="Line — casts in step 1, resolves in step 1. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style=" position: relative; width: 66px; height: 28px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #8c3a6e; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(140, 58, 110, 0.18); overflow: visible;  cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      
+      
+      <div style="padding: 5px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Line <span style="font-size: 9px; color: #6b7686;">&times;1</span></div>
+    </div>
+    
+    
+  </div></div></div>
+    <div class="cap">Instant. No marker: it casts and resolves in the same step.</div>
+  </div>
+    <div style="display: flex; flex-direction: column; gap: 10px; width: 150px;">
+    <div class="h">2 steps</div>
+    <div style="height: 320px; position: relative;"><div style="transform: scale(2); transform-origin: top left; padding-left: 8px;"><div title="Ring — casts in step 1, resolves in step 2. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style=" position: relative; width: 66px; height: 60px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #b03a3a; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(176, 58, 58, 0.18); overflow: visible;  cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      
+      
+      <div style="padding: 4px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Ring</div>
+    <div style="text-align: center; font-size: 9px; line-height: 11px; color: #6b7686;">&times;1</div>
+    </div>
+    
+    
+  </div></div></div>
+    <div class="cap">No marker: the first step is the snap, nothing else it could be.</div>
+  </div>
+    <div style="display: flex; flex-direction: column; gap: 10px; width: 150px;">
+    <div class="h">3 steps</div>
+    <div style="height: 320px; position: relative;"><div style="transform: scale(2); transform-origin: top left; padding-left: 8px;"><div title="Stack — casts in step 1, resolves in step 3. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style=" position: relative; width: 66px; height: 92px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #3f8a3f; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(63, 138, 63, 0.18); overflow: visible;  cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      <div style="position: absolute; left: 0; right: 0; top: 30px; bottom: 0; background: rgba(20,23,28,0.35); box-shadow: inset 1px 0 0 rgba(63, 138, 63, 0.55), inset -1px 0 0 rgba(63, 138, 63, 0.55);"></div>
+      
+      <div style="padding: 4px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Stack</div>
+    <div style="text-align: center; font-size: 9px; line-height: 11px; color: #6b7686;">&times;1</div>
+    </div>
+    
+    <div title="Snap: baits and anchors follow their target through step 1, then freeze where they are. Drag to move it." style="position: absolute; left: 0; right: 0; top: 29.5px; height: 0; border-top: 1px dashed rgba(255,255,255,0.45);"></div>
+       <div style="position: absolute; left: -5px; top: 25px; width: 10px; height: 10px; cursor: ns-resize;"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" style="display: block; "><path d="M5 0.7L9.3 5 5 9.3 0.7 5z" fill="#3f8a3f" stroke="#e6ebf2" stroke-width="1.2"></path></svg></div>
+  </div></div></div>
+    <div class="cap">Marker appears, on the cast step by default, which is today's behaviour. Nothing follows past the cast unless you say so.</div>
+  </div>
+    <div style="display: flex; flex-direction: column; gap: 10px; width: 150px;">
+    <div class="h">5 steps, snap moved</div>
+    <div style="height: 320px; position: relative;"><div style="transform: scale(2); transform-origin: top left; padding-left: 8px;"><div title="Add cast — casts in step 1, resolves in step 5. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style=" position: relative; width: 66px; height: 156px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #b8632f; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(184, 99, 47, 0.18); overflow: visible;  cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      <div style="position: absolute; left: 0; right: 0; top: 94px; bottom: 0; background: rgba(20,23,28,0.35); box-shadow: inset 1px 0 0 rgba(184, 99, 47, 0.55), inset -1px 0 0 rgba(184, 99, 47, 0.55);"></div>
+      
+      <div style="padding: 4px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Add cast</div>
+    <div style="text-align: center; font-size: 9px; line-height: 11px; color: #6b7686;">&times;1</div>
+    </div>
+    
+    <div title="Snap: baits and anchors follow their target through step 3, then freeze where they are. Drag to move it." style="position: absolute; left: 0; right: 0; top: 93.5px; height: 0; border-top: 1px dashed rgba(255,255,255,0.45);"></div>
+       <div style="position: absolute; left: -5px; top: 89px; width: 10px; height: 10px; cursor: ns-resize;"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" style="display: block; "><path d="M5 0.7L9.3 5 5 9.3 0.7 5z" fill="#b8632f" stroke="#e6ebf2" stroke-width="1.2"></path></svg></div>
+  </div></div></div>
+    <div class="cap">Dragged down two rows: baits follow the party through step 3, then hold.</div>
+  </div>
+    <div style="display: flex; flex-direction: column; gap: 10px; width: 150px;">
+    <div class="h">Hovered</div>
+    <div style="height: 320px; position: relative;"><div style="transform: scale(2); transform-origin: top left; padding-left: 8px;"><div title="Add cast — casts in step 1, resolves in step 5. Drag the top edge to move the cast, the bottom edge to move the resolve, the body to move the whole Beat." style=" position: relative; width: 66px; height: 156px; box-sizing: border-box; border-radius: 4px; border-top: 2px solid #b8632f; border-bottom: 3px solid rgba(251,191,36,0.8); background: rgba(184, 99, 47, 0.18); overflow: visible; box-shadow: 0 0 0 1px rgba(255,255,255,0.25); cursor: grab;">
+    <div style="position: absolute; inset: 0; border-radius: 2px; overflow: hidden;">
+      <div style="position: absolute; left: 0; right: 0; top: 94px; bottom: 0; background: rgba(20,23,28,0.35); box-shadow: inset 1px 0 0 rgba(184, 99, 47, 0.55), inset -1px 0 0 rgba(184, 99, 47, 0.55);"></div>
+      
+      <div style="padding: 4px 3px 0; text-align: center; font-size: 10px; line-height: 12px; color: #dfe5ee; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;">Add cast</div>
+    <div style="text-align: center; font-size: 9px; line-height: 11px; color: #6b7686;">&times;1</div>
+    </div>
+    <div style="position: absolute; left: 0; right: 0; top: 0; height: 6px; background: linear-gradient(rgba(184, 99, 47, 0.9), transparent); cursor: ns-resize;"></div>
+       <div style="position: absolute; left: 0; right: 0; bottom: 0; height: 7px; background: linear-gradient(transparent, rgba(251,191,36,0.45)); cursor: ns-resize;"></div>
+    <div title="Snap: baits and anchors follow their target through step 3, then freeze where they are. Drag to move it." style="position: absolute; left: 0; right: 0; top: 93.5px; height: 0; border-top: 1px dashed rgba(255,255,255,0.75);"></div>
+       <div style="position: absolute; left: -5px; top: 89px; width: 10px; height: 10px; cursor: ns-resize;"><svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true" style="display: block; "><path d="M5 0.7L9.3 5 5 9.3 0.7 5z" fill="#dfe5ee" stroke="#e6ebf2" stroke-width="1.2"></path></svg></div>
+  </div></div></div>
+    <div class="cap">Three grips light up: the cast edge, the resolve edge and the marker. The body drags the whole Beat.</div>
+  </div>
+  </div>
+
+  <div style="display: flex; gap: 28px; align-items: flex-start; padding-top: 8px; border-top: 1px solid #232833;">
+    <div style="width: 300px;">
+      <div class="h">Where the marker can go</div>
+      <div class="cap" style="margin-top: 6px;">From the cast row down to the row before the resolve, inclusive. It cannot sit on the resolve row: freezing at the last step says nothing. Dragging the cast edge past the marker pushes it along, the way the resolve edge cannot cross the cast edge today.</div>
+    </div>
+    <div style="width: 300px;">
+      <div class="h">Reading a card</div>
+      <div class="cap" style="margin-top: 6px;">Filled means following its bait or anchor rule. Hollow means on the snapshot. A card with no hollow tail is a Beat that never followed past its cast, which is every Beat in every plan so far, so nothing existing changes its look except losing the word.</div>
+    </div>
+    <div style="width: 240px;">
+      <div class="h">Naming</div>
+      <div class="cap" style="margin-top: 6px;">The schema already calls the cast step <code>snap</code> and the resolve step <code>boom</code>. The marker needs its own field; the mockup calls the three moments cast, snap and resolve in every tooltip and in the legend.</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

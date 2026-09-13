@@ -1,0 +1,64 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <style>
+    body { margin: 0; font-family: ui-sans-serif, system-ui, "Segoe UI", sans-serif; background: #14171c; }
+    a { color: #7aa2f7; } a:hover { color: #a5c0fa; }
+    .box { box-sizing: border-box; border: 1px solid #2e3543; background: #1a1e25; display: flex; align-items: center; justify-content: center; text-align: center; font-size: 11px; color: #b8c0cc; line-height: 1.3; overflow: hidden; }
+    .dim { font-size: 10px; color: #6b7686; font-family: ui-monospace, Consolas, monospace; }
+    .arena { background: rgba(122,162,247,0.18); border: 1px solid #7aa2f7; color: #dbeafe; font-weight: 600; }
+  </style>
+</helmet>
+<div style="width: 1240px; background: #14171c; color: #b8c0cc; padding: 28px 32px; box-sizing: border-box; display: flex; flex-direction: column; gap: 22px;">
+  <div>
+    <div style="font-size: 11px; letter-spacing: 2px; text-transform: uppercase; color: #6b7686;">Where the pixels go &middot; the screenshot's viewport, 1536&times;736 css px at 125% zoom &middot; scale 0.375</div>
+    <div style="font-size: 13px; color: #8a95a5; margin-top: 4px;">Drawn from the real widths in Editor.tsx: rail = 236 + lanes (scaled to fit), groups column = 216, aside = 320, canvas square = min(w, h) &minus; 24.</div>
+  </div>
+
+  <div style="display: flex; gap: 40px; align-items: flex-start;">
+    <!-- current -->
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div style="font-size: 12px; font-weight: 600; color: #e6ebf2;">Today</div>
+      <div style="width: 576px; height: 276px; background: #14171c; border: 1px solid #2e3543; display: flex; flex-direction: column; box-sizing: border-box;">
+        <div class="box" style="height: 16px;">header row 1 &middot; 44</div>
+        <div class="box" style="height: 15px;">header row 2 (wrapped) &middot; 40</div>
+        <div class="box" style="height: 14px; color: #6b7686;">preview strip &middot; 38</div>
+        <div style="flex: 1; display: flex; min-height: 0;">
+          <div class="box" style="width: 177px;">step rail<br><span class="dim">472</span></div>
+          <div style="flex: 1; display: flex; align-items: center; justify-content: center;"><div class="box arena" style="width: 189px; height: 189px;">arena<br><span class="dim" style="color: #dbeafe;">504</span></div></div>
+          <div class="box" style="width: 81px;">groups<br><span class="dim">216</span></div>
+          <div class="box" style="width: 120px;">add / inspector<br><span class="dim">320</span></div>
+        </div>
+      </div>
+      <div class="dim">width-bound: 1536 &minus; 472 &minus; 216 &minus; 320 = 528 &rarr; 504 px square (main row is 614 tall)</div>
+    </div>
+
+    <!-- proposed -->
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div style="font-size: 12px; font-weight: 600; color: #e6ebf2;">After wave 1</div>
+      <div style="width: 576px; height: 276px; background: #14171c; border: 1px solid #7aa2f7; display: flex; flex-direction: column; box-sizing: border-box;">
+        <div class="box" style="height: 18px;">one header row &middot; 48</div>
+        <div style="flex: 1; display: flex; min-height: 0;">
+          <div class="box" style="width: 177px;">step rail<br><span class="dim">472</span><br><span class="dim">preview pills inside</span></div>
+          <div style="flex: 1; display: flex; align-items: center; justify-content: center;"><div class="box arena" style="width: 249px; height: 249px;">arena<br><span class="dim" style="color: #dbeafe;">664</span></div></div>
+          <div class="box" style="width: 120px;">add / inspector<br><span class="dim">320</span><br><span class="dim">groups row on top</span></div>
+        </div>
+      </div>
+      <div class="dim">744 wide &times; 688 tall &rarr; height-bound at 664 px: 1.74&times; the arena area</div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 24px; font-size: 12px; color: #8a95a5; line-height: 1.5;">
+    <div style="flex: 1;"><b style="color: #e6ebf2;">Wave 1 moves both limits at once.</b> The header rows cost height, the groups column costs width; the square only grows when both give, which is why the three items ship together.</div>
+    <div style="flex: 1;"><b style="color: #e6ebf2;">Slim lanes do not grow the arena at this window</b> (it is height-bound after wave 1). They fix label legibility and keep the rail from scaling lanes down on plans with five overlapping Beats; on a two-lane mechanic nothing changes.</div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>
