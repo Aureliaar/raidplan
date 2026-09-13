@@ -29,6 +29,7 @@ import type Konva from "konva";
 import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
 import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy, isLocked, tetherEnds } from "../../shared/schema";
 import { composeStepVariantEntities } from "../../shared/step-variants";
+import { zoneCovers } from "../../shared/hits";
 import { jobColor, jobLabel } from "../../shared/jobs";
 import { type DebuffDress, dressIconKey } from "../../shared/debuffs";
 import { assetUrl, enemyIconKey, jobIconKey, waymarkIconKey } from "../../shared/assets";
@@ -515,6 +516,17 @@ export function Scene({
   // What is actually on the floor this frame: the step's shapes, or them on
   // their way there. Everything below reads this, so a walk moves the lot.
   const { entities, going, blast, walking } = useGlide(settled, glide, onward);
+  // How many players stand in each stack and tower right now, so a soak reads
+  // as satisfied or not while people walk into it.
+  const caught = useMemo(() => {
+    const players = entities.filter((e) => e.type === "player");
+    const counts = new Map<string, number>();
+    for (const e of entities) {
+      if (e.type !== "zone" || (e.shape !== "stack" && e.shape !== "tower")) continue;
+      counts.set(e.id, players.filter((p) => zoneCovers(e, p.x, p.y)).length);
+    }
+    return counts;
+  }, [entities]);
   // What actually moves the floor: a walk between steps, or something in the
   // hand. A marquee is not motion — and sweeping the margin over a run of chips
   // is how a pile on one tile gets selected, so they have to be there for it.
@@ -1125,7 +1137,7 @@ export function Scene({
                 }}
               >
                 <GrabTarget entity={e} />
-                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} dress={dress?.get(e.id)} />
+                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} caught={caught.get(e.id)} dress={dress?.get(e.id)} />
                 {/* A selected thing wears a hairline in its own colour, hugging
                     its silhouette; the one under the pins draws it there
                     instead. A highlighted row's shapes light up in the accent. */}
@@ -2866,10 +2878,13 @@ function radiusHint(e: Entity): number {
 function EntityShape({
   entity,
   blast = 0,
+  caught,
   dress,
 }: {
   entity: Entity;
   blast?: number;
+  /** Players standing in it, for a stack or tower. */
+  caught?: number;
   /** A debuff mech is on the floor: what this token wears instead. */
   dress?: DebuffDress;
 }) {
@@ -3019,7 +3034,7 @@ function EntityShape({
     }
 
     case "zone":
-      return <ZoneShape zone={entity} blast={blast} />;
+      return <ZoneShape zone={entity} blast={blast} caught={caught} />;
 
     case "text": {
       // Width drives both centring and the hit box, so keep it near the content.
@@ -3104,6 +3119,11 @@ function EntityName({
  * border reads as the danger edge instead of a flat tint. Falls back to the
  * old flat fill when the color is not a plain hex we can make translucent.
  */
+/** A stack or tower with the right people in it. */
+const SOAK_MET = "#4ade80";
+/** The count on one that is not. */
+const SOAK_SHORT = "#fca5a5";
+
 function telegraphFill(
   zone: ZoneEntity,
   radius: number,
@@ -3145,9 +3165,23 @@ function crossOutline(width: number, span: number): number[] {
   return [-w, -s, w, -s, w, -w, s, -w, s, w, w, w, w, s, -w, s, -w, w, -s, w, -s, -w, -w, -w];
 }
 
-function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
+function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: number; caught?: number }) {
   const color = zone.color ?? ZONE_DEFAULT;
   const border = { stroke: color, strokeWidth: 5, hitStrokeWidth: zone.hollow ? 40 : undefined };
+  // A stack is met once enough people are in it; a tower wants exactly its
+  // number, since a spare body in a tower is one missing from the next.
+  const soaked =
+    caught === undefined ? undefined : zone.shape === "tower" ? caught === zone.soak : caught >= zone.soak;
+  const soakBorder =
+    soaked === undefined
+      ? border
+      : soaked
+        ? { ...border, stroke: SOAK_MET, strokeWidth: 9 }
+        : { ...border, dash: [22, 14] };
+  const soakFill = (radius: number) =>
+    telegraphFill(soaked ? { ...zone, color: SOAK_MET } : zone, radius, blast);
+  const soakText = caught === undefined || soaked ? `${zone.soak}` : `${caught}/${zone.soak}`;
+  const soakColor = soaked === false ? SOAK_SHORT : "#f7fafc";
 
   switch (zone.shape) {
     case "circle":
@@ -3285,7 +3319,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       // many it wants written under it. The N-person discs are towers.
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Circle radius={zone.radius} {...soakFill(zone.radius)} {...soakBorder} />
           <Stamp
             art="stack"
             size={stampSize(zone.radius)}
@@ -3293,9 +3327,9 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
           />
           <Label
             y={stampSize(zone.radius) * 0.7}
-            text={`${zone.soak}`}
+            text={soakText}
             size={stampSize(zone.radius) * 0.35}
-            color="#f7fafc"
+            color={soakColor}
             bold
           />
         </>
@@ -3414,18 +3448,18 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       ];
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Circle radius={zone.radius} {...soakFill(zone.radius)} {...soakBorder} />
           <Stamp
             art={art ?? "tower"}
             size={stampSize(zone.radius)}
             fallback={<Circle radius={zone.radius * 0.7} stroke={color} strokeWidth={8} />}
           />
-          {!art && (
+          {(!art || soaked === false) && (
             <Label
-              y={stampSize(zone.radius) * 0.7}
-              text={`${zone.soak}`}
+              y={stampSize(zone.radius) * (art ? 0.85 : 0.7)}
+              text={soakText}
               size={stampSize(zone.radius) * 0.35}
-              color="#f7fafc"
+              color={soakColor}
               bold
             />
           )}

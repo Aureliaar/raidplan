@@ -313,4 +313,16 @@ if (!followed || Math.hypot(followed.x + 250, followed.y - 250) > 1)
   fail("the Cross dropped on H2 stayed behind when H2 moved: " + JSON.stringify(followed && [followed.x, followed.y]));
 console.log("a Cross let go on H2's token is bound to H2 and moves with them");
 
+// Stack and Tower are one tile each; the number they want is the soak, 4 and 1 out of the box.
+await page.waitForTimeout(500);
+await f.drop("Stack", 300, -300);
+await page.waitForTimeout(500);
+await f.drop("Tower", 300, 0);
+doc = await plan.load();
+const soakOf = (shape) => doc.entities.filter((e) => e.shape === shape).map((e) => e.soak);
+if (soakOf("stack").join() !== "4" || soakOf("tower").join() !== "1")
+  fail(`Stack and Tower landed wanting ${soakOf("stack")} and ${soakOf("tower")}, not 4 and 1`);
+
+console.log("a Stack lands wanting 4 and a Tower wanting 1");
+
 await finish(s, "OK - " + plan.url);
