@@ -718,6 +718,19 @@ export function Inspector({
                 ))}
               </select>
             </Field>
+            <Field label="look" span>
+              <select
+                className="field"
+                disabled={!editable}
+                value={(shownEntity as { look: string }).look}
+                onChange={(e) => patch({ look: e.target.value })}
+              >
+                <option value="telegraph">telegraph</option>
+                <option value="solid">solid</option>
+                <option value="hazard">hazard</option>
+                <option value="hide">hide background</option>
+              </select>
+            </Field>
             {num("radius", "radius")}
             {num("innerRadius", "inner r")}
             {num("angle", "cone °", 5)}
@@ -966,7 +979,13 @@ export function Inspector({
                 }
               >
                 {!entity.mech && <option value="">no Beat</option>}
-                {plan.mechs.map((m) => (
+                {plan.mechs
+                  .filter((m) => {
+                    // Only the Beats of the mechanic you are looking at, plus its own.
+                    const mechanic = plan.steps.find((s) => s.id === stepId)?.mechanic;
+                    return m.id === entity.mech || plan.steps.find((s) => s.id === m.snap)?.mechanic === mechanic;
+                  })
+                  .map((m) => (
                   <option key={m.id} value={m.id}>
                     {mechLabel(plan, m)}
                   </option>

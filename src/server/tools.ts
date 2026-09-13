@@ -25,6 +25,7 @@ import {
   GRID_TYPES,
   MARKER_IDS,
   TETHER_STYLES,
+  ZONE_LOOKS,
   ZONE_SHAPES,
   activeBeatVariants,
   authoredEntitiesForStep,
@@ -1469,6 +1470,10 @@ export const TOOLS: ToolDef[] = [
       soak: z.number().int().min(1).max(8).optional().describe("Players a stack or tower wants"),
       color: z.string().optional().describe("CSS colour, e.g. #ff8040"),
       hollow: z.boolean().optional(),
+      look: z
+        .enum(ZONE_LOOKS)
+        .optional()
+        .describe("telegraph (default: clear heart, dense rim), solid, hazard (hatched) or hide (blanks the backdrop under it)"),
       mech: z
         .string()
         .optional()
@@ -1501,6 +1506,7 @@ export const TOOLS: ToolDef[] = [
             soak: a.soak,
             color: a.color,
             hollow: a.hollow,
+            look: a.look,
             mech: beat.mech,
             ...positionOf(plan, a),
           },

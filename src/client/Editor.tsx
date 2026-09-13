@@ -1030,9 +1030,10 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         ev.preventDefault();
         setGlide((n) => n + 1);
         setOnward(key === "s");
-        // The whole fight in order, not one section of it: walking off the end
-        // of a mechanic is walking into the next one, which is what it is.
-        setStepIndex(Math.max(0, Math.min(plan.steps.length - 1, here + (key === "s" ? 1 : -1))));
+        // Stays inside the mechanic you are in: its ends are walls, not doors.
+        const mechanic = plan.steps[here].mechanic;
+        const next = plan.steps[here + (key === "s" ? 1 : -1)];
+        if (next && next.mechanic === mechanic) setStepIndex(here + (key === "s" ? 1 : -1));
         return;
       }
       const active = activeStepVariants(plan, plan.steps[here].id, shown);
@@ -1467,9 +1468,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     x: "cross",
     protean: "cone",
     beam: "rect",
-    stack8: "stack",
-    stack4: "stack",
-    stack2: "stack",
+    stack: "stack",
+    tower: "tower",
     linestack: "linestack",
     flare: "flare",
     together: "tether",
@@ -2086,7 +2086,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
         label: "Add here…",
         children: [
           made("Zone", "circle"),
-          made("Bait", "stack4"),
+          made("Bait", "stack"),
           made("Text", "text"),
           {
             label: "Icon",
@@ -4350,6 +4350,9 @@ function StepRail({
       // Beat, which preserves the old click-again-to-close behavior — and
       // either way the click said "this Beat", so its Parts come up selected.
       if (settled.wasOpen) onOpenMech(null);
+      // Clicking a Beat you are not standing in takes you to where it starts.
+      const row = visible.indexOf(current);
+      if ((row < lo || row > hi) && visible[lo]) onSelect(plan.steps.indexOf(visible[lo]));
       onPickBeat(mech.id);
       return;
     }
@@ -6943,13 +6946,16 @@ function PaletteGlyph({ kind, size = 30 }: { kind: PaletteKind; size?: number })
       {kind === "beam" && (
         <rect x="11" y="3" width="8" height="24" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
       )}
-      {(kind === "stack8" || kind === "stack4" || kind === "stack2") && (
+      {kind === "stack" && (
         <g>
           <circle cx="15" cy="15" r="11" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
-          <circle cx="15" cy="15" r="6" fill="none" stroke={stroke} strokeWidth="1.5" strokeDasharray="3 2" />
-          <text x="15" y="19" textAnchor="middle" fontSize="11" fontWeight="700" fill="#e8edf5">
-            {kind.slice(5)}
-          </text>
+          <path d="M15 6 v5 l-2 -2 M15 11 l2 -2 M15 24 v-5 l-2 2 M15 19 l2 2 M6 15 h5 l-2 -2 M11 15 l-2 2 M24 15 h-5 l2 -2 M19 15 l2 2" fill="none" stroke="#e8edf5" strokeWidth="1.5" strokeLinecap="round" />
+        </g>
+      )}
+      {kind === "tower" && (
+        <g>
+          <circle cx="15" cy="15" r="11" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
+          <circle cx="15" cy="15" r="6.5" fill="none" stroke="#e8edf5" strokeWidth="2.5" />
         </g>
       )}
       {kind === "linestack" && (
