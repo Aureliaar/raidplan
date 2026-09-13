@@ -3126,6 +3126,15 @@ function EntityName({
  * old flat fill when the color is not a plain hex we can make translucent.
  */
 
+/** A hex colour at some opacity; anything else comes back as it was. */
+function withAlpha(color: string, alpha: number): string {
+  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(color);
+  if (!m) return color;
+  const digits = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
+  const n = parseInt(digits, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+}
+
 /** A circle with small notches pressed in at even steps around it. */
 function dentedRing(radius: number): number[] {
   const dents = 24;
@@ -3464,34 +3473,43 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
       );
 
     case "tower": {
-      // After the game's floor telegraph: a rim, a bright core where the pillar
-      // lands, and cracks running out between them — in the zone's own colour.
-      // Short of the right number of people the rim breaks into dashes; how
-      // many are in is on its chip.
+      // The strategy board's soak disc — a glowing rim over a faint wash and a
+      // lit core — with a tower's creases running out from the core. All in the
+      // zone's own colour. Short of the right number of people the rim is
+      // dented; how many are in is on its chip.
       const r = zone.radius;
+      const tint = (alpha: number) => withAlpha(color, alpha);
       return (
         <>
-          {soakRim(r)}
+          <Circle
+            radius={r}
+            fillRadialGradientStartRadius={0}
+            fillRadialGradientEndRadius={r}
+            fillRadialGradientColorStops={[0, tint(0.04), 0.55, tint(0.1), 1, tint(0.3)] as unknown as number[]}
+          />
           {TOWER_CRACKS.map((crack, i) => (
             <Line
               key={i}
               points={crack.flatMap(([f, a]) => [Math.sin(a) * f * r, -Math.cos(a) * f * r])}
               stroke={color}
               strokeWidth={3}
-              opacity={0.7}
+              opacity={0.55}
               lineCap="round"
               lineJoin="round"
               listening={false}
             />
           ))}
+          <Circle radius={r} stroke={color} strokeWidth={18} opacity={0.22} listening={false} />
+          {soakRim(r)}
           <Circle
-            radius={r * 0.24}
+            radius={r * 0.3}
             fillRadialGradientStartRadius={0}
-            fillRadialGradientEndRadius={r * 0.24}
-            fillRadialGradientColorStops={[0, "rgba(255,255,240,0.95)", 0.6, "rgba(255,240,200,0.55)", 1, "rgba(255,220,160,0)"] as unknown as number[]}
+            fillRadialGradientEndRadius={r * 0.3}
+            fillRadialGradientColorStops={[0, tint(0.55), 0.55, tint(0.25), 1, tint(0)] as unknown as number[]}
             listening={false}
           />
-          <Circle radius={r * 0.22} stroke={color} strokeWidth={4} opacity={0.9} listening={false} />
+          <Circle radius={r * 0.2} stroke={color} strokeWidth={14} opacity={0.35} listening={false} />
+          <Circle radius={r * 0.2} stroke="#fffdf5" strokeWidth={5} listening={false} />
         </>
       );
     }
