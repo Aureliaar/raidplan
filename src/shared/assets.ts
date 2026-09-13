@@ -152,8 +152,6 @@ export const ASSETS: Record<string, string> = {
   "mechanic/stack": "mechanic/stack.png",
   "mechanic/targeting-indicator": "mechanic/targeting-indicator.png",
   "mechanic/three-person-aoe": "mechanic/three-person-aoe.png",
-  "mechanic/tower-ring-met": "mechanic/tower-ring-met.png",
-  "mechanic/tower-ring": "mechanic/tower-ring.png",
   "mechanic/tower": "mechanic/tower.png",
   "mechanic/two-person-aoe": "mechanic/two-person-aoe.png",
   "arena/arcadion11-split-v2": "arena/arcadion11-split-v2.svg",
@@ -344,8 +342,6 @@ export const MECHANIC_KEYS: readonly string[] = [
   "mechanic/stack",
   "mechanic/targeting-indicator",
   "mechanic/three-person-aoe",
-  "mechanic/tower-ring-met",
-  "mechanic/tower-ring",
   "mechanic/tower",
   "mechanic/two-person-aoe",
 ];

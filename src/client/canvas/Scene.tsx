@@ -3125,8 +3125,6 @@ function EntityName({
  * border reads as the danger edge instead of a flat tint. Falls back to the
  * old flat fill when the color is not a plain hex we can make translucent.
  */
-/** A stack or tower with the right people in it. */
-const SOAK_MET = "#4ade80";
 
 function telegraphFill(
   zone: ZoneEntity,
@@ -3176,12 +3174,9 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
   // number, since a spare body in a tower is one missing from the next.
   const soaked =
     caught === undefined ? undefined : zone.shape === "tower" ? caught === zone.soak : caught >= zone.soak;
-  const soakBorder =
-    soaked === undefined
-      ? border
-      : soaked
-        ? { ...border, stroke: SOAK_MET, strokeWidth: 9 }
-        : { ...border, dash: [22, 14] };
+  // Never told apart by colour — a zone's colour is the author's. Short of
+  // people, the rim breaks into dashes; met, it closes.
+  const soakBorder = soaked === false ? { ...border, dash: [22, 14] } : border;
 
   switch (zone.shape) {
     case "circle":
@@ -3316,8 +3311,7 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
 
     case "stack":
       // The game's stack marker — the arrows pointing in — on an unfilled
-      // ring: green once enough people are in, dashed until then. The count
-      // is on its chip.
+      // ring, dashed until enough people are in. The count is on its chip.
       return (
         <>
           <Circle radius={zone.radius} {...soakBorder} />
@@ -3435,17 +3429,19 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
       );
 
     case "tower": {
-      // The game's tower, with its core cut out so the people soaking it stay
-      // readable. It goes green once exactly the right number stand in it; how
-      // many do is on its chip.
+      // The game's tower art at the tower's size. Short of the right number of
+      // people, a dashed rim sits on its edge; how many are in is on its chip.
       return (
-        <Sprite
-          src={assetUrl(soaked ? "mechanic/tower-ring-met" : "mechanic/tower-ring")}
-          width={zone.radius * 2}
-          height={zone.radius * 2}
-          listening={false}
-          fallback={<Circle radius={zone.radius} {...soakBorder} />}
-        />
+        <>
+          <Sprite
+            src={assetUrl("mechanic/tower")}
+            width={zone.radius * 2}
+            height={zone.radius * 2}
+            listening={false}
+            fallback={<Circle radius={zone.radius} {...border} />}
+          />
+          {soaked === false && <Circle radius={zone.radius} {...soakBorder} />}
+        </>
       );
     }
 
