@@ -777,6 +777,8 @@ export function Scene({
    * party makes the party unclickable. Pick whichever candidate under the pointer
    * covers the least ground instead — the one you had to aim at is the one you
    * meant — and start its drag by hand, so draw order stays purely visual.
+   * A player beats everything else, whatever its size: the party is what gets
+   * moved most, and a marker or icon parked on someone must not hide them.
    */
   function under(
     evt: Konva.KonvaEventObject<MouseEvent | TouchEvent | WheelEvent>,
@@ -791,6 +793,7 @@ export function Scene({
     const arenaAt = { x: (point.x - size / 2) / scale, y: (point.y - size / 2) / scale };
     let best: { node: Konva.Group; id: string } | undefined;
     let bestSize = Infinity;
+    let bestRank = Infinity;
     for (const shape of hits) {
       const hitGroup = shape.findAncestor(".entity", true) as Konva.Group | undefined;
       const hitId = hitGroup?.id();
@@ -807,12 +810,34 @@ export function Scene({
       if (entity && !include(entity)) continue;
       if (entity?.type === "tether" && onTetherEnd(entity, arenaAt, byId)) continue;
       const footprint = footprints.get(id) ?? Infinity;
-      if (footprint < bestSize) {
+      const rank = entity?.type === "player" ? 0 : 1;
+      if (rank < bestRank || (rank === bestRank && footprint < bestSize)) {
         best = { node: group, id };
         bestSize = footprint;
+        bestRank = rank;
       }
     }
     return best;
+  }
+
+  /** Hand the press to the nearest selection grip within reach, if there is one. */
+  function gripWithinReach(evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
+    const stage = evt.target.getStage();
+    const point = stage?.getPointerPosition();
+    if (!stage || !point) return false;
+    let nearest: Konva.Node | undefined;
+    let distance = GRIP_REACH;
+    for (const grip of stage.find(".pin-grab")) {
+      const at = grip.getAbsolutePosition();
+      const d = Math.hypot(at.x - point.x, at.y - point.y);
+      if (d < distance) {
+        nearest = grip;
+        distance = d;
+      }
+    }
+    if (!nearest) return false;
+    nearest.fire(evt.evt instanceof MouseEvent ? "mousedown" : "touchstart", { evt: evt.evt });
+    return true;
   }
 
   function pickAt(evt: Konva.KonvaEventObject<MouseEvent | TouchEvent>) {
@@ -849,6 +874,10 @@ export function Scene({
       return;
     }
     const best = under(evt, picking ? (e) => !frozen(e) : undefined);
+    // A grip the press only just missed still takes it over whatever else is
+    // there: sizing what is already selected beats selecting something new.
+    // The selected thing's own body still moves it, and shift still selects.
+    if (editable && !picking && !additive && best?.id !== pinnedId && gripWithinReach(evt)) return;
     // A bare waymark is frozen scenery on the Step layer. An editable shape
     // visibly on top of it still wins, though: otherwise a player parked on a
     // waymark (R1 on D in the final P11S slide) cannot be grabbed at all.
@@ -1313,6 +1342,9 @@ export function Scene({
  */
 type PinKind = "resize" | "rotate" | "inner" | "angle" | "width" | "length" | "corner";
 
+/** Screen pixels from a grip's centre within which a press on anything else still takes the grip. */
+const GRIP_REACH = 26;
+
 /**
  * Which of a box's edges a grip holds, in the shape's own axes: `w` the pair
  * across its width, `l` the pair along its length, `0` neither. An edge pill
@@ -1651,6 +1683,7 @@ function SelectionPins({
         {lit && <Circle radius={hitRadius * unit} fill="rgba(122, 162, 247, 0.25)" listening={false} />}
         {mark}
         <Circle
+          name="pin-grab"
           radius={hitRadius * unit}
           fill="#000"
           opacity={0}

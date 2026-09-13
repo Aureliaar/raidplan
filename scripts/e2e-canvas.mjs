@@ -5,7 +5,9 @@
  * than dragging it; a tether, which has no pose of its own, is still a click
  * target; Shift-click gathers a set that one drag carries; the wheel sizes the
  * shape it is over; a box's edge and corner grips stretch out of the side you
- * pull and leave the side across from it standing — and a drop never flashes
+ * pull and leave the side across from it standing, and win a press over a
+ * player just beside them; a player wins a click over anything parked on it —
+ * and a drop never flashes
  * back to where it started while the server is still answering.
  *
  * This exists because a `listening={false}` on the token art once made half the
@@ -226,6 +228,46 @@ check(
   "the SE corner stretches out of the NW one",
   `${was.w}x${was.l} -> ${now.w}x${now.l}, NW corner ${was.left},${was.top} -> ${now.left},${now.top}`
 );
+
+/* --- a grip beats what is under it, and a player beats every other thing --- */
+
+// H1 stands on the rect's right pill. A press on H1 just past the pill's own
+// disc still takes the grip: sizing what is selected beats selecting anew.
+const sized = (await plan.load()).entities.find((e) => e.id === rect.id);
+await f.measure();
+const pillAt = { x: sized.x + sized.width / 2, y: sized.y };
+const standing = posed(await plan.load(), "H1", step);
+await plan.ops({
+  op: "update_entity",
+  id: standing.id,
+  stepId: step,
+  patch: { x: Math.round(pillAt.x), y: Math.round(pillAt.y + 20 / f.scale) },
+});
+await page.waitForTimeout(700);
+const nearPill = f.screen(pillAt.x, pillAt.y + 22 / f.scale);
+await drag(page, nearPill, { x: nearPill.x + 50 * f.scale, y: nearPill.y }, { steps: 10, settle: 700 });
+doc = await plan.load();
+const pulled = doc.entities.find((e) => e.id === rect.id);
+const stood = posed(doc, "H1", step);
+check(
+  Math.abs(pulled.width - (sized.width + 50)) < 8 && stood.x === Math.round(pillAt.x),
+  "a press on a player beside a grip takes the grip",
+  `width ${sized.width} -> ${pulled.width}, H1 x ${Math.round(pillAt.x)} -> ${stood.x}`
+);
+
+// A small icon parked on H1 covers less ground than H1 does, and still loses.
+await f.deselect();
+const marker = doc.entities.find((e) => e.type === "icon");
+await plan.ops({ op: "update_entity", id: marker.id, patch: { size: 30, x: stood.x, y: stood.y } });
+await page.waitForTimeout(700);
+await f.click(stood.x, stood.y);
+check(
+  (await page.locator("aside").innerText()).includes(stood.id),
+  "a click on a player under a smaller icon picks the player"
+);
+await f.deselect();
+await plan.ops({ op: "update_entity", id: marker.id, patch: { size: marker.size, x: marker.x, y: marker.y } });
+await page.waitForTimeout(700);
 
 /* --- a drop holds still while the server answers ---------------------------- */
 
