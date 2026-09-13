@@ -718,6 +718,19 @@ export function Inspector({
                 ))}
               </select>
             </Field>
+            <Field label="look" span>
+              <select
+                className="field"
+                disabled={!editable}
+                value={(shownEntity as { look: string }).look}
+                onChange={(e) => patch({ look: e.target.value })}
+              >
+                <option value="telegraph">telegraph</option>
+                <option value="solid">solid</option>
+                <option value="hazard">hazard</option>
+                <option value="hide">hide background</option>
+              </select>
+            </Field>
             {num("radius", "radius")}
             {num("innerRadius", "inner r")}
             {num("angle", "cone °", 5)}

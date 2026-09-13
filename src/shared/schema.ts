@@ -79,6 +79,14 @@ export const ZONE_SHAPES = [
 ] as const;
 export type ZoneShape = (typeof ZONE_SHAPES)[number];
 
+/**
+ * How a zone's inside is painted. `telegraph` is the game's: clear heart, dense
+ * rim. `solid` is a flat tint, `hazard` a hatch for ground that stays dangerous,
+ * and `hide` blanks the backdrop and grid under it.
+ */
+export const ZONE_LOOKS = ["telegraph", "solid", "hazard", "hide"] as const;
+export type ZoneLook = (typeof ZONE_LOOKS)[number];
+
 export const TETHER_STYLES = [
   "line",
   "close",
@@ -275,6 +283,7 @@ export const ZoneEntitySchema = z.object({
   /** Number of players a stack wants, or tower soak count. */
   soak: z.number().int().min(1).max(8).default(2),
   hollow: z.boolean().default(false),
+  look: z.enum(ZONE_LOOKS).default("telegraph"),
 });
 
 export const TetherEntitySchema = z.object({

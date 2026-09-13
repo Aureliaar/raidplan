@@ -11,6 +11,7 @@ import {
   GRID_TYPES,
   MARKER_IDS,
   TETHER_STYLES,
+  ZONE_LOOKS,
   ZONE_SHAPES,
   type Entity,
   type Plan,
@@ -94,6 +95,7 @@ const zoneFields = {
   count: z.number().int().min(1).max(32).optional(),
   soak: z.number().int().min(1).max(8).optional(),
   hollow: z.boolean().optional(),
+  look: z.enum(ZONE_LOOKS).optional(),
 };
 const tetherFields = {
   from: id.optional(),

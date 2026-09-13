@@ -2,6 +2,8 @@ import {
   Fragment,
   type MutableRefObject,
   type ReactNode,
+  createContext,
+  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -26,7 +28,9 @@ import {
   Wedge,
 } from "react-konva";
 import type Konva from "konva";
-import type { Entity, Plan, ZoneEntity } from "../../shared/schema";
+import type { Arena, Entity, Plan, ZoneEntity } from "../../shared/schema";
+import { ArenaSchema } from "../../shared/schema";
+import { BAR_SHAPES, type Bar, ZONE_DEFAULT, barPlan, barTelegraph, hazardTile, isBig, radialFit, rgbaOf, telegraphStops } from "./zoneFill";
 import { authoredEntitiesForStep, entitiesForStep, fanOwnerId, isFanCopy, isLocked, tetherEnds } from "../../shared/schema";
 import { composeStepVariantEntities } from "../../shared/step-variants";
 import { jobColor, jobLabel } from "../../shared/jobs";
@@ -56,7 +60,8 @@ export function viewScale(arena: Plan["arena"], size: number): number {
   return size / (Math.max(arena.width, arena.height) * VIEW_MARGIN);
 }
 
-const ZONE_DEFAULT = "#ff7043";
+/** The floor zones are drawn on: what the "hide" look paints, and what a fitted telegraph is clipped against. */
+const ArenaContext = createContext<Arena>(ArenaSchema.parse({}));
 const MARKER_COLORS: Record<string, string> = {
   A: "#e05252",
   B: "#e0c452",
@@ -1084,6 +1089,7 @@ export function Scene({
       <Layer>
         <Group x={size / 2} y={size / 2} scaleX={scale} scaleY={scale}>
           <ArenaFloor plan={plan} />
+          <ArenaContext.Provider value={plan.arena}>
           {entities.map((e) =>
             e.type === "tether" ? (
               <Tether key={e.id} entity={e} byId={byId} selected={selectedIds.has(e.id)} dim={offLayer(e)} />
@@ -1298,6 +1304,7 @@ export function Scene({
               />
             ) : null;
           })()}
+          </ArenaContext.Provider>
         </Group>
       </Layer>
       {/* Every selected thing gets a leader out to a chip in the margin: the
@@ -3099,43 +3106,79 @@ function EntityName({
   );
 }
 
+type RadialFit = { cx: number; cy: number; r: number };
+
+/** A fitted centre, as seen from inside a child shape that is itself rotated by `rotation`. */
+function fitInto(fit: RadialFit, rotation: number): RadialFit {
+  const a = (-rotation * Math.PI) / 180;
+  return { ...fit, cx: fit.cx * Math.cos(a) - fit.cy * Math.sin(a), cy: fit.cx * Math.sin(a) + fit.cy * Math.cos(a) };
+}
+
 /**
- * FFXIV-style telegraph fill: faint at the heart, dense at the rim, so the
- * border reads as the danger edge instead of a flat tint. Falls back to the
- * old flat fill when the color is not a plain hex we can make translucent.
+ * A zone's inside, by its look. The telegraph is the FFXIV one: faint at the
+ * heart, dense at the rim, so the border reads as the danger edge instead of a
+ * flat tint. Round shapes centre it on the part of the shape on the floor
+ * (`fit`); bars pass "bar" and have it drawn underneath by `BarFill`, keeping
+ * only an invisible fill here so the whole shape still takes clicks.
  */
 function telegraphFill(
   zone: ZoneEntity,
   radius: number,
   /** 0 normally; 1 at the height of the cast going off, which floods the fill. */
-  blast = 0
+  blast: number,
+  arena: Arena,
+  fit?: RadialFit | "bar"
 ): Partial<Konva.ShapeConfig> {
   if (zone.hollow) return {};
-  const rgba = (alpha: number) => {
-    const hex = zone.color ?? ZONE_DEFAULT;
-    const m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(hex);
-    if (!m) return undefined;
-    const digits = m[1].length === 3 ? [...m[1]].map((c) => c + c).join("") : m[1];
-    const n = parseInt(digits, 16);
-    return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
-  };
+  const color = zone.color ?? ZONE_DEFAULT;
+  switch (zone.look) {
+    case "solid":
+      return { fill: rgbaOf(color, 0.4 + 0.3 * blast) ?? color };
+    case "hazard": {
+      const tile = hazardTile(color, blast);
+      return tile ? { fillPatternImage: tile as unknown as HTMLImageElement, fillPatternRepeat: "repeat" } : { fill: color };
+    }
+    case "hide":
+      // A hole in the floor: nothing under it, not even the arena colour.
+      return { fill: "#000000" };
+  }
   // Clear at the heart and only really there at the rim, the way the game
   // draws them: two casts on the same floor stay legible, and the tokens
   // standing in one are not swallowed.
   // Going off, the ground it covers fills in: the heart of it stops being a
   // hole you can read a plan through and becomes the hit.
-  const core = rgba(0.62 * blast);
-  const mid = rgba(0.1 + 0.55 * blast);
-  const rim = rgba(0.32 + 0.45 * blast);
-  if (!core || !mid || !rim)
-    return { fill: zone.color ?? ZONE_DEFAULT, opacity: 0.2 + 0.6 * blast };
-  // Konva types the stop list as number[] even though it holds colours.
-  const stops = [0, core, 0.75, mid, 1, rim] as unknown as number[];
+  const s = telegraphStops(color, blast);
+  if (!s) return { fill: color, opacity: 0.2 + 0.6 * blast };
+  if (fit === "bar") return { fill: "rgba(0, 0, 0, 0)" };
+  const f = fit ?? { cx: 0, cy: 0, r: radius };
+  // A donut's danger is the ring, so both of its edges are rims and the middle
+  // of the ring is the heart.
+  const ri = zone.shape === "donut" && isBig(2 * zone.radius * zone.scale, arena) && f.r === zone.radius ? zone.innerRadius / zone.radius : undefined;
+  const ring = (k: number) => ri! + (1 - ri!) * k;
+  const stops =
+    ri !== undefined
+      ? [0, s.rim, ri, s.rim, ring(0.125), s.mid, ring(0.5), s.core, ring(0.875), s.mid, 1, s.rim]
+      : [0, s.core, 0.75, s.mid, 1, s.rim];
   return {
+    fillRadialGradientStartPoint: { x: f.cx, y: f.cy },
+    fillRadialGradientEndPoint: { x: f.cx, y: f.cy },
     fillRadialGradientStartRadius: 0,
-    fillRadialGradientEndRadius: radius,
-    fillRadialGradientColorStops: stops,
+    fillRadialGradientEndRadius: f.r,
+    // Konva types the stop list as number[] even though it holds colours.
+    fillRadialGradientColorStops: stops as unknown as number[],
   };
+}
+
+/**
+ * A bar's telegraph: the fade runs from its middle out to every edge, so a
+ * long beam is clear down its spine and dense along its sides rather than one
+ * circle's worth of gradient stretched over the whole length.
+ */
+function BarFill({ zone, blast, bars }: { zone: ZoneEntity; blast: number; bars: Bar[] | null }) {
+  if (!bars || zone.hollow || zone.look !== "telegraph") return null;
+  const stops = telegraphStops(zone.color ?? ZONE_DEFAULT, blast);
+  if (!stops) return null;
+  return <Shape listening={false} sceneFunc={barTelegraph(zone, bars, stops)} {...NO_BUFFER} />;
 }
 
 /** The outline of a + with bars `width` thick and `span` end to end, clockwise from the top bar. */
@@ -3146,19 +3189,38 @@ function crossOutline(width: number, span: number): number[] {
 }
 
 function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
+  const arena = useContext(ArenaContext);
   const color = zone.color ?? ZONE_DEFAULT;
-  const border = { stroke: color, strokeWidth: 5, hitStrokeWidth: zone.hollow ? 40 : undefined };
+  const hide = zone.look === "hide" && !zone.hollow;
+  const border = {
+    stroke: hide ? (rgbaOf(color, 0.55) ?? color) : color,
+    strokeWidth: 5,
+    dash: hide ? [18, 14] : undefined,
+    hitStrokeWidth: zone.hollow ? 40 : undefined,
+  };
+  const fit = BAR_SHAPES.has(zone.shape) || zone.shape === "exaflare" ? undefined : radialFit(zone, arena);
+  // Only a bar with an axis past the size threshold has its fade fitted; the rest keep one radial telegraph.
+  const bars = BAR_SHAPES.has(zone.shape) ? barPlan(zone, arena) : null;
+  // The plain telegraph's reach on a bar: half its diagonal, or half its length for a cross or a linestack.
+  const BAR_RADIUS = zone.shape === "cross" || zone.shape === "linestack" ? zone.length / 2 : Math.hypot(zone.width, zone.length) / 2;
+  // Konva draws a Rect from its corner, so a plain telegraph on one is centred by hand; a cross is drawn about its middle.
+  const barHow: RadialFit | "bar" = bars
+    ? "bar"
+    : zone.shape === "cross"
+      ? { cx: 0, cy: 0, r: BAR_RADIUS }
+      : { cx: zone.width / 2, cy: zone.length / 2, r: BAR_RADIUS };
+  const paint = (radius: number, how?: RadialFit | "bar") => telegraphFill(zone, radius, blast, arena, how);
 
   switch (zone.shape) {
     case "circle":
-      return <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />;
+      return <Circle radius={zone.radius} {...paint(zone.radius, fit)} {...border} />;
 
     case "donut":
       return (
         <Ring
           innerRadius={zone.innerRadius}
           outerRadius={zone.radius}
-          {...telegraphFill(zone, zone.radius, blast)}
+          {...paint(zone.radius, fit)}
           {...border}
         />
       );
@@ -3170,7 +3232,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
           radius={zone.radius}
           angle={zone.angle}
           rotation={-90 - zone.angle / 2}
-          {...telegraphFill(zone, zone.radius, blast)}
+          {...paint(zone.radius, fit && fitInto(fit, -90 - zone.angle / 2))}
           {...border}
         />
       );
@@ -3178,36 +3240,43 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
     case "rect":
     case "line":
       return (
-        <Rect
-          x={-zone.width / 2}
-          y={-zone.length / 2}
-          width={zone.width}
-          height={zone.length}
-          {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2, blast)}
-          {...border}
-        />
-      );
-
-    case "cross":
-      // One outline, not two overlapping bars: the middle is no hotter than the arms.
-      return (
-        <Line
-          points={crossOutline(zone.width, zone.length)}
-          closed
-          {...telegraphFill(zone, zone.length / 2, blast)}
-          {...border}
-        />
-      );
-
-    case "knockback":
-      return (
         <>
+          <BarFill zone={zone} blast={blast} bars={bars} />
           <Rect
             x={-zone.width / 2}
             y={-zone.length / 2}
             width={zone.width}
             height={zone.length}
-            {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2, blast)}
+            {...paint(BAR_RADIUS, barHow)}
+            {...border}
+          />
+        </>
+      );
+
+    case "cross":
+      // One outline, not two overlapping bars: the middle is no hotter than the arms.
+      return (
+        <>
+          <BarFill zone={zone} blast={blast} bars={bars} />
+          <Line
+            points={crossOutline(zone.width, zone.length)}
+            closed
+            {...paint(BAR_RADIUS, barHow)}
+            {...border}
+          />
+        </>
+      );
+
+    case "knockback":
+      return (
+        <>
+          <BarFill zone={zone} blast={blast} bars={bars} />
+          <Rect
+            x={-zone.width / 2}
+            y={-zone.length / 2}
+            width={zone.width}
+            height={zone.length}
+            {...paint(BAR_RADIUS, barHow)}
             {...border}
           />
           <Stamp
@@ -3250,7 +3319,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
         <RegularPolygon
           sides={3}
           radius={zone.radius}
-          {...telegraphFill(zone, zone.radius, blast)}
+          {...paint(zone.radius, fit)}
           {...border}
         />
       );
@@ -3263,7 +3332,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
               key={i}
               y={-i * zone.radius * 2.1}
               radius={zone.radius}
-              {...telegraphFill(zone, zone.radius, blast)}
+              {...paint(zone.radius)}
               {...border}
               opacity={1 - i / (zone.count + 1)}
             />
@@ -3285,7 +3354,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       // many it wants written under it. The N-person discs are towers.
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Circle radius={zone.radius} {...paint(zone.radius, fit)} {...border} />
           <Stamp
             art="stack"
             size={stampSize(zone.radius)}
@@ -3307,12 +3376,13 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       const chevrons = Math.max(2, Math.floor(zone.length / (w * 0.9)));
       return (
         <>
+          <BarFill zone={zone} blast={blast} bars={bars} />
           <Rect
             x={-w / 2}
             y={-zone.length / 2}
             width={w}
             height={zone.length}
-            {...telegraphFill(zone, zone.length / 2, blast)}
+            {...paint(BAR_RADIUS, barHow)}
             {...border}
           />
           <Stamp
@@ -3353,7 +3423,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       const spokes = 8;
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Circle radius={zone.radius} {...paint(zone.radius, fit)} {...border} />
           <Stamp
             art="player-proximity"
             size={stampSize(zone.radius)}
@@ -3389,7 +3459,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
         <>
           <Circle
             radius={zone.radius}
-            {...telegraphFill(zone, zone.radius, blast)}
+            {...paint(zone.radius, fit)}
             {...border}
             dash={[24, 16]}
           />
@@ -3414,7 +3484,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       ];
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Circle radius={zone.radius} {...paint(zone.radius, fit)} {...border} />
           <Stamp
             art={art ?? "tower"}
             size={stampSize(zone.radius)}
@@ -3439,7 +3509,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
           <Ellipse
             radiusX={zone.radius}
             radiusY={zone.radius * 0.6}
-            {...telegraphFill(zone, zone.radius, blast)}
+            {...paint(zone.radius, fit)}
             {...border}
           />
           <Stamp
@@ -3453,7 +3523,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
     case "meteor":
       return (
         <>
-          <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />
+          <Circle radius={zone.radius} {...paint(zone.radius, fit)} {...border} />
           <Circle radius={zone.radius * 0.45} fill={color} opacity={0.9} />
         </>
       );
@@ -3463,7 +3533,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
         <>
           <Circle
             radius={zone.radius}
-            {...telegraphFill(zone, zone.radius, blast)}
+            {...paint(zone.radius, fit)}
             {...border}
             opacity={0.5}
           />
@@ -3481,7 +3551,7 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
       );
 
     default:
-      return <Circle radius={zone.radius} {...telegraphFill(zone, zone.radius, blast)} {...border} />;
+      return <Circle radius={zone.radius} {...paint(zone.radius, fit)} {...border} />;
   }
 }
 
