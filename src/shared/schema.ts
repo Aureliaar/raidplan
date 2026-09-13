@@ -74,6 +74,8 @@ export const ZONE_SHAPES = [
   "eye",
   "meteor",
   "proximity",
+  /** Two bars through one point: a + at rotation 0, an × at 45. */
+  "cross",
 ] as const;
 export type ZoneShape = (typeof ZONE_SHAPES)[number];
 
@@ -265,7 +267,7 @@ export const ZoneEntitySchema = z.object({
   innerRadius: z.number().min(0).default(75),
   /** cone width in degrees. */
   angle: z.number().min(1).max(360).default(90),
-  /** rect / line / arrow / knockback / linestack footprint. */
+  /** rect / line / arrow / knockback / linestack footprint; a cross's bar width and span. */
   width: z.number().positive().default(150),
   length: z.number().positive().default(400),
   /** exaflare / stack marker count. */

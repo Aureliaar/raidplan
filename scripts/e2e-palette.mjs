@@ -149,6 +149,33 @@ if (!(await inspecting(boss.id))) fail("a click on the unlocked boss did not sel
 await f.deselect();
 console.log("the Boss comes locked: a click and a drag go through it, and Unlock on its right-click menu frees it");
 
+/* --- while in hand, the pointer says baited, anchored or none ------------- */
+
+await f.deselect();
+const held = async (at) => {
+  await page.mouse.move(at.x, at.y, { steps: 6 });
+  await page.waitForTimeout(150);
+  const hint = page.locator("[data-drop-hint]");
+  return { mode: await hint.getAttribute("data-drop-hint"), text: (await hint.innerText()).replace(/\s+/g, " ") };
+};
+const circleChip = await page.locator('[data-palette-chip="circle"]').boundingBox();
+await page.mouse.move(circleChip.x + circleChip.width / 2, circleChip.y + circleChip.height / 2);
+await page.mouse.down();
+const overBoss = await held(await f.nodeAt(boss.id));
+const overPlayer = await held(await f.nodeAt(ids.H2));
+const overFloor = await held(f.screen(-470, 470));
+// Let go off the arena: nothing is made.
+await page.mouse.move(f.box.x - 60, f.box.y + 10, { steps: 6 });
+await page.mouse.up();
+await page.waitForTimeout(300);
+if (overBoss.mode !== "bait" || !/closest to boss 1/.test(overBoss.text))
+  fail("held over the boss, the pointer did not say Baited: " + JSON.stringify(overBoss));
+if (overPlayer.mode !== "anchor" || !/to H2/.test(overPlayer.text))
+  fail("held over H2, the pointer did not say Anchored to H2: " + JSON.stringify(overPlayer));
+if (overFloor.mode !== "none") fail("held over bare floor, the pointer did not say None: " + JSON.stringify(overFloor));
+if (await page.locator("[data-drop-hint]").count()) fail("the drop hint outlived the drag");
+console.log(`in hand, a Circle reads "${overBoss.text}" over the boss, "${overPlayer.text}" over H2, "${overFloor.text}" on bare floor`);
+
 /* --- a group's row carries the whole group ---------------------------------- */
 
 const where = async () =>
@@ -212,5 +239,56 @@ const onHealers = doc.entities.filter((e) => e.type === "zone" && e.shape === "d
 if (onHealers.length !== 2) fail(`"Add on 2 selected" made ${onHealers.length} donuts, not one each`);
 if (onHealers.some((e) => e.bond)) fail("baits put on a selection were bonded into a group set");
 console.log("the Circle chip's menu drops one in the middle, and the Donut chip binds one to each selected healer");
+
+/* --- a + and an × go on each of the people they were dropped on ----------- */
+
+// The same two bars, squared to the cardinals or turned onto the
+// intercardinals. Last, because it moves the whole party.
+await chip(page, "Plus").dragTo(chip(page, "Supports"));
+await chip(page, "Cross").dragTo(chip(page, "Damagers"));
+await page.waitForTimeout(900);
+doc = await plan.load();
+const crosses = doc.entities.filter((e) => e.type === "zone" && e.shape === "cross" && e.anchor);
+const turned = (deg) =>
+  crosses.filter((e) => e.rotation === deg).map((e) => nameOf(e.anchor.to)).sort().join();
+if (turned(0) !== "H1,H2,MT,OT") fail(`the pluses went to ${turned(0)} instead of the four supports`);
+if (turned(45) !== "M1,M2,R1,R2") fail(`the crosses went to ${turned(45)} instead of the four damagers`);
+// An arm catches whoever stands on it, and nobody standing in the gap between arms.
+const spots = {
+  MT: [0, 0], OT: [300, 0], H1: [200, 200], H2: [-400, 400],
+  R1: [-300, -300], R2: [-100, -100], M1: [400, -300], M2: [-300, 350],
+};
+await plan.ops(
+  Object.entries(spots).map(([n, [x, y]]) => ({ op: "update_entity", id: ids[n], stepId: step, patch: { x, y } }))
+);
+const caught = (zoneId) =>
+  page.evaluate(
+    async ([id, zid]) => {
+      const body = await (await fetch("/api/plans/" + id)).json();
+      const doc = body.plan ?? body;
+      const { playersHit } = await import("/src/shared/hits.ts");
+      return playersHit(doc, doc.steps[0].id, zid).map((e) => e.name).sort().join();
+    },
+    [plan.id, zoneId]
+  );
+const onWho = (who) => crosses.find((e) => e.anchor.to === ids[who]).id;
+const byPlus = await caught(onWho("MT"));
+const byCross = await caught(onWho("R1"));
+if (byPlus !== "MT,OT") fail(`MT's + caught ${byPlus}, not MT and OT on its east arm`);
+if (byCross !== "R1,R2") fail(`R1's × caught ${byCross}, not R1 and R2 on its south-east arm`);
+console.log(`a Plus on Supports put a + on ${turned(0)}, a Cross on Damagers an × on ${turned(45)}; each catches only who stands on its arms`);
+
+// Let go exactly on somebody, a mechanic is theirs: it follows them, not the floor.
+await page.waitForTimeout(500);
+await f.drop("Cross", ...spots.H2);
+doc = await plan.load();
+const onH2 = doc.entities.filter((e) => e.shape === "cross" && e.anchor?.to === ids.H2 && !e.bond);
+if (onH2.length !== 1 || onH2[0].rotation !== 45)
+  fail("a Cross dropped on H2's token did not bind one × to H2: " + JSON.stringify(onH2));
+await plan.ops([{ op: "update_entity", id: ids.H2, stepId: step, patch: { x: -250, y: 250 } }]);
+const [followed] = (await drawn(page, plan.id)).filter((e) => e.id === onH2[0].id);
+if (!followed || Math.hypot(followed.x + 250, followed.y - 250) > 1)
+  fail("the Cross dropped on H2 stayed behind when H2 moved: " + JSON.stringify(followed && [followed.x, followed.y]));
+console.log("a Cross let go on H2's token is bound to H2 and moves with them");
 
 await finish(s, "OK - " + plan.url);

@@ -2507,6 +2507,7 @@ export const BAIT_KINDS = [
   "flare",
   "tower",
   "proximity",
+  "cross",
   "tether",
 ] as const;
 export type BaitKind = (typeof BAIT_KINDS)[number];
@@ -2528,6 +2529,7 @@ const BAIT_DEFAULTS: Record<BaitKind, PropBag & { type: EntityType }> = {
   flare: { type: "zone", shape: "flare", radius: 320 },
   tower: { type: "zone", shape: "tower", radius: 140, soak: 1 },
   proximity: { type: "zone", shape: "proximity", radius: 250 },
+  cross: { type: "zone", shape: "cross", width: 120, length: 800 },
   tether: { type: "tether", style: "line" },
 };
 
@@ -2583,6 +2585,8 @@ export const PALETTE = [
   "add",
   "circle",
   "donut",
+  "plus",
+  "x",
   "protean",
   "beam",
   "stack8",
@@ -2605,7 +2609,7 @@ export type PaletteKind = (typeof PALETTE)[number];
  */
 export const PALETTE_GROUPS: { caption: string; kinds: readonly PaletteKind[] }[] = [
   { caption: "Actors", kinds: ["boss", "add", "anchor"] },
-  { caption: "Zones", kinds: ["circle", "donut", "protean", "beam"] },
+  { caption: "Zones", kinds: ["circle", "donut", "plus", "x", "protean", "beam"] },
   { caption: "Baits", kinds: ["stack8", "stack4", "stack2", "linestack", "flare"] },
   { caption: "Tethers & notes", kinds: ["together", "apart", "text", "arrow"] },
 ];
@@ -2638,6 +2642,8 @@ export const PALETTE_LABEL: Record<PaletteKind, string> = {
   add: "Add",
   circle: "Circle",
   donut: "Donut",
+  plus: "Plus",
+  x: "Cross",
   protean: "Protean",
   beam: "Beam",
   stack8: "Stack ×8",
@@ -2660,6 +2666,8 @@ export const PALETTE_HINT: Record<PaletteKind, string> = {
   add: "A medium enemy. Drop mechanics on it to use it as their source.",
   circle: "A desolation: a circle AoE. Drop it on a group to give each of them one.",
   donut: "A donut AoE: everything but the hole. Drop it on somebody to have it centred on them.",
+  plus: "A + AoE: two bars through somebody, along the cardinals. Drop it on a group to give each of them one.",
+  x: "An × AoE: two bars through somebody, along the intercardinals. Drop it on a group to give each of them one.",
   protean: "A narrow cone per player, thrown from the boss.",
   beam: "A line AoE from the boss through whoever it is aimed at.",
   stack8: "A full-party stack on somebody: everyone piles in.",
@@ -2678,6 +2686,8 @@ export const PALETTE_HINT: Record<PaletteKind, string> = {
 const PALETTE_BAIT: Record<PaletteMechanicKind, { kind: BaitKind; props: PropBag }> = {
   circle: { kind: "puddle", props: { radius: 200 } },
   donut: { kind: "donut", props: { radius: 450, innerRadius: 150 } },
+  plus: { kind: "cross", props: { width: 120, length: 800, rotation: 0 } },
+  x: { kind: "cross", props: { width: 120, length: 800, rotation: 45 } },
   protean: { kind: "cone", props: { angle: 30 } },
   beam: { kind: "beam", props: { width: 160 } },
   stack8: { kind: "stack", props: { radius: 160, soak: 8 } },
@@ -2697,6 +2707,8 @@ const PALETTE_FREE: Record<PaletteKind, PropBag & { type: EntityType }> = {
   add: { type: "enemy", role: "enemy", icon: "actor/enemy", size: 90 },
   circle: { type: "zone", shape: "circle", radius: 200 },
   donut: { type: "zone", shape: "donut", radius: 300, innerRadius: 120 },
+  plus: { type: "zone", shape: "cross", width: 120, length: 800, rotation: 0 },
+  x: { type: "zone", shape: "cross", width: 120, length: 800, rotation: 45 },
   protean: { type: "zone", shape: "cone", angle: 30, radius: 500 },
   beam: { type: "zone", shape: "rect", width: 160, length: 600 },
   stack8: { type: "zone", shape: "stack", radius: 160, soak: 8 },
@@ -2736,7 +2748,7 @@ export function paletteBait(
 /* ------------------------------------------------------------------ resize */
 
 /** Rect-ish shapes are sized by their footprint, everything else by radius. */
-const BOXY = ["rect", "line", "arrow", "knockback", "linestack"];
+const BOXY = ["rect", "line", "arrow", "knockback", "linestack", "cross"];
 
 /**
  * What "make this bigger" multiplies, per entity. It is the real dimensions
@@ -2821,7 +2833,7 @@ function describeEntity(plan: Plan, e: Entity, scene: Entity[] = plan.entities):
           ? `${Math.round(e.angle)}° cone r=${Math.round(e.radius)}`
           : e.shape === "donut"
             ? `donut ${Math.round(e.innerRadius)}–${Math.round(e.radius)}`
-            : e.shape === "rect" || e.shape === "line" || e.shape === "knockback" || e.shape === "arrow"
+            : e.shape === "rect" || e.shape === "line" || e.shape === "knockback" || e.shape === "arrow" || e.shape === "cross"
               ? `${e.shape} ${Math.round(e.width)}x${Math.round(e.length)}`
               : `${e.shape} r=${Math.round(e.radius)}`;
       const facing = e.anchor ? "" : `, facing ${Math.round(e.rotation)}°`;

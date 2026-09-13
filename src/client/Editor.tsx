@@ -235,6 +235,14 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     kind: PaletteKind;
     x: number;
     y: number;
+    /** Held over a player: it will sit on them, so no mirrored copies. */
+    bound?: boolean;
+  } | null>(null);
+  /** What letting go right here would do, said next to the pointer. */
+  const [dropHint, setDropHint] = useState<{
+    intent: DropIntent;
+    clientX: number;
+    clientY: number;
   } | null>(null);
   const paletteMoveRef = useRef<(kind: PaletteKind, clientX: number, clientY: number) => void>(() => {});
   const paletteDropRef = useRef<(kind: PaletteKind, clientX: number, clientY: number) => void>(() => {});
@@ -1127,6 +1135,31 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const arenaPoint = (ev: React.DragEvent) => arenaPointAt(ev.clientX, ev.clientY);
 
   /** An enemy source under the drop point: boss, add, or bare bait anchor. */
+  /**
+   * The player whose token is under a point. A mechanic let go exactly on
+   * somebody is theirs: it binds to them instead of landing on the floor.
+   */
+  function playerAt(pt: { x: number; y: number }): PlayerEntity | undefined {
+    return entitiesForStep(plan!, step!.id, undefined, shown)
+      .filter(
+        (e): e is PlayerEntity =>
+          e.type === "player" && Math.hypot(e.x - pt.x, e.y - pt.y) <= (e.size / 2) * e.scale
+      )
+      .sort((a, b) => Math.hypot(a.x - pt.x, a.y - pt.y) - Math.hypot(b.x - pt.x, b.y - pt.y))[0];
+  }
+
+  /** Where a palette item let go at this point means to go, short of a group chip. */
+  function floorTarget(kind: PaletteKind, pt: { x: number; y: number }): DropTarget {
+    const tetherEnd = isPaletteTether(kind) ? tetherEndAt(pt) : undefined;
+    if (tetherEnd) return { at: "entity", id: tetherEnd };
+    const player = !isPaletteTether(kind) ? playerAt(pt) : undefined;
+    if (player) return { at: "actors", ids: [player.id] };
+    const on = sourceAt(pt);
+    if (on) return { at: "source", id: on };
+    const rode = ridesTethers(kind) ? tetherAt(pt) : undefined;
+    return rode ? { at: "tether", id: rode } : { at: "free" };
+  }
+
   function sourceAt(pt: { x: number; y: number }): string | undefined {
     return entitiesForStep(plan!, step!.id, undefined, shown).find(
       (e) =>
@@ -1348,7 +1381,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       .map((entity) => {
         const radius =
           entity.type === "zone"
-            ? entity.shape === "rect" || entity.shape === "line" || entity.shape === "knockback" || entity.shape === "arrow"
+            ? entity.shape === "rect" || entity.shape === "line" || entity.shape === "knockback" || entity.shape === "arrow" || entity.shape === "cross"
               ? Math.max(entity.width, entity.length) / 2
               : entity.radius
             : entity.type === "text"
@@ -1395,6 +1428,8 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   const SHAPE_OF: Record<PaletteMechanicKind, string> = {
     circle: "circle",
     donut: "donut",
+    plus: "cross",
+    x: "cross",
     protean: "cone",
     beam: "rect",
     stack8: "stack",
@@ -2129,7 +2164,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       ...stamp(openMech ? { mech: openMech.id } : undefined),
     });
     const ops =
-      symmetryCount > 1
+      symmetryCount > 1 && !palettePreview.bound
         ? makeSymmetricAdds(
             spec,
             symmetryKind,
@@ -2153,6 +2188,94 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * the preview was in hand. The refs keep a gesture started before a render
    * wired to the latest symmetry settings when it is finally released.
    */
+  /**
+   * The full-size preview for a palette item held at a point. Over a player it
+   * sits on them, as it will once let go; bound to a source or a tether its
+   * final pose depends on the target, so only the free-floor shape is shown.
+   */
+  function previewAt(kind: PaletteKind, pt: { x: number; y: number }): typeof palettePreview {
+    if (isPaletteCosmetic(kind) || isPaletteSource(kind)) return { kind, x: pt.x, y: pt.y };
+    const target = floorTarget(kind, pt);
+    if (target.at === "free") return { kind, x: pt.x, y: pt.y };
+    if (target.at !== "actors" || paletteNeedsSource(kind)) return null;
+    const player = playerAt(pt)!;
+    return { kind, x: player.x, y: player.y, bound: true };
+  }
+
+  /**
+   * Which of the three a drop onto this target is. On an enemy or a bait
+   * anchor a mechanic is baited: whoever the game would pick gets it, and it
+   * re-picks as the party moves. On a player, or everyone in a group, it is
+   * anchored: that person has it wherever they go. Anywhere else, neither.
+   */
+  function dropIntent(kind: PaletteKind, target: DropTarget): DropIntent {
+    const scene = entitiesForStep(plan!, step!.id, undefined, shown);
+    const named = (id: string) => {
+      const e = scene.find((candidate) => candidate.id === id);
+      if (!e) return "it";
+      if (e.type === "player") return e.name || jobLabel(e.job);
+      if (e.type === "enemy") return e.name || (e.role === "anchor" ? "the bait anchor" : "the enemy");
+      return e.name || e.type;
+    };
+    const ring = (id: string): DropIntent["ring"] => {
+      const e = scene.find((candidate) => candidate.id === id);
+      if (!e || !("size" in e)) return undefined;
+      const r = e.type === "enemy" ? e.size * 0.9 * e.scale : (e.size / 2) * e.scale + 12;
+      return { x: e.x, y: e.y, r };
+    };
+    // An aimed shape still has to come out of something: the biggest enemy
+    // there is, or a bait anchor put in the middle for it.
+    const aimedFrom = () => {
+      if (!paletteNeedsSource(kind)) return "";
+      const host = enemyForAimed();
+      return `, fired from ${host ? named(host.id) : "a new bait anchor"}`;
+    };
+    const none = (detail: string, blocked = false): DropIntent => ({ mode: "none", detail, blocked });
+    if (isPaletteSource(kind) || isPaletteCosmetic(kind)) return none("on the floor");
+    switch (target.at) {
+      case "free":
+        if (isPaletteTether(kind)) return none("a tether needs an object to start from", true);
+        return none(symmetryCount > 1 ? `on the floor, mirrored ×${symmetryCount}` : "on the floor");
+      case "actors":
+        return { mode: "anchor", detail: `to ${named(target.ids[0])}${aimedFrom()}`, ring: ring(target.ids[0]) };
+      case "group": {
+        if (isPaletteTether(kind)) {
+          if (target.group !== "supports" && target.group !== "damagers")
+            return none("player tethers go on Supports or Damagers", true);
+          return { mode: "anchor", detail: "each support tethered to a damager" };
+        }
+        const people = membersOf(target.group).length;
+        if (!people) return none(`no ${GROUP_LABEL[target.group]} in this step`, true);
+        return { mode: "anchor", detail: `one each to ${GROUP_LABEL[target.group]} (${people})${aimedFrom()}` };
+      }
+      case "source": {
+        if (isPaletteTether(kind))
+          return { mode: "anchor", detail: `tethered to ${named(target.id)}, then pick the other end`, ring: ring(target.id) };
+        const already = authoredScene.find(
+          (e) =>
+            e.type === "zone" &&
+            e.shape === SHAPE_OF[kind] &&
+            e.anchor?.pick &&
+            (e.anchor.from === target.id || e.anchor.near === target.id)
+        );
+        const count = (already?.anchor?.count ?? 0) + 1;
+        if (count > 8) return { ...none("one bait covers at most eight", true), ring: ring(target.id) };
+        return {
+          mode: "bait",
+          detail:
+            count > 1
+              ? `widens to the ${count} closest to ${named(target.id)}`
+              : `on whoever is closest to ${named(target.id)}`,
+          ring: ring(target.id),
+        };
+      }
+      case "tether":
+        return { mode: "bait", detail: `down ${named(target.id)}, on whoever it holds` };
+      case "entity":
+        return { mode: "anchor", detail: `tethered to ${named(target.id)}, then pick the other end`, ring: ring(target.id) };
+    }
+  }
+
   paletteMoveRef.current = (kind, clientX, clientY) => {
     const under = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
     const group = under?.closest<HTMLElement>("[data-drop-group]")?.dataset.dropGroup as GroupId | undefined;
@@ -2162,16 +2285,19 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     // here" are the same pixels. Over the rail it is the group that is meant.
     if (onGroup) {
       setPalettePreview(null);
+      setDropHint({ intent: dropIntent(kind, { at: "group", group: group! }), clientX, clientY });
       return;
     }
     const box = stageBox.current?.getBoundingClientRect();
     if (!box || clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) {
       setPalettePreview(null);
+      setDropHint(null);
       return;
     }
     const pt = arenaPointAt(clientX, clientY);
-    const binds = (sourceAt(pt) && !isPaletteCosmetic(kind)) || (ridesTethers(kind) && tetherAt(pt));
-    setPalettePreview(binds ? null : { kind, x: pt.x, y: pt.y });
+    setPalettePreview(previewAt(kind, pt));
+    const target: DropTarget = isPaletteCosmetic(kind) ? { at: "free" } : floorTarget(kind, pt);
+    setDropHint({ intent: dropIntent(kind, target), clientX, clientY });
   };
 
   paletteDropRef.current = (kind, clientX, clientY) => {
@@ -2184,20 +2310,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     const box = stageBox.current?.getBoundingClientRect();
     if (!box || clientX < box.left || clientX > box.right || clientY < box.top || clientY > box.bottom) return;
     const pt = arenaPointAt(clientX, clientY);
-    const tetherEnd = isPaletteTether(kind) ? tetherEndAt(pt) : undefined;
-    const on = sourceAt(pt);
-    const rode = !on && ridesTethers(kind) ? tetherAt(pt) : undefined;
-    void drop(
-      kind,
-      pt,
-      tetherEnd
-        ? { at: "entity", id: tetherEnd }
-        : on
-          ? { at: "source", id: on }
-          : rode
-            ? { at: "tether", id: rode }
-            : { at: "free" }
-    );
+    void drop(kind, pt, isPaletteCosmetic(kind) ? { at: "free" } : floorTarget(kind, pt));
   };
 
   function beginPaletteDrag(kind: PaletteKind, ev: React.PointerEvent<HTMLDivElement>) {
@@ -2220,6 +2333,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       if (moved) paletteDropRef.current(kind, next.clientX, next.clientY);
       setCarrying(null);
       setPalettePreview(null);
+      setDropHint(null);
       setHover(null);
     };
     const cancel = (next: PointerEvent) => {
@@ -2229,6 +2343,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       window.removeEventListener("pointercancel", cancel);
       setCarrying(null);
       setPalettePreview(null);
+      setDropHint(null);
       setHover(null);
     };
     window.addEventListener("pointermove", move);
@@ -2700,9 +2815,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                   // A source changes a mechanic into an aimed bait, whose final
                   // pose is target-dependent. Preview only the free-floor shape
                   // where the pointer honestly represents the pending drop.
-                  setPalettePreview(
-                    sourceAt(pt) ? null : { kind: carrying, x: pt.x, y: pt.y }
-                  );
+                  setPalettePreview(previewAt(carrying, pt));
                 }
               }}
               onDragLeave={(ev) => {
@@ -2726,13 +2839,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 const kind = kindOf(ev);
                 if (!kind) return;
                 ev.preventDefault();
-                const tetherEnd = isPaletteTether(kind) ? tetherEndAt(pt) : undefined;
-                const on = sourceAt(pt);
-                void drop(
-                  kind,
-                  pt,
-                  tetherEnd ? { at: "entity", id: tetherEnd } : on ? { at: "source", id: on } : { at: "free" }
-                );
+                void drop(kind, pt, isPaletteCosmetic(kind) ? { at: "free" } : floorTarget(kind, pt));
                 setCarrying(null);
                 setHover(null);
               }}
@@ -2906,6 +3013,20 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                   );
                 }}
               />
+              {dropHint?.intent.ring && (
+                <div
+                  data-drop-ring={dropHint.intent.mode}
+                  className="pointer-events-none absolute z-20 rounded-full border-2 border-dashed"
+                  style={{
+                    borderColor: dropColor(dropHint.intent),
+                    left: size / 2 + (dropHint.intent.ring.x - dropHint.intent.ring.r) * viewScale(plan.arena, size),
+                    top: size / 2 + (dropHint.intent.ring.y - dropHint.intent.ring.r) * viewScale(plan.arena, size),
+                    width: dropHint.intent.ring.r * 2 * viewScale(plan.arena, size),
+                    height: dropHint.intent.ring.r * 2 * viewScale(plan.arena, size),
+                  }}
+                />
+              )}
+              {dropHint && <DropHintPill {...dropHint} />}
               {/* Collapsed reads the note off the strip instead: one card is
                   enough, and on a phone the arena has no margin to spare. */}
               {!collapsed && (
@@ -6516,6 +6637,43 @@ type DropTarget =
   | { at: "entity"; id: string }
   | { at: "tether"; id: string };
 
+/**
+ * What a palette drop will be where it is held: baited (the game picks who),
+ * anchored (this person has it), or none (a shape on the floor, or nothing).
+ */
+type DropIntent = {
+  mode: "bait" | "anchor" | "none";
+  detail: string;
+  /** Letting go here does nothing: it says why instead. */
+  blocked?: boolean;
+  /** The thing it binds to, in arena units, so the floor can ring it. */
+  ring?: { x: number; y: number; r: number };
+};
+
+const DROP_TITLE: Record<DropIntent["mode"], string> = { bait: "Baited", anchor: "Anchored", none: "None" };
+
+/** Baits take the bait anchor's gold, anchors the selection blue. */
+const dropColor = (intent: DropIntent) =>
+  intent.blocked ? "#ef5350" : { bait: "#e0b152", anchor: "#7aa2f7", none: "#9aa5b1" }[intent.mode];
+
+/** The pill that rides beside the pointer while a palette item is in hand. */
+function DropHintPill({ intent, clientX, clientY }: { intent: DropIntent; clientX: number; clientY: number }) {
+  const color = dropColor(intent);
+  return createPortal(
+    <div
+      data-drop-hint={intent.mode}
+      className="pointer-events-none fixed z-50 flex max-w-[300px] items-baseline gap-1.5 rounded-md border bg-ink-900/95 px-2 py-1 text-xs shadow-lg"
+      style={{ left: clientX + 18, top: clientY + 20, borderColor: color }}
+    >
+      <span className="shrink-0 font-semibold" style={{ color }}>
+        {DROP_TITLE[intent.mode]}
+      </span>
+      <span className="text-ink-200">{intent.detail}</span>
+    </div>,
+    document.body
+  );
+}
+
 /** The aimed palette shapes, the ones that can be fired along a tether. */
 const RIDERS: PaletteMechanicKind[] = ["beam", "protean", "linestack"];
 const ridesTethers = (kind: PaletteKind): kind is PaletteMechanicKind =>
@@ -6680,6 +6838,16 @@ function PaletteGlyph({ kind, size = 30 }: { kind: PaletteKind; size?: number })
             fillRule="evenodd"
           />
         </g>
+      )}
+      {(kind === "plus" || kind === "x") && (
+        <path
+          d="M12 3 H18 V12 H27 V18 H18 V27 H12 V18 H3 V12 H12 Z"
+          transform={kind === "x" ? "rotate(45 15 15)" : undefined}
+          fill="rgba(255,112,67,0.35)"
+          stroke={stroke}
+          strokeWidth="2"
+          strokeLinejoin="round"
+        />
       )}
       {kind === "protean" && (
         <path d="M15 26 L9 5 L21 5 Z" fill="rgba(255,112,67,0.35)" stroke={stroke} strokeWidth="2" />
