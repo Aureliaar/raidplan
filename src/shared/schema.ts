@@ -785,8 +785,12 @@ export function hydratePlan(plan: Plan): Plan {
     variantModel: "step" as const,
     mechanics: (plan.mechanics ?? []).map((mechanic) => ({ ...mechanic, variants: [] })),
     mechs: (plan.mechs ?? []).map((beat) => ({ ...beat, variant: undefined, variants: [] })),
-    entities: plan.entities.map((entity) => ({
+    // An actor is plan-wide, so it is never a Beat's Part. One filed under a
+    // Beat anyway would only be drawn during that Beat's steps — a player
+    // missing from the rest of the fight — so the claim is dropped on load.
+    entities: plan.entities.map(({ mech, ...entity }) => ({
       ...entity,
+      ...(mech && !isActor(entity as Entity) ? { mech } : {}),
       overrides: Object.fromEntries(
         Object.entries(entity.overrides ?? {}).filter(([key]) => !key.includes("@")),
       ),

@@ -231,6 +231,11 @@ export class PlanAgent extends Agent<AppEnv, Plan> {
     return this.publicHistory(index);
   }
 
+  /** One stored snapshot, for inspecting what a revision held. */
+  async revision(revisionId: string): Promise<(PlanRevision & { plan: Plan }) | null> {
+    return (await this.ctx.storage.get<StoredRevision>(revisionKey(revisionId))) ?? null;
+  }
+
   async undo(): Promise<HistoryResult> {
     const index = await this.ensureHistory(this.plan);
     const target = index.undo.pop();
@@ -418,6 +423,7 @@ export interface PlanStub {
     expectedRev?: number
   ): Promise<{ plan: Plan; values: (PropBag | null)[]; conflict?: boolean }>;
   history(): Promise<PlanHistory>;
+  revision(revisionId: string): Promise<(PlanRevision & { plan: Plan }) | null>;
   undo(): Promise<HistoryResult>;
   redo(): Promise<HistoryResult>;
   revert(revisionId: string, actor?: HistoryActor): Promise<HistoryResult>;

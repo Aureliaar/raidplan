@@ -9,6 +9,7 @@ import {
   authoredEntitiesForStep,
   composeBeatVariantEntities,
   entitiesForStep,
+  isActor,
   tetherEnds,
   tetherRide,
   mechLabel,
@@ -941,34 +942,39 @@ export function Inspector({
               {entity.steps === "all" ? "Only this step" : "All steps"}
             </button>
             {/* Which cast this shape is part of: a mech times it and aims it,
-                so moving it between slots is a real edit, not a label. */}
-            {mechOf && (
-              <span
-                className="inline-block h-3 w-3 shrink-0 rounded-sm"
-                style={{ background: mechColor(plan, mechOf) }}
-                title="Drawn in its Beat's colour"
-              />
+                so moving it between slots is a real edit, not a label. A
+                player or an enemy is in every step, so it is in no Beat. */}
+            {!isActor(entity) && (
+              <>
+              {mechOf && (
+                <span
+                  className="inline-block h-3 w-3 shrink-0 rounded-sm"
+                  style={{ background: mechColor(plan, mechOf) }}
+                  title="Drawn in its Beat's colour"
+                />
+              )}
+              <select
+                className="field w-auto"
+                disabled={!editable}
+                title="The Beat this Part belongs to"
+                value={entity.mech ?? ""}
+                onChange={(e) =>
+                  run({
+                    op: "assign_mech",
+                    ids: [entity.id],
+                    mechId: e.target.value || null,
+                  })
+                }
+              >
+                {!entity.mech && <option value="">no Beat</option>}
+                {plan.mechs.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {mechLabel(plan, m)}
+                  </option>
+                ))}
+              </select>
+              </>
             )}
-            <select
-              className="field w-auto"
-              disabled={!editable}
-              title="The Beat this Part belongs to"
-              value={entity.mech ?? ""}
-              onChange={(e) =>
-                run({
-                  op: "assign_mech",
-                  ids: [entity.id],
-                  mechId: e.target.value || null,
-                })
-              }
-            >
-              {!entity.mech && <option value="">no Beat</option>}
-              {plan.mechs.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {mechLabel(plan, m)}
-                </option>
-              ))}
-            </select>
           </>
         )}
         <button
