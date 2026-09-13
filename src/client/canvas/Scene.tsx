@@ -1144,7 +1144,7 @@ export function Scene({
                 }}
               >
                 <GrabTarget entity={e} />
-                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} caught={caught.get(e.id)} dress={dress?.get(e.id)} />
+                <EntityShape entity={e} blast={blast.get(e.id) ?? 0} caught={caught.get(e.id)} dress={dress?.get(e.id)} selected={selectedIds.has(e.id)} />
                 {/* A selected thing wears a hairline in its own colour, hugging
                     its silhouette; the one under the pins draws it there
                     instead. A highlighted row's shapes light up in the accent. */}
@@ -2893,8 +2893,10 @@ function EntityShape({
   blast = 0,
   caught,
   dress,
+  selected = false,
 }: {
   entity: Entity;
+  selected?: boolean;
   blast?: number;
   /** Players standing in it, for a stack or tower. */
   caught?: number;
@@ -3047,7 +3049,7 @@ function EntityShape({
     }
 
     case "zone":
-      return <ZoneShape zone={entity} blast={blast} caught={caught} />;
+      return <ZoneShape zone={entity} blast={blast} caught={caught} selected={selected} />;
 
     case "text": {
       // Width drives both centring and the hit box, so keep it near the content.
@@ -3240,12 +3242,23 @@ function crossOutline(width: number, span: number): number[] {
   return [-w, -s, w, -s, w, -w, s, -w, s, w, w, w, w, s, -w, s, -w, w, -s, w, -s, -w, -w, -w];
 }
 
-function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: number; caught?: number }) {
+function ZoneShape({
+  zone,
+  blast = 0,
+  caught,
+  selected = false,
+}: {
+  zone: ZoneEntity;
+  blast?: number;
+  caught?: number;
+  selected?: boolean;
+}) {
   const arena = useContext(ArenaContext);
   const color = zone.color ?? ZONE_DEFAULT;
   const hide = zone.look === "hide" && !zone.hollow;
+  // A hole in the floor has no edge of its own; it shows one only while it is being worked on.
   const border = {
-    stroke: hide ? (rgbaOf(color, 0.55) ?? color) : color,
+    stroke: hide ? (selected ? (rgbaOf(color, 0.55) ?? color) : undefined) : color,
     strokeWidth: 5,
     dash: hide ? [18, 14] : undefined,
     hitStrokeWidth: zone.hollow ? 40 : undefined,
