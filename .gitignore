@@ -4,3 +4,7 @@ dist/
 .dev.vars
 *.log
 .migration-archives/
+
+# One-off repro scripts and screenshots
+scripts/tmp-*
+scripts/*.png
