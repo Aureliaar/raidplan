@@ -3126,6 +3126,24 @@ function EntityName({
  * old flat fill when the color is not a plain hex we can make translucent.
  */
 
+/** A circle with small notches pressed in at even steps around it. */
+function dentedRing(radius: number): number[] {
+  const dents = 24;
+  const depth = Math.min(radius * 0.08, 22);
+  const half = Math.PI / dents / 2.5;
+  const points: number[] = [];
+  const at = (a: number, r: number) => points.push(Math.sin(a) * r, -Math.cos(a) * r);
+  for (let i = 0; i < dents; i++) {
+    const a = (i / dents) * Math.PI * 2;
+    const next = ((i + 1) / dents) * Math.PI * 2;
+    at(a - half, radius);
+    at(a, radius - depth);
+    at(a + half, radius);
+    for (let k = 1; k < 4; k++) at(a + half + ((next - half - (a + half)) * k) / 4, radius);
+  }
+  return points;
+}
+
 /**
  * The cracks in a tower's floor, as (fraction of radius, bearing) runs from
  * the core out to the rim. Fixed, so every tower cracks the same way.
@@ -3187,8 +3205,13 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
   const soaked =
     caught === undefined ? undefined : zone.shape === "tower" ? caught === zone.soak : caught >= zone.soak;
   // Never told apart by colour — a zone's colour is the author's. Short of
-  // people, the rim breaks into dashes; met, it closes.
-  const soakBorder = soaked === false ? { ...border, dash: [22, 14] } : border;
+  // people, the rim is dented all the way round; met, it is smooth.
+  const soakRim = (radius: number) =>
+    soaked === false ? (
+      <Line points={dentedRing(radius)} closed {...border} lineJoin="round" />
+    ) : (
+      <Circle radius={radius} {...border} />
+    );
 
   switch (zone.shape) {
     case "circle":
@@ -3326,7 +3349,7 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
       // ring, dashed until enough people are in. The count is on its chip.
       return (
         <>
-          <Circle radius={zone.radius} {...soakBorder} />
+          {soakRim(zone.radius)}
           <Stamp
             art="stack"
             size={stampSize(zone.radius)}
@@ -3448,7 +3471,7 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
       const r = zone.radius;
       return (
         <>
-          <Circle radius={r} {...soakBorder} />
+          {soakRim(r)}
           {TOWER_CRACKS.map((crack, i) => (
             <Line
               key={i}
