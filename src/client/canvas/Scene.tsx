@@ -561,6 +561,7 @@ export function Scene({
         viewHalf={size / 2 / scale}
         floorHalf={arena.width / 2}
         dress={dress}
+        caught={caught}
         leaders={chipsFade.leaders}
       />
     );
@@ -2385,7 +2386,7 @@ const SHAPE_NAMES: Partial<Record<ZoneEntity["shape"], string>> = {
 const crossName = (rotation: number) => (((rotation % 90) + 90) % 90 === 0 ? "Plus" : "Cross");
 
 /** What a chip says: a name, and the one dimension a raider would ask about. */
-function chipText(e: Entity): { label: string; sub: string } {
+function chipText(e: Entity, caught?: number): { label: string; sub: string } {
   const cap = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
   switch (e.type) {
     case "player":
@@ -2403,7 +2404,9 @@ function chipText(e: Entity): { label: string; sub: string } {
       const k = e.scale;
       const turn = e.rotation ? ` · ${Math.round(e.rotation)}°` : "";
       const boxy = ["rect", "line", "knockback", "arrow", "linestack", "cross"].includes(e.shape);
-      const sub = boxy
+      const sub = caught !== undefined && (e.shape === "stack" || e.shape === "tower")
+        ? `${caught}/${e.soak}`
+        : boxy
         ? `${Math.round(e.width * k)} × ${Math.round(e.length * k)}${turn}`
         : e.shape === "cone"
           ? `r ${Math.round(e.radius * k)} · ${Math.round(e.angle)}°`
@@ -2578,9 +2581,12 @@ function Chips({
   viewHalf,
   floorHalf,
   dress,
+  caught,
   leaders,
 }: {
   entities: Entity[];
+  /** Players standing in each stack and tower, which its chip counts. */
+  caught: Map<string, number>;
   selectedIds: Set<string>;
   /** Locked things say so on their chip, which is not a way to click them. */
   locked: (e: Entity) => boolean;
@@ -2604,7 +2610,7 @@ function Chips({
   };
 
   const slots = entities.map((e) => {
-    const text = chipText(e);
+    const text = chipText(e, caught.get(e.id));
     const label = text.label;
     const sub = locked(e) ? (text.sub ? `${text.sub} · locked` : "locked") : text.sub;
     const glyph = e.type !== "text";
@@ -3121,8 +3127,6 @@ function EntityName({
  */
 /** A stack or tower with the right people in it. */
 const SOAK_MET = "#4ade80";
-/** The count on one that is not. */
-const SOAK_SHORT = "#fca5a5";
 
 function telegraphFill(
   zone: ZoneEntity,
@@ -3178,10 +3182,6 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
       : soaked
         ? { ...border, stroke: SOAK_MET, strokeWidth: 9 }
         : { ...border, dash: [22, 14] };
-  const soakFill = (radius: number) =>
-    telegraphFill(soaked ? { ...zone, color: SOAK_MET } : zone, radius, blast);
-  const soakText = caught === undefined || soaked ? `${zone.soak}` : `${caught}/${zone.soak}`;
-  const soakColor = soaked === false ? SOAK_SHORT : "#f7fafc";
 
   switch (zone.shape) {
     case "circle":
@@ -3315,22 +3315,16 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
       );
 
     case "stack":
-      // Always the game's stack marker — the arrows pointing in — with how
-      // many it wants written under it. The N-person discs are towers.
+      // The game's stack marker — the arrows pointing in — on an unfilled
+      // ring: green once enough people are in, dashed until then. The count
+      // is on its chip.
       return (
         <>
-          <Circle radius={zone.radius} {...soakFill(zone.radius)} {...soakBorder} />
+          <Circle radius={zone.radius} {...soakBorder} />
           <Stamp
             art="stack"
             size={stampSize(zone.radius)}
             fallback={<Circle radius={zone.radius * 0.6} stroke={color} strokeWidth={6} dash={[18, 12]} />}
-          />
-          <Label
-            y={stampSize(zone.radius) * 0.7}
-            text={soakText}
-            size={stampSize(zone.radius) * 0.35}
-            color={soakColor}
-            bold
           />
         </>
       );
@@ -3441,29 +3435,17 @@ function ZoneShape({ zone, blast = 0, caught }: { zone: ZoneEntity; blast?: numb
       );
 
     case "tower": {
-      // The game draws a tower wanting two, three or four with that many discs
-      // in it; anything else gets the plain tower and the count underneath.
-      const art = { 1: "one-person-aoe", 2: "two-person-aoe", 3: "three-person-aoe", 4: "four-person-aoe" }[
-        zone.soak
-      ];
+      // The game's tower, with its core cut out so the people soaking it stay
+      // readable. It goes green once exactly the right number stand in it; how
+      // many do is on its chip.
       return (
-        <>
-          <Circle radius={zone.radius} {...soakFill(zone.radius)} {...soakBorder} />
-          <Stamp
-            art={art ?? "tower"}
-            size={stampSize(zone.radius)}
-            fallback={<Circle radius={zone.radius * 0.7} stroke={color} strokeWidth={8} />}
-          />
-          {(!art || soaked === false) && (
-            <Label
-              y={stampSize(zone.radius) * (art ? 0.85 : 0.7)}
-              text={soakText}
-              size={stampSize(zone.radius) * 0.35}
-              color={soakColor}
-              bold
-            />
-          )}
-        </>
+        <Sprite
+          src={assetUrl(soaked ? "mechanic/tower-ring-met" : "mechanic/tower-ring")}
+          width={zone.radius * 2}
+          height={zone.radius * 2}
+          listening={false}
+          fallback={<Circle radius={zone.radius} {...soakBorder} />}
+        />
       );
     }
 
