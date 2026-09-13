@@ -53,6 +53,12 @@ export function zoneCovers(zone: ZoneEntity, px: number, py: number): boolean {
     case "linestack":
       return Math.abs(p.x) <= zone.width / 2 && Math.abs(p.y) <= zone.length / 2;
 
+    case "cross":
+      return (
+        (Math.abs(p.x) <= zone.width / 2 && Math.abs(p.y) <= zone.length / 2) ||
+        (Math.abs(p.y) <= zone.width / 2 && Math.abs(p.x) <= zone.length / 2)
+      );
+
     case "triangle": {
       // A Konva RegularPolygon with 3 sides, point up: vertices every 120°.
       const vs = [0, 1, 2].map((i) => {

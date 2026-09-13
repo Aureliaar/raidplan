@@ -1443,7 +1443,7 @@ export const TOOLS: ToolDef[] = [
   def({
     name: "add_zone",
     description:
-      "Add an AoE / mechanic zone. circle, donut, proximity: radius (+inner_radius). cone: radius + angle + rotation. rect, line, knockback, arrow: width + length + rotation. stack, spread, tower: radius + soak. exaflare: radius + count + rotation.",
+      "Add an AoE / mechanic zone. circle, donut, proximity: radius (+inner_radius). cone: radius + angle + rotation. rect, line, knockback, arrow: width + length + rotation. cross: width (bar) + length (end to end) + rotation (0 = +, 45 = ×). stack, spread, tower: radius + soak. exaflare: radius + count + rotation.",
     schema: {
       plan_id: z.string(),
       shape: z.enum(ZONE_SHAPES),
@@ -1589,7 +1589,8 @@ export const TOOLS: ToolDef[] = [
       "or `pick` (closest/farthest, where `count` is how many of them one bait covers), which is what a " +
       "proximity-baited mechanic actually does: rearrange the party and the AoE re-targets. " +
       "kinds: beam and cone fire from `from` through the target (out to the wall by default); " +
-      "donut, spread, puddle, stack, tower, proximity sit on the target; tether links the two. " +
+      "donut, spread, puddle, stack, tower, proximity, cross sit on the target; tether links the two. " +
+      "A cross is two bars through the target: rotation 0 is a +, 45 an ×. " +
       "Or give `along` (a tether) instead of on/pick/from: a beam, cone or linestack then fires down " +
       "that tether, out of its enemy end, and follows it when it is re-paired.",
     schema: {
@@ -1626,8 +1627,9 @@ export const TOOLS: ToolDef[] = [
       name: z.string().optional().describe("Mechanic name; each bait gets the target appended"),
       radius: z.number().positive().optional(),
       inner_radius: z.number().min(0).optional(),
-      width: z.number().positive().optional().describe("Beam width"),
-      length: z.number().positive().optional().describe("Beam length, if not extending to the wall"),
+      width: z.number().positive().optional().describe("Beam width, or a cross's bar width"),
+      length: z.number().positive().optional().describe("Beam length, if not extending to the wall, or a cross's span end to end"),
+      rotation: z.number().optional().describe("Cross: 0 = +, 45 = ×. Aimed kinds take their facing from the aim instead"),
       angle: z.number().min(1).max(360).optional().describe("Cone width in degrees"),
       soak: z.number().int().min(1).max(8).optional(),
       style: z.enum(TETHER_STYLES).optional(),
@@ -1665,6 +1667,7 @@ export const TOOLS: ToolDef[] = [
         width: a.width,
         length: a.length,
         angle: a.angle,
+        rotation: a.rotation,
         soak: a.soak,
         style: a.style,
         color: a.color,
@@ -2019,5 +2022,5 @@ Actors (players, enemies) and waymarks are plan-wide; per-step position override
 A Beat's baits, anchors and tethers follow their targets up to the step it freezes in (update_mech freezes_in, the snapshot by default) and are drawn where they stood there from then until it goes off. Only a Beat of three or more steps has anywhere to put that marker.
 Always read_plan first so you use real entity ids, then make the smallest set of edits that expresses the intent.
 A Beat is one timed card/frame. Its child Variant boxes are mutually exclusive and contain only divergent Beat Parts plus optional sparse actor movement. Shared Parts stay directly on the Beat. Preview choices and edit destinations are separate: passing beat + variant explicitly chooses where an edit is stored, never a saved preview. Saved Routes are non-owning complete Beat-selection maps and cannot contain movement conflicts. Variants exist only on Beats; Mechanic-wide Variants are retired.
-A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest", which re-targets itself as the party moves. A mechanic that catches several people is one bait with "count" — it draws that many shapes, over the ranks after "rank" — not one bait per target. Either way it holds in every step with no overrides to redo.
+A mechanic aimed at a player belongs to that player, not to a coordinate: add it with add_bait (beam, cone, donut, spread, puddle, stack, tower, proximity, cross, tether). Bait named players with "on", or model the game's own targeting with pick = "closest" / "farthest", which re-targets itself as the party moves. A mechanic that catches several people is one bait with "count" — it draws that many shapes, over the ranks after "rank" — not one bait per target. Either way it holds in every step with no overrides to redo.
 Real FFXIV art is bundled: job/role tokens, waymarks A-D and 1-4, field markers (attack1-8, bind, ignore, limit cut, tankbuster) and arena backdrops. Call list_assets to browse it.`;

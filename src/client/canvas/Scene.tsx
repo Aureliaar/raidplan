@@ -1358,7 +1358,7 @@ function SelectionPins({
     (entity.type === "player" && entity.showFacing) ||
     (entity.type === "enemy" && entity.showFacing) ||
     (entity.type === "zone" &&
-      ["cone", "rect", "line", "knockback", "arrow", "exaflare", "linestack"].includes(entity.shape));
+      ["cone", "rect", "line", "knockback", "arrow", "exaflare", "linestack", "cross"].includes(entity.shape));
 
   // Handle dimensions are expressed in arena units because this group sits
   // inside the scaled floor group. Divide by the canvas scale to keep the
@@ -2144,6 +2144,9 @@ function silhouetteOf(e: Entity, live?: { width?: number; length?: number }): Si
           };
         case "cone":
           return { kind: "wedge", r: e.radius, angle: e.angle };
+        case "cross":
+          // The hairline hugs the square the two bars span.
+          return { kind: "box", hw: e.length / 2, hh: e.length / 2, corner: 0 };
         default:
           return { kind: "circle", r: e.radius };
       }
@@ -2313,6 +2316,9 @@ const SHAPE_NAMES: Partial<Record<ZoneEntity["shape"], string>> = {
   linestack: "Line stack",
 };
 
+/** A cross squared to the cardinals is a plus; anything else is an ×. */
+const crossName = (rotation: number) => (((rotation % 90) + 90) % 90 === 0 ? "Plus" : "Cross");
+
 /** What a chip says: a name, and the one dimension a raider would ask about. */
 function chipText(e: Entity): { label: string; sub: string } {
   const cap = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
@@ -2331,7 +2337,7 @@ function chipText(e: Entity): { label: string; sub: string } {
     case "zone": {
       const k = e.scale;
       const turn = e.rotation ? ` · ${Math.round(e.rotation)}°` : "";
-      const boxy = ["rect", "line", "knockback", "arrow", "linestack"].includes(e.shape);
+      const boxy = ["rect", "line", "knockback", "arrow", "linestack", "cross"].includes(e.shape);
       const sub = boxy
         ? `${Math.round(e.width * k)} × ${Math.round(e.length * k)}${turn}`
         : e.shape === "cone"
@@ -2340,7 +2346,8 @@ function chipText(e: Entity): { label: string; sub: string } {
             ? `r ${Math.round(e.innerRadius * k)}–${Math.round(e.radius * k)}`
             : `r ${Math.round(e.radius * k)}`;
       const many = e.anchor?.pick && e.anchor.count > 1 ? ` · ×${e.anchor.count}` : "";
-      return { label: e.name || e.bond?.label || SHAPE_NAMES[e.shape] || cap(e.shape), sub: sub + many };
+      const shapeName = e.shape === "cross" ? crossName(e.rotation) : SHAPE_NAMES[e.shape] || cap(e.shape);
+      return { label: e.name || e.bond?.label || shapeName, sub: sub + many };
     }
     case "text":
       return { label: e.text.length > 18 ? `${e.text.slice(0, 17)}…` : e.text, sub: "text" };
@@ -2464,6 +2471,16 @@ function ChipGlyph({
       }
       if (e.shape === "donut") {
         return <Ring {...line} innerRadius={g * 0.2} outerRadius={g * 0.45} />;
+      }
+      if (e.shape === "cross") {
+        return (
+          <Line
+            {...line}
+            points={crossOutline(g * 0.2, g * 0.9)}
+            closed
+            rotation={e.rotation}
+          />
+        );
       }
       return <Circle {...line} radius={g * 0.45} />;
     case "path":
@@ -2748,6 +2765,8 @@ function hitArea(e: Entity, byId: Map<string, Entity>): number {
           return e.width * e.length * scale;
         case "donut":
           return (disc(e.radius) - disc(e.innerRadius)) * scale;
+        case "cross":
+          return (2 * e.width * e.length - e.width * e.width) * scale;
         case "exaflare":
           return disc(e.radius) * e.count * scale;
         default:
@@ -2776,7 +2795,7 @@ function radiusHint(e: Entity): number {
     case "enemy":
       return e.size;
     case "zone":
-      return e.shape === "rect" || e.shape === "line" || e.shape === "knockback" || e.shape === "arrow"
+      return e.shape === "rect" || e.shape === "line" || e.shape === "knockback" || e.shape === "arrow" || e.shape === "cross"
         ? Math.max(e.width, e.length) / 2
         : e.radius;
     case "text":
@@ -3061,6 +3080,13 @@ function telegraphFill(
   };
 }
 
+/** The outline of a + with bars `width` thick and `span` end to end, clockwise from the top bar. */
+function crossOutline(width: number, span: number): number[] {
+  const w = width / 2;
+  const s = span / 2;
+  return [-w, -s, w, -s, w, -w, s, -w, s, w, w, w, w, s, -w, s, -w, w, -s, w, -s, -w, -w, -w];
+}
+
 function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
   const color = zone.color ?? ZONE_DEFAULT;
   const border = { stroke: color, strokeWidth: 5, hitStrokeWidth: zone.hollow ? 40 : undefined };
@@ -3100,6 +3126,17 @@ function ZoneShape({ zone, blast = 0 }: { zone: ZoneEntity; blast?: number }) {
           width={zone.width}
           height={zone.length}
           {...telegraphFill(zone, Math.hypot(zone.width, zone.length) / 2, blast)}
+          {...border}
+        />
+      );
+
+    case "cross":
+      // One outline, not two overlapping bars: the middle is no hotter than the arms.
+      return (
+        <Line
+          points={crossOutline(zone.width, zone.length)}
+          closed
+          {...telegraphFill(zone, zone.length / 2, blast)}
           {...border}
         />
       );
