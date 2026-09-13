@@ -122,6 +122,8 @@ export interface SceneProps {
   layer?: EditLayer;
   /** Which kinds of floor item get a leader and a chip beyond the selection: the party, the rest. */
   chips?: { party: boolean; others: boolean };
+  /** Whether drags, turns and spreads settle onto round values (E). Alt still skips it per drag. */
+  snapping?: boolean;
   /** A bond or mech id whose shapes should light up — the row being hovered. */
   highlight?: string | null;
   /** What the party wears while a debuff mech is on the floor, by player id. */
@@ -425,6 +427,7 @@ export function Scene({
   symmetryKind = "mirror",
   layer = "step",
   chips = { party: false, others: false },
+  snapping = true,
   highlight,
   dress,
   glide = 0,
@@ -648,6 +651,7 @@ export function Scene({
    * meaningless two-unit nudges.
    */
   function settleAnchorSnap(live: Map<string, { x: number; y: number }>) {
+    if (!snapping) return live;
     for (const [id, p] of live) {
       if (anchorBase.has(id) && Math.hypot(p.x, p.y) < 12 / scale) live.set(id, { x: 0, y: 0 });
     }
@@ -763,7 +767,7 @@ export function Scene({
     }
     // A lone unanchored token gets the arena's radial snap; anything grouped,
     // mirrored, or anchored keeps its own settling rules.
-    if (live.size === 1 && symmetryCount === 1 && !anchorBase.has(id) && start.moved && !alt) {
+    if (live.size === 1 && symmetryCount === 1 && !anchorBase.has(id) && start.moved && !alt && snapping) {
       live.set(id, radialSnap(id, live.get(id)!));
     } else {
       setGuides(null);
@@ -1289,6 +1293,7 @@ export function Scene({
                 entity={entity}
                 pixelsPerUnit={scale}
                 viewHalf={size / 2 / scale}
+                snapping={snapping}
                 onTransform={(patch) => onTransform?.(entity.id, patch)}
               />
             ) : null;
@@ -1361,12 +1366,15 @@ function SelectionPins({
   entity,
   pixelsPerUnit,
   viewHalf,
+  snapping,
   onTransform,
 }: {
   entity: Exclude<Entity, { type: "tether" }>;
   pixelsPerUnit: number;
   /** Half-extent (arena units) of the visible canvas around the arena centre. */
   viewHalf: number;
+  /** Turns settle onto 45° and cone spreads onto 15° while this is on. */
+  snapping: boolean;
   onTransform(patch: {
     factor: number;
     rotation?: number;
@@ -1565,7 +1573,7 @@ function SelectionPins({
         const turned = ((Math.atan2(at.y - center.y, at.x - center.x) - fromAngle) * 180) / Math.PI;
         let deg = (((entity.rotation + turned) % 360) + 360) % 360;
         const snap = Math.round(deg / 45) * 45;
-        if (Math.abs(deg - snap) <= 5) deg = snap % 360;
+        if (snapping && Math.abs(deg - snap) <= 5) deg = snap % 360;
         state.rotation = deg;
         node.rotation(deg);
       } else if ((kind === "width" || kind === "length" || kind === "corner") && boxy) {
@@ -1602,7 +1610,7 @@ function SelectionPins({
         if (off > 180) off = 360 - off;
         let deg = Math.max(5, Math.min(360, off * 2));
         const snap = Math.round(deg / 15) * 15;
-        if (Math.abs(deg - snap) <= 3 && snap >= 5) deg = snap;
+        if (snapping && Math.abs(deg - snap) <= 3 && snap >= 5) deg = snap;
         state.angle = deg;
       }
       setLive({ id, kind, grip, ...state });

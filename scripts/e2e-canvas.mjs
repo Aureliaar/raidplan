@@ -3,7 +3,8 @@
  * click selects without gluing the token to the pointer and swaps the Add
  * palette for the inspector; a right-press opens the menu the Part owns rather
  * than dragging it; a tether, which has no pose of its own, is still a click
- * target; Shift-click gathers a set that one drag carries; the wheel sizes the
+ * target; Shift-click gathers a set that one drag carries; a lone drag snaps
+ * onto a 45° spoke unless E switched snapping off; the wheel sizes the
  * shape it is over; a box's edge and corner grips stretch out of the side you
  * pull and leave the side across from it standing, and win a press over a
  * player just beside them; a player wins a click over anything parked on it —
@@ -166,6 +167,31 @@ if (Math.hypot(b.x - boss.x - 70, b.y - boss.y - 45) > 8) fail(`the grabbed toke
 if (Math.hypot(m.x - mt.x - 70, m.y - mt.y - 45) > 8) fail(`the other selected token did not come along: ${m.x},${m.y}`);
 if (h.x !== h1Was.x || h.y !== h1Was.y) fail("a token outside the selection moved with it");
 console.log("Shift-click gathered the boss and MT, and one drag carried both");
+
+/* --- a lone drag settles onto a 45° spoke, until E turns snapping off ------ */
+
+// Let go half a snap's grip beside the southwest spoke: snapping puts H1 on
+// it, and with E off H1 stays exactly where it was let go.
+const offSpoke = async (r) => {
+  await f.deselect();
+  const from = posed(await plan.load(), "H1", step);
+  const miss = 4 / f.scale;
+  const to = { x: -r * Math.SQRT1_2 - miss * Math.SQRT1_2, y: r * Math.SQRT1_2 - miss * Math.SQRT1_2 };
+  await drag(page, f.screen(from.x, from.y), f.screen(to.x, to.y));
+  const at = posed(await plan.load(), "H1", step);
+  // Distance from the line y = -x.
+  return { miss, off: Math.abs(at.x + at.y) * Math.SQRT1_2 };
+};
+const snapped = await offSpoke(260);
+if (snapped.off > 1.5) fail(`with Snap on, H1 let go ${snapped.miss.toFixed(1)} units off the spoke stayed ${snapped.off.toFixed(1)} off it`);
+const snapToggle = page.locator('[data-assist="snap"]');
+await page.keyboard.press("e");
+if ((await snapToggle.getAttribute("aria-pressed")) !== "false") fail("E did not switch Snap off");
+const free = await offSpoke(200);
+if (Math.abs(free.off - free.miss) > 2) fail(`with Snap off, H1 let go ${free.miss.toFixed(1)} units off the spoke landed ${free.off.toFixed(1)} off it`);
+await page.keyboard.press("e");
+if ((await snapToggle.getAttribute("aria-pressed")) !== "true") fail("E did not switch Snap back on");
+console.log(`a drag ${snapped.miss.toFixed(1)} units beside a spoke lands on it; with E off it lands ${free.off.toFixed(1)} units off, where it was let go`);
 
 /* --- the wheel sizes the shape under it, ring and hole together ------------ */
 

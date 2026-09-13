@@ -4,10 +4,11 @@
  * on a bait anchor is thrown at whoever stands nearest it; a group chip gives
  * everybody in the group one, thrown from a source even on a plan with no
  * enemy; a tether dropped on one thing is finished by picking another; a Boss
- * is an ordinary enemy mechanics can come out of; and a group's row carries
+ * is an ordinary enemy mechanics can come out of; R switches binding off, so a
+ * drop on a player lands on the floor; and a group's row carries
  * the whole group.
  */
-import { chip, drag, drawn, fail, finish, floor, session } from "./harness.mjs";
+import { chip, drag, drawn, fail, finish, floor, posed, session } from "./harness.mjs";
 
 const s = await session("palette-e2e");
 const { page } = s;
@@ -175,6 +176,27 @@ if (overPlayer.mode !== "anchor" || !/to H2/.test(overPlayer.text))
 if (overFloor.mode !== "none") fail("held over bare floor, the pointer did not say None: " + JSON.stringify(overFloor));
 if (await page.locator("[data-drop-hint]").count()) fail("the drop hint outlived the drag");
 console.log(`in hand, a Circle reads "${overBoss.text}" over the boss, "${overPlayer.text}" over H2, "${overFloor.text}" on bare floor`);
+
+/* --- R turns baiting and anchoring off: a drop on H2 lands on the floor ---- */
+
+const bindToggle = page.locator('[data-assist="bind"]');
+await page.keyboard.press("r");
+if ((await bindToggle.getAttribute("aria-pressed")) !== "false") fail("R did not switch Bind off");
+const h2 = posed(await plan.load(), ids.H2, step);
+const circlesBefore = new Set((await plan.load()).entities.filter((e) => e.shape === "circle").map((e) => e.id));
+await page.mouse.move(circleChip.x + circleChip.width / 2, circleChip.y + circleChip.height / 2);
+await page.mouse.down();
+const unbound = await held(await f.nodeAt(ids.H2));
+await page.mouse.up();
+await page.waitForTimeout(700);
+await f.deselect();
+if (unbound.mode !== "none") fail("with Bind off, held over H2 the pointer did not say None: " + JSON.stringify(unbound));
+const loose = (await plan.load()).entities.filter((e) => e.shape === "circle" && !circlesBefore.has(e.id));
+if (loose.length !== 1 || loose[0].anchor || Math.hypot(loose[0].x - h2.x, loose[0].y - h2.y) > 25)
+  fail("with Bind off, a Circle let go on H2 did not land unbound where H2 stands: " + JSON.stringify(loose));
+await bindToggle.click();
+if ((await bindToggle.getAttribute("aria-pressed")) !== "true") fail("clicking Bind did not switch it back on");
+console.log(`with R off a Circle on H2 reads "${unbound.text}" and lands on the floor under them; the button turns it back on`);
 
 /* --- a group's row carries the whole group ---------------------------------- */
 

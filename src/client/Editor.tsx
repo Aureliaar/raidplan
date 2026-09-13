@@ -201,6 +201,12 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
    * a mechanic can be read off its chips without eight player chips in the way.
    */
   const [chips, setChips] = useState({ party: false, others: false });
+  /**
+   * The editing aids that decide for you, each switchable when it is in the
+   * way: snapping (radial spokes and rings, round rotations and spreads, an
+   * offset dropped home), and a palette drop binding to whatever it lands on.
+   */
+  const [assists, setAssists] = useState({ snap: true, bind: true });
   /** Starts a selection sweep from beside the canvas; the Scene fills it in. */
   const sweep = useRef<((ev: MouseEvent) => void) | null>(null);
   useEffect(() => {
@@ -209,6 +215,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
       if (el && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))) return;
       if (ev.ctrlKey || ev.metaKey || ev.altKey || ev.repeat) return;
       const key = ev.key.toLowerCase();
+      if (key === "e" || key === "r") {
+        ev.preventDefault();
+        setAssists((on) => (key === "e" ? { ...on, snap: !on.snap } : { ...on, bind: !on.bind }));
+        return;
+      }
       if (key !== "c" && key !== "v") return;
       ev.preventDefault();
       setChips((on) => (key === "c" ? { ...on, others: !on.others } : { ...on, party: !on.party }));
@@ -1152,6 +1163,9 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
   function floorTarget(kind: PaletteKind, pt: { x: number; y: number }): DropTarget {
     const tetherEnd = isPaletteTether(kind) ? tetherEndAt(pt) : undefined;
     if (tetherEnd) return { at: "entity", id: tetherEnd };
+    // A tether is nothing without its ends, so only the rest can be told to
+    // land where they are let go.
+    if (!assists.bind) return { at: "free" };
     const player = !isPaletteTether(kind) ? playerAt(pt) : undefined;
     if (player) return { at: "actors", ids: [player.id] };
     const on = sourceAt(pt);
@@ -2235,7 +2249,11 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
     switch (target.at) {
       case "free":
         if (isPaletteTether(kind)) return none("a tether needs an object to start from", true);
-        return none(symmetryCount > 1 ? `on the floor, mirrored ×${symmetryCount}` : "on the floor");
+        return none(
+          `${symmetryCount > 1 ? `on the floor, mirrored ×${symmetryCount}` : "on the floor"}${
+            assists.bind ? "" : " · baiting & anchoring off (R)"
+          }`
+        );
       case "actors":
         return { mode: "anchor", detail: `to ${named(target.ids[0])}${aimedFrom()}`, ring: ring(target.ids[0]) };
       case "group": {
@@ -2612,6 +2630,47 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
               <div
                 className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-md border border-ink-600 bg-ink-900/70 p-0.5 shadow-inner"
                 role="group"
+                aria-label="Editing aids"
+              >
+                {(
+                  [
+                    {
+                      which: "snap" as const,
+                      key: "E",
+                      label: "Snap",
+                      title:
+                        "Drags settle onto 45° spokes, other tokens' rings and waymarks; turns and cone spreads onto round angles; a bait offset let go near zero goes home. Alt skips it for one drag (E)",
+                    },
+                    {
+                      which: "bind" as const,
+                      key: "R",
+                      label: "Bind",
+                      title:
+                        "A palette mechanic let go on a player is anchored to them, on an enemy or bait anchor it is baited, on a tether it rides it. Off, it lands on the floor where you let go (R)",
+                    },
+                  ]
+                ).map((mode) => (
+                  <button
+                    key={mode.which}
+                    type="button"
+                    data-assist={mode.which}
+                    className={`flex items-center justify-center gap-1 whitespace-nowrap rounded px-1.5 text-xs transition-colors focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-300 ${
+                      assists[mode.which]
+                        ? "bg-blue-500/25 font-semibold text-blue-100 shadow-sm"
+                        : "text-ink-400 hover:bg-ink-700 hover:text-ink-200"
+                    }`}
+                    title={mode.title}
+                    aria-pressed={assists[mode.which]}
+                    onClick={() => setAssists((on) => ({ ...on, [mode.which]: !on[mode.which] }))}
+                  >
+                    <kbd className="text-[10px] font-normal text-ink-400">{mode.key}</kbd>
+                    <span>{mode.label}</span>
+                  </button>
+                ))}
+              </div>
+              <div
+                className="flex h-8 shrink-0 items-stretch overflow-hidden rounded-md border border-ink-600 bg-ink-900/70 p-0.5 shadow-inner"
+                role="group"
                 aria-label="Symmetry controls"
               >
                 {([1, 2, 4] as const).map((count, index) => (
@@ -2875,6 +2934,7 @@ export function Editor({ planId, user }: { planId: string; user: User | null }) 
                 symmetryKind={symmetryKind}
                 layer={layer}
                 chips={chips}
+                snapping={assists.snap}
                 sweep={sweep}
                 highlight={highlight}
                 glide={glide}
